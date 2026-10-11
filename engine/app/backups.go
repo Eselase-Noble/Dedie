@@ -465,7 +465,7 @@ func (a *App) ExtractBackup(ctx context.Context, actor Actor, id, dir string) (i
 	if err != nil {
 		return 0, wrap(err)
 	}
-	if b.Format != backup.FormatPGBase {
+	if !backup.Physical(b.Format) {
 		return 0, invalid("only physical backups are extracted; restore this one into a connection")
 	}
 	chain, err := a.chain(ctx, b)
@@ -574,8 +574,8 @@ func (a *App) RestoreBackup(ctx context.Context, actor Actor, backupID string, i
 	if err != nil {
 		return store.Restore{}, wrap(err)
 	}
-	if b.Format == backup.FormatPGBase {
-		return store.Restore{}, invalid("a physical backup is a copy of the server's data files and is not restored into a running database; extract it with `dedie backup extract %s <directory>` and start PostgreSQL on that directory", b.ID)
+	if backup.Physical(b.Format) {
+		return store.Restore{}, invalid("a physical backup is a copy of the server's data files and is not restored into a running database; extract it with `dedie backup extract %s <directory>` and start the database server on that directory", b.ID)
 	}
 	target, err := a.conn(ctx, actor, in.TargetID)
 	if err != nil {

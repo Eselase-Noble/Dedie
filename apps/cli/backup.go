@@ -131,7 +131,7 @@ func (c *cli) backupExtract(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Extracted %d files into %s.\nStart PostgreSQL of the same major version on it, for example:\n  pg_ctl -D %s start\n", files, args[1], args[1])
+	fmt.Printf("Extracted %d files into %s.\nStart a database server of the same version on it:\n  PostgreSQL: pg_ctl -D %s -o \"-p 5433\" start\n  MySQL:      mysqld --datadir=%s --port=3307\n", files, args[1], args[1], args[1])
 	return nil
 }
 

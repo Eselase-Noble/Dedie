@@ -1,14 +1,18 @@
 package backup
 
 import (
+	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -280,4 +284,96 @@ func restoreMySQL(ctx context.Context, cfg connector.Config, r io.Reader) (strin
 		return tail(&stderr), fmt.Errorf("mysql restore failed: %s", tail(&stderr))
 	}
 	return tail(&stderr), nil
+}
+
+// cloneMySQL writes a gzip-compressed tar of a physical copy of the whole
+// MySQL server to w.
+//
+// The copy is made by the server itself, with its clone plugin, into a
+// directory on the server's own disk; this process then reads that
+// directory. So it works only when Dedie runs on the same machine as
+// MySQL and can read what the server writes there. The account needs the
+// BACKUP_ADMIN privilege, the clone plugin must be installed (MySQL
+// 8.0.17 or newer), and the server stays online throughout.
+//
+// DEDIE_MYSQL_CLONE_DIR names the directory the copy is staged under; it
+// defaults to the system's temporary directory. The server must be
+// allowed to create a directory there.
+func cloneMySQL(ctx context.Context, cfg connector.Config, w io.Writer) error {
+	options, cleanup, err := mysqlOptionFile(cfg)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	staging := os.Getenv("DEDIE_MYSQL_CLONE_DIR")
+	if staging == "" {
+		staging = os.TempDir()
+	}
+	suffix := make([]byte, 6)
+	rand.Read(suffix)
+	// The server creates this directory and refuses one that exists.
+	dir := filepath.Join(staging, "dedie-clone-"+hex.EncodeToString(suffix))
+	defer os.RemoveAll(dir)
+
+	stmt := "CLONE LOCAL DATA DIRECTORY = '" + strings.NewReplacer(`\`, `\\`, `'`, `''`).Replace(dir) + "'"
+	if _, err := mysqlRows(ctx, options, stmt); err != nil {
+		msg := err.Error()
+		switch {
+		case strings.Contains(msg, "clone") && (strings.Contains(msg, "not loaded") || strings.Contains(msg, "syntax")):
+			msg += ". Install the clone plugin on the server: INSTALL PLUGIN clone SONAME 'mysql_clone.so'"
+		case strings.Contains(msg, "BACKUP_ADMIN") || strings.Contains(msg, "denied"):
+			msg += ". The account needs the BACKUP_ADMIN privilege"
+		}
+		return fmt.Errorf("the server could not clone itself into %s: %s", dir, msg)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "mysql.ibd")); err != nil {
+		return fmt.Errorf("the server made its copy in %s, but Dedie cannot read it there. A physical MySQL backup needs Dedie to run on the same machine as MySQL, as a user that can read the server's files; set DEDIE_MYSQL_CLONE_DIR to a directory both can use", dir)
+	}
+
+	zw := gzip.NewWriter(w)
+	tw := tar.NewWriter(zw)
+	err = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		rel, _ := filepath.Rel(dir, path)
+		if rel == "." {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		hdr, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		hdr.Name = filepath.ToSlash(rel)
+		if d.IsDir() {
+			hdr.Name += "/"
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(tw, f)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("reading the cloned files: %w", err)
+	}
+	if err := tw.Close(); err != nil {
+		return err
+	}
+	return zw.Close()
 }
