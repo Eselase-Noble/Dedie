@@ -189,10 +189,24 @@ func (c *cli) scheduleRemove(args []string) error {
 
 func (c *cli) locationAdd(args []string) error {
 	fs := flag.NewFlagSet("backup location add", flag.ExitOnError)
-	name := fs.String("name", "", "name of the location")
-	path := fs.String("path", "", "full path of a directory on the machine that runs Dedie")
+	var in app.LocationInput
+	fs.StringVar(&in.Name, "name", "", "name of the location")
+	fs.StringVar(&in.Path, "path", "", "a directory on the machine that runs Dedie")
+	fs.StringVar(&in.S3.Bucket, "s3-bucket", "", "store in this bucket of S3-compatible object storage instead of a directory")
+	fs.StringVar(&in.S3.Endpoint, "s3-endpoint", "s3.amazonaws.com", "address of the storage service")
+	fs.StringVar(&in.S3.Region, "s3-region", "", "region of the bucket")
+	fs.StringVar(&in.S3.Prefix, "s3-prefix", "", "put objects under this prefix, like a folder")
+	fs.StringVar(&in.S3.AccessKey, "s3-access-key", "", "access key; the secret key is prompted for or read from DEDIE_PASSWORD")
 	parse(fs, args)
-	l, err := c.be.CreateLocation(*name, *path)
+	if in.S3.Bucket != "" {
+		in.Kind = "s3"
+		secret, err := readPassword("Secret key: ")
+		if err != nil {
+			return err
+		}
+		in.S3.SecretKey = secret
+	}
+	l, err := c.be.CreateLocation(in)
 	if err != nil {
 		return err
 	}

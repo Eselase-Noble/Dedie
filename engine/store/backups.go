@@ -102,10 +102,16 @@ func (s *Store) ConnectionBackups(ctx context.Context, orgID, connID string) ([]
 // Location is a directory on the machine that runs Dedie where backups
 // may be written.
 type Location struct {
-	ID        string    `json:"id"`
-	OrgID     string    `json:"-"`
-	Name      string    `json:"name"`
-	Path      string    `json:"path"`
+	ID    string `json:"id"`
+	OrgID string `json:"-"`
+	Name  string `json:"name"`
+	// Kind is "dir" for a directory or "s3" for object storage.
+	Kind string `json:"kind"`
+	// Path is the directory, or for object storage a description of the
+	// bucket without its credentials.
+	Path string `json:"path"`
+	// ConfigEnc holds the sealed settings of an object storage location.
+	ConfigEnc []byte    `json:"-"`
 	CreatedBy string    `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
 	// Backups is how many backups are stored there.
@@ -113,8 +119,8 @@ type Location struct {
 }
 
 func (s *Store) SaveLocation(ctx context.Context, l Location) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO backup_locations(id,org_id,name,path,created_by,created_at) VALUES(?,?,?,?,?,?)`,
-		l.ID, l.OrgID, l.Name, l.Path, l.CreatedBy, now())
+	_, err := s.db.ExecContext(ctx, `INSERT INTO backup_locations(id,org_id,name,path,created_by,created_at,kind,config_enc) VALUES(?,?,?,?,?,?,?,?)`,
+		l.ID, l.OrgID, l.Name, l.Path, l.CreatedBy, now(), l.Kind, l.ConfigEnc)
 	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
 		return errors.New("a location with that name already exists")
 	}
@@ -124,14 +130,14 @@ func (s *Store) SaveLocation(ctx context.Context, l Location) error {
 func (s *Store) GetLocation(ctx context.Context, orgID, id string) (Location, error) {
 	var l Location
 	var created string
-	err := s.db.QueryRowContext(ctx, `SELECT id,org_id,name,path,created_by,created_at,(SELECT count(*) FROM backups b WHERE b.location_id=l.id) FROM backup_locations l WHERE org_id=? AND (id=? OR name=?)`, orgID, id, id).
-		Scan(&l.ID, &l.OrgID, &l.Name, &l.Path, &l.CreatedBy, &created, &l.Backups)
+	err := s.db.QueryRowContext(ctx, `SELECT id,org_id,name,path,created_by,created_at,(SELECT count(*) FROM backups b WHERE b.location_id=l.id),kind,config_enc FROM backup_locations l WHERE org_id=? AND (id=? OR name=?)`, orgID, id, id).
+		Scan(&l.ID, &l.OrgID, &l.Name, &l.Path, &l.CreatedBy, &created, &l.Backups, &l.Kind, &l.ConfigEnc)
 	l.CreatedAt = parseTime(created)
 	return l, one(err)
 }
 
 func (s *Store) ListLocations(ctx context.Context, orgID string) ([]Location, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,org_id,name,path,created_by,created_at,(SELECT count(*) FROM backups b WHERE b.location_id=l.id) FROM backup_locations l WHERE org_id=? ORDER BY name`, orgID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,org_id,name,path,created_by,created_at,(SELECT count(*) FROM backups b WHERE b.location_id=l.id),kind,config_enc FROM backup_locations l WHERE org_id=? ORDER BY name`, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +146,7 @@ func (s *Store) ListLocations(ctx context.Context, orgID string) ([]Location, er
 	for rows.Next() {
 		var l Location
 		var created string
-		if err := rows.Scan(&l.ID, &l.OrgID, &l.Name, &l.Path, &l.CreatedBy, &created, &l.Backups); err != nil {
+		if err := rows.Scan(&l.ID, &l.OrgID, &l.Name, &l.Path, &l.CreatedBy, &created, &l.Backups, &l.Kind, &l.ConfigEnc); err != nil {
 			return nil, err
 		}
 		l.CreatedAt = parseTime(created)

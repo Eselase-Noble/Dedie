@@ -82,7 +82,7 @@ func (a *App) baseFor(ctx context.Context, c store.Connection, typ, level string
 		if c.Kind == "mysql" && b.Position == "" {
 			continue
 		}
-		if _, err := os.Stat(b.Path); err != nil {
+		if st, err := a.backupStore(ctx, b); err != nil || !st.Exists(ctx, b.Path) {
 			continue
 		}
 		return b, nil
@@ -197,17 +197,11 @@ func (a *App) startBackup(ctx context.Context, actor Actor, in BackupInput, sche
 		return store.Backup{}, invalid("level must be full, differential or incremental")
 	}
 
-	dir := filepath.Join(a.dataDir, "backups")
-	if in.LocationID != "" {
-		loc, err := a.Store.GetLocation(ctx, c.OrgID, in.LocationID)
-		if err != nil {
-			return store.Backup{}, invalid("backup location not found")
-		}
-		dir, in.LocationID = loc.Path, loc.ID
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return store.Backup{}, invalid("the backup location %s cannot be used: %s", dir, err.Error())
-		}
+	target, loc, err := a.locationStore(ctx, c.OrgID, in.LocationID)
+	if err != nil {
+		return store.Backup{}, err
 	}
+	in.LocationID = loc.ID
 	cfg, err := a.config(c)
 	if err != nil {
 		return store.Backup{}, err
@@ -222,9 +216,17 @@ func (a *App) startBackup(ctx context.Context, actor Actor, in BackupInput, sche
 	if in.Plain {
 		ext = backup.Extension(b.Format)
 	}
-	b.Path = filepath.Join(dir, fmt.Sprintf("%s-%s-%s-%s-%s%s", safeFileName(c.Database), time.Now().UTC().Format("20060102-150405"),
-		backup.Method(b.Type), b.Level, strings.TrimPrefix(b.ID, "bak_")[:8], ext))
+	name := fmt.Sprintf("%s-%s-%s-%s-%s%s", safeFileName(c.Database), time.Now().UTC().Format("20060102-150405"),
+		backup.Method(b.Type), b.Level, strings.TrimPrefix(b.ID, "bak_")[:8], ext)
+	// Opening the file first means a location that cannot be written to
+	// is reported at once, not as a failed backup later.
+	file, err := target.Create(context.WithoutCancel(ctx), name)
+	if err != nil {
+		return store.Backup{}, invalid("the backup location cannot be written to: %s", err.Error())
+	}
+	b.Path = file.Path()
 	if err := a.Store.CreateBackup(ctx, b); err != nil {
+		file.Abort()
 		return b, err
 	}
 	a.audit(ctx, actor, "backup.create", b.ID, map[string]any{"connection": c.Name, "database": c.Database, "type": b.Type,
@@ -244,16 +246,13 @@ func (a *App) startBackup(ctx context.Context, actor Actor, in BackupInput, sche
 				defer os.Remove(manifest)
 				opts.ManifestPath = manifest
 			}
-			f, err := os.OpenFile(b.Path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
-			if err != nil {
-				return 0, "", meta, err
-			}
-			defer f.Close()
 			// The digest covers the file as stored, so integrity can be
 			// checked later without the key.
 			hash := sha256.New()
-			var out io.Writer = io.MultiWriter(f, hash)
+			count := &countWriter{}
+			var out io.Writer = io.MultiWriter(file, hash, count)
 			var enc *secure.StreamWriter
+			var err error
 			if b.Encrypted {
 				if enc, err = secure.NewStreamWriter(a.keyring, out, backupAAD(b.OrgID, b.ID)); err != nil {
 					return 0, "", meta, err
@@ -268,17 +267,15 @@ func (a *App) startBackup(ctx context.Context, actor Actor, in BackupInput, sche
 					return 0, "", meta, err
 				}
 			}
-			if err := f.Sync(); err != nil {
+			// Close commits the file: flushed to disk, or confirmed by
+			// the object store.
+			if err := file.Close(); err != nil {
 				return 0, "", meta, err
 			}
-			st, err := f.Stat()
-			if err != nil {
-				return 0, "", meta, err
-			}
-			return st.Size(), hex.EncodeToString(hash.Sum(nil)), meta, nil
+			return count.n, hex.EncodeToString(hash.Sum(nil)), meta, nil
 		}()
 		if err != nil {
-			os.Remove(b.Path)
+			file.Abort()
 			a.Store.FinishBackup(bg, b.ID, "failed", err.Error(), 0, "")
 			// A schedule reports its own failures, with its name.
 			if scheduleID == "" {
@@ -298,6 +295,14 @@ func (a *App) startBackup(ctx context.Context, actor Actor, in BackupInput, sche
 	}
 	out, err := a.Store.GetBackup(ctx, b.OrgID, b.ID)
 	return out, err
+}
+
+// countWriter counts the bytes written through it.
+type countWriter struct{ n int64 }
+
+func (c *countWriter) Write(p []byte) (int, error) {
+	c.n += int64(len(p))
+	return len(p), nil
 }
 
 // manifestOf writes the manifest of a physical backup to a temporary file
@@ -336,7 +341,7 @@ func (a *App) DeleteBackup(ctx context.Context, actor Actor, id string) error {
 	} else if n > 0 {
 		return conflict("%d later backup(s) build on this one and could not be restored without it; delete those first", n)
 	}
-	if err := os.Remove(b.Path); err != nil && !os.IsNotExist(err) {
+	if err := a.removeBackupFile(ctx, b); err != nil {
 		return err
 	}
 	if err := a.Store.DeleteBackup(ctx, b.OrgID, b.ID); err != nil {
@@ -344,6 +349,31 @@ func (a *App) DeleteBackup(ctx context.Context, actor Actor, id string) error {
 	}
 	a.audit(ctx, actor, "backup.delete", b.ID, map[string]string{"connection": b.ConnectionName, "database": b.Database})
 	return nil
+}
+
+// removeBackupFile deletes a backup's file from wherever it is stored.
+func (a *App) removeBackupFile(ctx context.Context, b store.Backup) error {
+	if b.Path == "" {
+		return nil
+	}
+	st, err := a.backupStore(ctx, b)
+	if err != nil {
+		return err
+	}
+	return st.Remove(ctx, b.Path)
+}
+
+// rawBackup opens a backup's file as it is stored.
+func (a *App) rawBackup(b store.Backup) (io.ReadCloser, error) {
+	st, err := a.backupStore(context.Background(), b)
+	if err != nil {
+		return nil, err
+	}
+	f, err := st.Open(context.Background(), b.Path)
+	if err != nil {
+		return nil, conflict("the backup file is missing or cannot be read: %s", b.Path)
+	}
+	return f, nil
 }
 
 // VerifyBackup checks a backup file against the digest recorded when it was
@@ -367,9 +397,9 @@ func (a *App) openBackup(b store.Backup) (io.ReadCloser, error) {
 	if b.Status != "completed" {
 		return nil, conflict("the backup is %s", b.Status)
 	}
-	f, err := os.Open(b.Path)
+	f, err := a.rawBackup(b)
 	if err != nil {
-		return nil, conflict("the backup file is missing: %s", b.Path)
+		return nil, err
 	}
 	if !b.Encrypted {
 		return f, nil
@@ -495,9 +525,9 @@ func (a *App) verifyBackupFile(b store.Backup) error {
 	if b.Status != "completed" {
 		return conflict("the backup is %s", b.Status)
 	}
-	f, err := os.Open(b.Path)
+	f, err := a.rawBackup(b)
 	if err != nil {
-		return conflict("the backup file is missing: %s", b.Path)
+		return err
 	}
 	defer f.Close()
 	hash := sha256.New()

@@ -73,7 +73,9 @@ export default function BackupOptions({ connection, locations, value, onChange }
           ))}
         </div>
       </Field>
-      <Field label="Store in" hint={directory ? <>Written to <code>{directory}</code> on the machine that runs Dedie.</> : undefined}>
+      <Field label="Store in" hint={!directory ? undefined : directory.startsWith("s3://")
+        ? <>Sent to <code>{directory}</code> as it is taken.</>
+        : <>Written to <code>{directory}</code> on the machine that runs Dedie.</>}>
         <select className="select" value={value.locationId} onChange={(e) => set({ locationId: e.target.value })}>
           <option value="">Dedie&apos;s data directory (default)</option>
           {locations?.locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
