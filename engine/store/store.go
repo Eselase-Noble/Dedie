@@ -99,6 +99,10 @@ CREATE TABLE IF NOT EXISTS idle_policies (
   min_usage_percent INTEGER NOT NULL DEFAULT 0, exclude_users TEXT NOT NULL DEFAULT '[]',
   last_run_at TEXT NOT NULL DEFAULT '', last_closed INTEGER NOT NULL DEFAULT 0, total_closed INTEGER NOT NULL DEFAULT 0,
   last_error TEXT NOT NULL DEFAULT '', updated_by TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS wal_archives (
+  connection_id TEXT PRIMARY KEY REFERENCES connections(id) ON DELETE CASCADE, org_id TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 0, dir TEXT NOT NULL, slot TEXT NOT NULL, retention_days INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '', updated_by TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS backup_locations (
   id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id),
   name TEXT NOT NULL, path TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL,

@@ -631,3 +631,20 @@ export interface LocationInput {
   path: string;
   s3: { endpoint: string; region: string; bucket: string; prefix: string; access_key: string; secret_key: string };
 }
+
+export interface WalArchive {
+  connection_id: string;
+  connection_name: string;
+  enabled: boolean;
+  dir: string;
+  slot: string;
+  retention_days: number;
+  started_at: string;
+  last_error: string;
+  receiving: boolean;
+  segments: number;
+  size_bytes: number;
+  newest_at: string;
+  /** Zero until a physical backup has been taken since archiving began. */
+  earliest_recovery: string;
+}

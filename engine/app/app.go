@@ -31,6 +31,8 @@ type App struct {
 	dataDir string
 	// instance identifies this process when leasing migration jobs.
 	instance string
+	// wal tracks the write-ahead log receivers this process runs.
+	wal walProcs
 }
 
 // DefaultDataDir is where state lives unless DEDIE_DATA_DIR or a flag says otherwise.
@@ -64,7 +66,8 @@ func Open(dataDir string) (*App, error) {
 		return nil, err
 	}
 	st.FailInterrupted(context.Background())
-	return &App{Store: st, keyring: kr, dataDir: dataDir, instance: secure.NewToken(8)}, nil
+	return &App{Store: st, keyring: kr, dataDir: dataDir, instance: secure.NewToken(8),
+		wal: walProcs{running: map[string]context.CancelFunc{}}}, nil
 }
 
 func (a *App) Close() error { return a.Store.Close() }

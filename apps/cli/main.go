@@ -61,6 +61,8 @@ Backups
   backup restore <id>          restore into a connection or a new database
   backup export <id> <file>    write the decrypted archive to a file
   backup extract <id> <dir>    unpack a physical backup into a data directory
+  backup recover <connection>  build a data directory that recovers a
+                               PostgreSQL server to a moment in time
   backup rm <id>               delete a backup
   backup schedule add|list|rm  recurring backups with retention
   backup location add|list|rm  directories backups may be written to
@@ -197,6 +199,8 @@ func (c *cli) dispatch(args []string) error {
 			return c.backupExport(rest)
 		case "extract":
 			return c.backupExtract(rest)
+		case "recover":
+			return c.backupRecover(rest)
 		case "location":
 			action := ""
 			if len(rest) > 0 {

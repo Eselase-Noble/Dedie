@@ -50,6 +50,7 @@ func main() {
 		if !*noWorker {
 			go a.RunScheduler(ctx)
 			go a.RunMonitor(ctx)
+			go a.RunWALArchiver(ctx)
 			a.RunWorker(ctx)
 		}
 	}()

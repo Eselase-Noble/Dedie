@@ -103,6 +103,8 @@ func New(a *app.App, opts Options) http.Handler {
 	mux.HandleFunc("POST /api/v1/backups/{id}/restore", s.authed(s.restoreBackup))
 	mux.HandleFunc("GET /api/v1/backups/{id}/download", s.authed(s.downloadBackup))
 	mux.HandleFunc("GET /api/v1/restores", s.authed(s.listRestores))
+	mux.HandleFunc("GET /api/v1/wal-archives", s.authed(s.listWALArchives))
+	mux.HandleFunc("PUT /api/v1/connections/{id}/wal-archive", s.authed(s.setWALArchive))
 	mux.HandleFunc("GET /api/v1/backup-locations", s.authed(s.listLocations))
 	mux.HandleFunc("POST /api/v1/backup-locations", s.authed(s.createLocation))
 	mux.HandleFunc("DELETE /api/v1/backup-locations/{id}", s.authed(s.deleteLocation))

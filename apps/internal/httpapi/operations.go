@@ -95,6 +95,33 @@ func (s *Server) downloadBackup(w http.ResponseWriter, r *http.Request, actor ap
 	io.Copy(w, src)
 }
 
+// --- point-in-time recovery ---
+
+func (s *Server) listWALArchives(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	list, err := s.app.WALArchives(r.Context(), actor)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) setWALArchive(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	var in struct {
+		Enabled       bool `json:"enabled"`
+		RetentionDays int  `json:"retention_days"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	st, err := s.app.SetWALArchive(r.Context(), actor, r.PathValue("id"), in.Enabled, in.RetentionDays)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
 // --- backup locations ---
 
 func (s *Server) listLocations(w http.ResponseWriter, r *http.Request, actor app.Actor) {
