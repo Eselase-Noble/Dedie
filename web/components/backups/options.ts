@@ -21,7 +21,7 @@ export const METHODS = {
   },
   physical: {
     label: "Physical",
-    description: "A copy of the server's own data files, covering every database on it. Fast to take and to restore for large servers, and the basis for differential and incremental backups. It is restored as a whole server of the same major version, and needs an account with the REPLICATION attribute.",
+    description: "A copy of the server's own data files, covering every database on it. Fast to take and to restore for large servers, and the basis for differential and incremental backups. It is restored as a whole server of the same major version.",
   },
 } as const;
 
@@ -35,7 +35,15 @@ export const LEVELS: { value: BackupLevel; label: string; description: string }[
 
 /** Whether a kind of database has physical backups. */
 export function hasPhysical(kind: string): boolean {
-  return kind === "postgres";
+  return kind === "postgres" || kind === "mysql";
+}
+
+/** What a physical backup needs on this kind of database. */
+export function physicalNote(kind: string): string {
+  if (kind === "mysql") {
+    return "MySQL makes the copy itself with its clone plugin (8.0.17 or newer), so Dedie must run on the same machine as MySQL and be able to read the server's files. The account needs BACKUP_ADMIN.";
+  }
+  return "It needs an account with the REPLICATION attribute.";
 }
 
 /**

@@ -48,6 +48,9 @@ func Method(typ string) string {
 	return MethodLogical
 }
 
+// Physical reports whether a format is a copy of a server's data files.
+func Physical(format string) bool { return format == FormatPGBase || format == FormatMyClone }
+
 // LevelsSupported reports whether differential and incremental backups
 // exist for a kind of database and a backup type. PostgreSQL offers them
 // for physical backups (version 17 and newer); MySQL for full logical
@@ -59,11 +62,12 @@ func LevelsSupported(kind, typ string) bool {
 // Archive formats, recorded with each backup so that it is restored the way
 // it was written.
 const (
-	FormatPGCustom = "pgcustom"      // pg_dump custom format
-	FormatSQL      = "sql"           // plain SQL, written by releases before gzip was added
-	FormatSQLGzip  = "sql.gz"        // gzip-compressed SQL
-	FormatPGBase   = "pgbase.tgz"    // gzip-compressed tar of a PostgreSQL data directory
-	FormatBinlog   = "binlog.sql.gz" // gzip-compressed MySQL binary log events as SQL
+	FormatPGCustom = "pgcustom"       // pg_dump custom format
+	FormatSQL      = "sql"            // plain SQL, written by releases before gzip was added
+	FormatSQLGzip  = "sql.gz"         // gzip-compressed SQL
+	FormatPGBase   = "pgbase.tgz"     // gzip-compressed tar of a PostgreSQL data directory
+	FormatBinlog   = "binlog.sql.gz"  // gzip-compressed MySQL binary log events as SQL
+	FormatMyClone  = "mysqlclone.tgz" // gzip-compressed tar of a MySQL data directory
 )
 
 // Options select what a backup contains.
@@ -116,7 +120,7 @@ func Types(kind string) []string {
 	case "postgres":
 		return []string{TypeFull, TypeSchema, TypeData, TypeTables, TypePhysical}
 	case "mysql":
-		return []string{TypeFull, TypeSchema, TypeData, TypeTables}
+		return []string{TypeFull, TypeSchema, TypeData, TypeTables, TypePhysical}
 	}
 	return nil
 }
@@ -126,6 +130,8 @@ func Format(kind, typ string) string {
 	switch {
 	case kind == "postgres" && typ == TypePhysical:
 		return FormatPGBase
+	case kind == "mysql" && typ == TypePhysical:
+		return FormatMyClone
 	case kind == "postgres":
 		return FormatPGCustom
 	}
@@ -147,7 +153,7 @@ func Extension(format string) string {
 		return ".dump"
 	case FormatSQLGzip:
 		return ".sql.gz"
-	case FormatPGBase:
+	case FormatPGBase, FormatMyClone:
 		return ".tar.gz"
 	case FormatBinlog:
 		return ".binlog.sql.gz"
@@ -195,6 +201,9 @@ func Dump(ctx context.Context, kind string, cfg connector.Config, serverVersion 
 		if leveled {
 			return binlogBackup(ctx, cfg, opts.From, w)
 		}
+		if opts.Type == TypePhysical {
+			return Meta{}, cloneMySQL(ctx, cfg, w)
+		}
 		return dumpMySQL(ctx, cfg, opts, w)
 	}
 	return Meta{}, fmt.Errorf("backups are not supported for %s", kind)
@@ -219,8 +228,8 @@ func Restore(ctx context.Context, kind, format string, cfg connector.Config, r i
 		}
 		defer zr.Close()
 		return restoreMySQL(ctx, cfg, zr)
-	case FormatPGBase:
-		return "", fmt.Errorf("a physical backup is a copy of the server's data files; extract it into an empty data directory with `dedie backup extract` and start PostgreSQL on it")
+	case FormatPGBase, FormatMyClone:
+		return "", fmt.Errorf("a physical backup is a copy of the server's data files; extract it into an empty data directory with `dedie backup extract` and start the database server on it")
 	}
 	return "", fmt.Errorf("unknown backup format %q", format)
 }

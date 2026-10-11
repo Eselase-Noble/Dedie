@@ -3,7 +3,7 @@
 import type { BackupLevel, BackupLocations, BackupType, Connection } from "@/lib/types";
 import { Checkbox, Field } from "@/components/ui";
 import TablePicker from "./TablePicker";
-import { CONTENTS, LEVELS, METHODS, hasPhysical, levelHint, levelsAvailable, methodOf, type Method } from "./options";
+import { CONTENTS, LEVELS, METHODS, hasPhysical, levelHint, levelsAvailable, methodOf, physicalNote, type Method } from "./options";
 
 export interface BackupChoice {
   type: BackupType;
@@ -39,12 +39,12 @@ export default function BackupOptions({ connection, locations, value, onChange }
 
   return (
     <>
-      <Field label="Method" hint={METHODS[method].description}>
+      <Field label="Method" hint={<>{METHODS[method].description}{method === "physical" && ` ${physicalNote(kind)}`}</>}>
         <div className="segmented">
           {(Object.keys(METHODS) as Method[]).map((m) => (
             <button key={m} type="button" className={method === m ? "active" : ""}
               disabled={m === "physical" && !hasPhysical(kind)}
-              title={m === "physical" && !hasPhysical(kind) ? "Physical backups are available for PostgreSQL" : undefined}
+              title={m === "physical" && !hasPhysical(kind) ? "Physical backups are available for PostgreSQL and MySQL" : undefined}
               onClick={() => set({ type: m === "physical" ? "physical" : "full", tables: [] })}>
               {METHODS[m].label}
             </button>
