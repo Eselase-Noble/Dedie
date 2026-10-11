@@ -19,6 +19,11 @@ type Stmt struct {
 	// because they can depend on objects outside the migration's scope.
 	Soft bool
 	err  error
+	// taken says what the statement occupies on the target where Name does
+	// not: the index behind a key constraint, the argument types that tell
+	// a function from others of its name, and the table of a trigger. The
+	// preflight looks for these on the target; see claims.
+	taken string
 }
 
 const kindForeignKey = "foreign key"
@@ -55,6 +60,9 @@ type Plan struct {
 	Pre     []Stmt
 	Post    []Stmt
 	Final   []Stmt
+	// kept holds the objects the job leaves as they are on the target;
+	// see keep.
+	kept map[string]bool
 }
 
 const userSchemaFilter = `n.nspname NOT IN ('pg_catalog','information_schema','pg_toast','` + metaSchema + `') AND n.nspname NOT LIKE 'pg\_temp\_%' AND n.nspname NOT LIKE 'pg\_toast\_temp\_%'`
@@ -152,19 +160,26 @@ func collect(ctx context.Context, conn *pgx.Conn, dst *[]string, sql string, arg
 	return err
 }
 
-// stmts runs a query returning (name, ddl) pairs and appends them to dst.
+// stmts runs a query returning (name, ddl) pairs and appends them to dst. A
+// third column, when the query has one, is what the statement takes on the
+// target.
 func stmts(ctx context.Context, conn *pgx.Conn, dst *[]Stmt, kind string, soft bool, sql string, args ...any) error {
 	rows, err := conn.Query(ctx, sql, args...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	into := make([]any, len(rows.FieldDescriptions()))
 	for rows.Next() {
-		var name, ddl string
-		if err := rows.Scan(&name, &ddl); err != nil {
+		var name, ddl, taken string
+		into[0], into[1] = &name, &ddl
+		if len(into) > 2 {
+			into[2] = &taken
+		}
+		if err := rows.Scan(into...); err != nil {
 			return err
 		}
-		*dst = append(*dst, Stmt{Kind: kind, Name: name, SQL: ddl, Soft: soft})
+		*dst = append(*dst, Stmt{Kind: kind, Name: name, SQL: ddl, Soft: soft, taken: taken})
 	}
 	return rows.Err()
 }
@@ -318,7 +333,7 @@ func (p *Plan) loadFunctions(ctx context.Context, src *pgx.Conn) error {
 		plain = "NOT p.proisagg AND NOT p.proiswindow"
 	}
 	return stmts(ctx, src, &p.Pre, "function", true, `SELECT format('%I.%I(%s)', n.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid)),
-			pg_catalog.pg_get_functiondef(p.oid)
+			pg_catalog.pg_get_functiondef(p.oid), `+ArgTypesSQL+`
 		FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
 		WHERE n.nspname = ANY($1) AND `+plain+` AND `+notExtension("pg_proc", "p.oid")+` ORDER BY 1`, p.Schemas)
 }
@@ -401,7 +416,10 @@ func (p *Plan) loadTableDDL(ctx context.Context, src *pgx.Conn, oids []uint32) e
 // snapshot (the stream needs keys to find rows) and foreign keys and
 // exclusion constraints after it, when all referenced rows exist.
 func (p *Plan) loadConstraints(ctx context.Context, src *pgx.Conn, oids []uint32) error {
-	rows, err := src.Query(ctx, `SELECT c.contype::text, format('%I.%I', n.nspname, r.relname), c.conname, pg_catalog.pg_get_constraintdef(c.oid)
+	// A primary key, unique or exclusion constraint is enforced by an index
+	// of the constraint's name, which the schema must have free.
+	rows, err := src.Query(ctx, `SELECT c.contype::text, format('%I.%I', n.nspname, r.relname), c.conname, pg_catalog.pg_get_constraintdef(c.oid),
+			CASE WHEN c.contype IN ('p','u','x') THEN format('%I.%I', n.nspname, c.conname) ELSE '' END
 		FROM pg_catalog.pg_constraint c JOIN pg_catalog.pg_class r ON r.oid=c.conrelid
 		JOIN pg_catalog.pg_namespace n ON n.oid=r.relnamespace
 		WHERE c.conrelid = ANY($1) AND c.contype IN ('p','u','c','f','x')
@@ -411,11 +429,11 @@ func (p *Plan) loadConstraints(ctx context.Context, src *pgx.Conn, oids []uint32
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var typ, table, name, def string
-		if err := rows.Scan(&typ, &table, &name, &def); err != nil {
+		var typ, table, name, def, index string
+		if err := rows.Scan(&typ, &table, &name, &def, &index); err != nil {
 			return err
 		}
-		s := Stmt{Kind: "constraint", Name: table + " " + name,
+		s := Stmt{Kind: "constraint", Name: table + " " + name, taken: index,
 			SQL: "ALTER TABLE ONLY " + table + " ADD CONSTRAINT " + qident(name) + " " + def}
 		switch typ {
 		case "p", "u":
@@ -470,8 +488,76 @@ func (p *Plan) loadViews(ctx context.Context, src *pgx.Conn) error {
 // loadTriggers defers triggers to cutover. Created earlier, they would fire
 // for every replicated row and repeat side effects the source already ran.
 func (p *Plan) loadTriggers(ctx context.Context, src *pgx.Conn, oids []uint32) error {
-	return stmts(ctx, src, &p.Final, "trigger", true, `SELECT format('%I on %I.%I', t.tgname, n.nspname, c.relname), pg_catalog.pg_get_triggerdef(t.oid)
+	return stmts(ctx, src, &p.Final, "trigger", true, `SELECT format('%I on %I.%I', t.tgname, n.nspname, c.relname), pg_catalog.pg_get_triggerdef(t.oid),
+			format('%I.%I.%I', n.nspname, c.relname, t.tgname)
 		FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid
 		JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
 		WHERE NOT t.tgisinternal AND t.tgrelid = ANY($1) ORDER BY 1`, oids)
+}
+
+// claim is the name a statement takes on the target, if it takes one. It
+// is read off the statement itself, so what the preflight looks for and
+// what is created cannot drift apart. Schemas and extensions are created
+// only if absent and are welcome to exist; the remaining kinds change an
+// object the plan creates and take no name.
+func (s Stmt) claim() (Claim, bool) {
+	switch s.Kind {
+	case "type", "domain", "sequence", "index", "view", "materialized view":
+		return Claim{Kind: s.Kind, Name: s.Name, Ident: s.Name}, true
+	case "function":
+		return Claim{Kind: s.Kind, Name: s.Name, Ident: s.Name, Args: s.taken}, true
+	case "trigger":
+		return Claim{Kind: s.Kind, Name: s.Name, Ident: s.taken}, true
+	case "constraint":
+		if s.taken != "" {
+			return Claim{Kind: "index", Name: s.taken, Ident: s.taken}, true
+		}
+	}
+	return Claim{}, false
+}
+
+// claims lists every name the plan takes on the target, for the preflight
+// to look up there.
+func (p *Plan) claims() []Claim {
+	var out []Claim
+	for _, t := range p.Tables {
+		out = append(out, Claim{Kind: "table", Name: t.Schema + "." + t.Name, Ident: t.QName()})
+	}
+	for _, list := range [][]Stmt{p.Pre, p.Post, p.Final} {
+		for _, s := range list {
+			if c, ok := s.claim(); ok {
+				out = append(out, c)
+			}
+		}
+	}
+	return out
+}
+
+// keep removes from the plan every statement that would create or alter an
+// object the job was told to leave as it is on the target. Besides the
+// statement that creates the object, that is the one giving a kept
+// sequence an owner and the one refreshing a kept materialized view.
+func (p *Plan) keep(kept []string) {
+	if len(kept) == 0 {
+		return
+	}
+	is := map[string]bool{}
+	for _, k := range kept {
+		is[k] = true
+	}
+	for _, list := range []*[]Stmt{&p.Pre, &p.Post, &p.Final} {
+		out := (*list)[:0:0]
+		for _, s := range *list {
+			c, claims := s.claim()
+			switch {
+			case claims && is[KeptKey(c.Kind, c.Name)]:
+			case s.Kind == "sequence owner" && is[KeptKey("sequence", s.Name)]:
+			case s.Kind == "refresh" && is[KeptKey("materialized view", s.Name)]:
+			default:
+				out = append(out, s)
+			}
+		}
+		*list = out
+	}
+	p.kept = is
 }

@@ -51,25 +51,40 @@ func Unfence(ctx context.Context, srcCfg connector.Config) error {
 
 // syncSequences copies sequence positions. Logical replication carries row
 // changes only, so without this the target would hand out ids already used.
-func syncSequences(ctx context.Context, src, dst *pgx.Conn, schemas []string) (int, error) {
-	rows, err := src.Query(ctx, `SELECT schemaname, sequencename, last_value FROM pg_sequences
-		WHERE schemaname = ANY($1) AND last_value IS NOT NULL`, schemas)
+// Two kinds of sequence are not the job's to move: one the job was told to
+// keep as the target has it, and the sequence behind an identity column of
+// a table that is not being migrated, which the target has only if the
+// table was there already.
+func syncSequences(ctx context.Context, src, dst *pgx.Conn, plan *Plan) (int, error) {
+	rows, err := src.Query(ctx, `SELECT s.schemaname, s.sequencename, s.last_value, format('%I.%I', s.schemaname, s.sequencename),
+			coalesce((SELECT x.refobjid FROM pg_catalog.pg_depend x WHERE x.classid='pg_catalog.pg_class'::regclass
+				AND x.objid=format('%I.%I', s.schemaname, s.sequencename)::regclass AND x.deptype='i' LIMIT 1), 0)::oid
+		FROM pg_catalog.pg_sequences s
+		WHERE s.schemaname = ANY($1) AND s.last_value IS NOT NULL`, plan.Schemas)
 	if err != nil {
 		return 0, err
 	}
 	type seq struct {
-		schema, name string
-		last         int64
+		schema, name, ident string
+		last                int64
+		identityOf          uint32
 	}
 	seqs, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (seq, error) {
 		var s seq
-		return s, r.Scan(&s.schema, &s.name, &s.last)
+		return s, r.Scan(&s.schema, &s.name, &s.last, &s.ident, &s.identityOf)
 	})
 	if err != nil {
 		return 0, err
 	}
+	migrated := map[uint32]bool{}
+	for _, t := range plan.Tables {
+		migrated[t.OID] = true
+	}
 	n := 0
 	for _, s := range seqs {
+		if plan.kept[KeptKey("sequence", s.ident)] || (s.identityOf != 0 && !migrated[s.identityOf]) {
+			continue
+		}
 		if _, err := dst.Exec(ctx, `SELECT setval(format('%I.%I', $1::text, $2::text)::regclass, $3, true)`, s.schema, s.name, s.last); err != nil {
 			return n, fmt.Errorf("sequence %s.%s: %s", s.schema, s.name, pgMessage(err))
 		}

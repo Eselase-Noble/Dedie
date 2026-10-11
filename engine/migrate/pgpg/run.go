@@ -81,7 +81,7 @@ func (r *runner) run(ctx context.Context) (Outcome, error) {
 		return "", fmt.Errorf("target: %w", err)
 	}
 	defer func() { r.dst.Close(context.WithoutCancel(ctx)) }()
-	if r.plan, err = BuildPlan(ctx, r.src, cfg); err != nil {
+	if err := r.buildPlan(ctx); err != nil {
 		return "", err
 	}
 
@@ -161,6 +161,21 @@ func (r *runner) run(ctx context.Context) (Outcome, error) {
 
 func (r *runner) save() { r.rep.SaveState(*r.st) }
 
+// buildPlan reads the source catalog and takes out of the plan what the job
+// leaves as the target has it: a kept table is excluded like any table the
+// operator excluded, and a kept object loses its statements.
+func (r *runner) buildPlan(ctx context.Context) error {
+	cfg := r.cfg
+	cfg.ExcludeTables = append(cfg.ExcludeTables[:len(cfg.ExcludeTables):len(cfg.ExcludeTables)], r.st.SkippedTables...)
+	plan, err := BuildPlan(ctx, r.src, cfg)
+	if err != nil {
+		return err
+	}
+	plan.keep(r.st.KeptObjects)
+	r.plan = plan
+	return nil
+}
+
 // stream opens the apply connection to the target and replays the
 // replication stream into it.
 func (r *runner) stream(ctx context.Context) (string, error) {
@@ -205,16 +220,37 @@ func (r *runner) schemaPhase(ctx context.Context) error {
 		return err
 	}
 	// A retry after an interrupted schema phase finds its own tables on the
-	// target; that is the one failed check it may ignore.
+	// target, and the types, sequences and functions it created before them.
+	// The two checks on what the target already holds are the ones it may
+	// ignore.
 	ours := r.ownTarget(ctx)
 	var blocking []string
 	for _, c := range report.Checks {
-		if c.Status == "fail" && !(ours && c.Name == "Target is empty") {
+		if c.Status == "fail" && !(ours && (c.Name == "Target is empty" || c.Name == "Existing objects")) {
 			blocking = append(blocking, c.Name+": "+c.Detail)
 		}
 	}
 	if len(blocking) > 0 {
 		return fmt.Errorf("preflight failed: %s", strings.Join(blocking, "; "))
+	}
+	// What was on the target before the job is settled now, while it can
+	// still be told from what the job creates, and remembered from here on.
+	if !ours {
+		found, err := FindExisting(ctx, r.dst, r.plan.claims())
+		if err != nil {
+			return err
+		}
+		r.st.SkippedTables, r.st.KeptObjects, r.st.DropFirst = Decide(r.cfg.Existing(), found)
+		r.save()
+		if n, m := len(r.st.SkippedTables), len(r.st.KeptObjects); n+m > 0 {
+			if err := r.buildPlan(ctx); err != nil {
+				return err
+			}
+			r.rep.Event("warn", fmt.Sprintf("kept %d existing table(s) and %d other object(s) on the target as they are, as chosen; they are left out of the migration", n, m))
+			if len(r.plan.Tables) == 0 {
+				return errors.New("every table to be migrated already exists on the target and is kept; nothing is left to migrate")
+			}
+		}
 	}
 	_ = r.src.QueryRow(ctx, `SELECT current_setting('server_version')`).Scan(&r.st.SourceVersion)
 	_ = r.dst.QueryRow(ctx, `SELECT current_setting('server_version')`).Scan(&r.st.TargetVersion)
@@ -228,6 +264,9 @@ func (r *runner) schemaPhase(ctx context.Context) error {
 		return err
 	}
 
+	if err := DropExisting(ctx, r.dst, r.st.DropFirst, r.rep); err != nil {
+		return err
+	}
 	r.rep.Event("info", fmt.Sprintf("creating schema on the target: %d tables", len(r.plan.Tables)))
 	if _, err := applyStmts(ctx, r.dst, r.plan.Pre); err != nil {
 		return err
@@ -377,7 +416,7 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 	if err := r.reconnect(ctx); err != nil {
 		return false, err
 	}
-	n, err := syncSequences(ctx, r.src, r.dst, r.plan.Schemas)
+	n, err := syncSequences(ctx, r.src, r.dst, r.plan)
 	if err != nil {
 		r.rep.Event("warn", "sequence sync incomplete: "+err.Error())
 	}

@@ -128,21 +128,13 @@ func preflight(ctx context.Context, src, dst *pgx.Conn, plan *Plan, cfg Config) 
 		return nil, err
 	}
 
-	// The target must not already contain the tables being migrated.
-	names := make([]string, len(plan.Tables))
-	for i, t := range plan.Tables {
-		names[i] = t.Schema + "." + t.Name
-	}
-	var existing []string
-	if err := collect(ctx, dst, &existing, `SELECT n.nspname || '.' || c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-		WHERE c.relkind IN ('r','p') AND n.nspname || '.' || c.relname = ANY($1) ORDER BY 1`, names); err != nil {
+	// The target must not already hold the tables being migrated, nor
+	// anything else under a name the plan is going to take.
+	found, err := FindExisting(ctx, dst, plan.claims())
+	if err != nil {
 		return nil, err
 	}
-	if len(existing) > 0 {
-		r.Add("Target is empty", "fail", "these tables already exist on the target: "+strings.Join(existing, ", "))
-	} else {
-		r.Add("Target is empty", "ok", "no conflicting tables on the target")
-	}
+	ReportExisting(r, found, cfg.Existing(), "on the target")
 
 	var canCreate bool
 	if err := dst.QueryRow(ctx, `SELECT has_database_privilege(current_database(), 'CREATE')`).Scan(&canCreate); err != nil {
