@@ -2,6 +2,7 @@
 
 import { Fragment, useState } from "react";
 import { api, errorMessage } from "@/lib/api";
+import { desktop } from "@/lib/desktop";
 import { formatBytes, formatTime } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 import type { Backup } from "@/lib/types";
@@ -103,6 +104,13 @@ export default function BackupsPage() {
                         )}
                         {mayRestore && b.status === "completed" && (
                           <a className="btn small" href={api.backupDownloadUrl(b.id)} download
+                            onClick={(e) => {
+                              // The desktop application saves the file itself.
+                              const bridge = desktop();
+                              if (!bridge) return;
+                              e.preventDefault();
+                              bridge.download(api.backupDownloadUrl(b.id), `${b.database}-backup`);
+                            }}
                             title="Download the decrypted archive. The copy is no longer protected by Dedie.">Download</a>
                         )}
                         {mayRestore && b.status !== "running" && <button className="btn small" onClick={() => setDeleting(b)}>Delete</button>}

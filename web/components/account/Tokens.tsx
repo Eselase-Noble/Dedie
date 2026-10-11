@@ -7,6 +7,7 @@ import { useLoad } from "@/lib/hooks";
 import { ROLES, type ApiToken, type Role } from "@/lib/types";
 import { useSession } from "@/components/session";
 import { Banner, ConfirmDialog, Field, Loading, Modal } from "@/components/ui";
+import { copyText } from "@/lib/desktop";
 
 const RANK: Record<Role, number> = { viewer: 1, analyst: 2, operator: 3, admin: 4, owner: 5 };
 
@@ -108,7 +109,7 @@ export default function Tokens() {
       {created && (
         <Modal title="Copy your token now" onClose={() => setCreated(null)} footer={
           <>
-            <button className="btn" onClick={() => void navigator.clipboard?.writeText(created.token ?? "")}>Copy</button>
+            <button className="btn" onClick={() => copyText(created.token ?? "")}>Copy</button>
             <button className="btn primary" onClick={() => setCreated(null)}>Done</button>
           </>
         }>

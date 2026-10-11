@@ -4,6 +4,7 @@ import QRCode from "qrcode";
 import { useEffect, useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
 import { Badge, Banner, Field, Modal } from "@/components/ui";
+import { copyText } from "@/lib/desktop";
 
 /** Shows recovery codes once, with a way to keep them. */
 function RecoveryCodes({ codes, onClose }: { codes: string[]; onClose: () => void }) {
@@ -11,7 +12,7 @@ function RecoveryCodes({ codes, onClose }: { codes: string[]; onClose: () => voi
   return (
     <Modal title="Save your recovery codes" onClose={onClose} footer={
       <>
-        <button className="btn" onClick={() => void navigator.clipboard?.writeText(text)}>Copy</button>
+        <button className="btn" onClick={() => copyText(text)}>Copy</button>
         <button className="btn primary" onClick={onClose}>I have saved them</button>
       </>
     }>

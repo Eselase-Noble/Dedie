@@ -5,6 +5,7 @@ import { errorMessage } from "@/lib/api";
 import { prettyJSON } from "@/lib/format";
 import type { ResultSet } from "@/lib/types";
 import { Banner, Modal } from "./ui";
+import { copyText } from "@/lib/desktop";
 
 /** Every row has this height, which is what makes windowing possible. */
 const ROW_HEIGHT = 28;
@@ -215,7 +216,7 @@ function CellViewer({ result, row, col, editor, onClose }: {
           </span>
           {editor && <button className="btn" onClick={() => setConfirmDelete(true)}>Delete row</button>}
           {editable && <button className="btn" onClick={() => setEditing(true)}>Edit</button>}
-          {value !== null && <button className="btn" onClick={() => { void navigator.clipboard?.writeText(value); }}>Copy</button>}
+          {value !== null && <button className="btn" onClick={() => { copyText(value); }}>Copy</button>}
           <button className="btn primary" onClick={onClose}>Close</button>
         </>
       )

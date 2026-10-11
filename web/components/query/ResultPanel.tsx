@@ -7,6 +7,7 @@ import { formatNumber } from "@/lib/format";
 import type { ResultSet } from "@/lib/types";
 import ResultGrid, { visibleRows, type GridEditor, type Sort } from "@/components/ResultGrid";
 import { Badge } from "@/components/ui";
+import { copyText } from "@/lib/desktop";
 
 /**
  * One result set with its tools: a filter, sorting, and export of exactly
@@ -46,7 +47,7 @@ export default function ResultPanel({ result, name, kind, tableName, editor, chi
   const copy = () => {
     setMenu(false);
     const lines = [result.columns.map((c) => c.name).join("\t"), ...order.map((i) => result.rows[i].map((v) => v ?? "").join("\t"))];
-    void navigator.clipboard?.writeText(lines.join("\n"));
+    copyText(lines.join("\n"));
   };
 
   return (
