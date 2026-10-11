@@ -90,6 +90,7 @@ func New(a *app.App, opts Options) http.Handler {
 	mux.HandleFunc("PUT /api/v1/queries/{id}", s.authed(s.saveQuery))
 	mux.HandleFunc("DELETE /api/v1/queries/{id}", s.authed(s.deleteSavedQuery))
 
+	mux.HandleFunc("POST /api/v1/connections/{id}/suggest-columns", s.authed(s.suggestColumns))
 	mux.HandleFunc("GET /api/v1/migrations", s.authed(s.listMigrations))
 	mux.HandleFunc("POST /api/v1/migrations", s.authed(s.createMigration))
 	mux.HandleFunc("GET /api/v1/migrations/{id}", s.authed(s.getMigration))

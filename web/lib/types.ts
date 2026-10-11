@@ -203,6 +203,8 @@ export interface ReplicationSlot {
 export type Validation = "checksum" | "count" | "none";
 
 export interface MigrationConfig {
+  /** MongoDB sources: fields lifted into typed columns, by collection. */
+  columns?: Record<string, ColumnSpec[]>;
   /** "sync" keeps the target following the source; anything else ends with a cutover. */
   mode?: "migrate" | "sync" | "";
   schemas: string[] | null;
@@ -647,4 +649,11 @@ export interface WalArchive {
   newest_at: string;
   /** Zero until a physical backup has been taken since archiving began. */
   earliest_recovery: string;
+}
+
+export interface ColumnSpec {
+  /** Path of the field, with dots for nesting. */
+  field: string;
+  name?: string;
+  type: string;
 }

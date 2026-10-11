@@ -27,10 +27,12 @@ type runner struct {
 	dstCfg connector.Config
 	rep    migrate.Reporter
 	scope  scope
-	list   []Collection
-	client *mongo.Client
-	db     *mongo.Database
-	dst    *pgx.Conn
+	// columns holds the fields lifted into columns, by collection.
+	columns map[string][]column
+	list    []Collection
+	client  *mongo.Client
+	db      *mongo.Database
+	dst     *pgx.Conn
 }
 
 // Run drives a job from wherever its saved state left it to completion,
@@ -44,6 +46,9 @@ func Run(ctx context.Context, jobID string, cfg migrate.Config, st State, srcCfg
 		return r.abort(ctx), nil
 	}
 	var err error
+	if r.columns, err = allColumns(cfg); err != nil {
+		return "", err
+	}
 	if r.client, err = mongodb.Connect(ctx, srcCfg); err != nil {
 		return "", fmt.Errorf("source: %w", err)
 	}
@@ -73,7 +78,7 @@ func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 	if !r.st.SnapshotDone {
 		r.rep.SetPhase(migrate.PhaseSnapshot)
 		r.rep.Event("info", fmt.Sprintf("copying %d collection(s) with %d worker(s)", len(r.list), r.cfg.SnapshotWorkers))
-		altered, err := snapshot(ctx, r.db, r.dstCfg, r.list, r.cfg.SnapshotWorkers, r.rep)
+		altered, dropped, err := snapshot(ctx, r.db, r.dstCfg, r.list, r.columns, r.cfg.SnapshotWorkers, r.rep)
 		if errors.Is(err, errInterrupted) {
 			if r.rep.Desired() == "abort" {
 				return r.abort(ctx), nil
@@ -87,6 +92,10 @@ func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 		if altered > 0 {
 			r.st.Anomalies += altered
 			r.rep.Event("warn", fmt.Sprintf("%d document(s) contained null characters, which jsonb cannot store; they were removed from those documents", altered))
+		}
+		if dropped > 0 {
+			r.st.Unconverted += dropped
+			r.rep.Event("warn", fmt.Sprintf("%d field value(s) were of a type their column cannot hold and were stored as NULL there; the documents keep the originals", dropped))
 		}
 		r.st.SnapshotDone = true
 		r.save()
@@ -160,7 +169,7 @@ func (r *runner) schemaPhase(ctx context.Context) error {
 
 	progress := make([]migrate.TableProgress, len(r.list))
 	for n, c := range r.list {
-		if _, err := r.dst.Exec(ctx, tableDDL(c.Name)); err != nil {
+		if _, err := r.dst.Exec(ctx, tableDDL(c.Name, r.columns[c.Name])); err != nil {
 			return fmt.Errorf("create table for %s: %w", c.Name, err)
 		}
 		progress[n] = migrate.TableProgress{Schema: targetSchema, Table: c.Name, EstRows: c.EstDocs}

@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"dedie/engine/app"
+	"dedie/engine/migrate"
 )
 
 // --- migrations ---
@@ -56,6 +57,22 @@ func (s *Server) migrationAction(w http.ResponseWriter, r *http.Request, actor a
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) suggestColumns(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	var in struct {
+		Tables        []string `json:"tables"`
+		ExcludeTables []string `json:"exclude_tables"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.app.SuggestColumns(r.Context(), actor, r.PathValue("id"), migrate.Config{Tables: in.Tables, ExcludeTables: in.ExcludeTables})
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // --- backups ---

@@ -4,7 +4,8 @@
 // Each collection becomes a table of two columns: _id, the document's key
 // as text, and doc, the whole document as jsonb. Nothing in a document is
 // lost or reinterpreted, and its fields are reachable from SQL with the
-// jsonb operators (doc->>'email', doc->'address'->>'city').
+// jsonb operators (doc->>'email', doc->'address'->>'city'). Fields can
+// also be lifted into typed columns of their own, beside the document.
 //
 // The copy is followed by MongoDB's change stream, which needs the source
 // to be a replica set. The stream is opened at a point taken before the
@@ -55,12 +56,15 @@ type State struct {
 	StartT uint32 `json:"start_t"`
 	StartI uint32 `json:"start_i"`
 	// AppliedLSN is the cluster time of the last change applied, for display.
-	AppliedLSN     string    `json:"applied_lsn"`
-	LagSeconds     int64     `json:"lag_seconds"`
-	LagBytes       int64     `json:"lag_bytes"`
-	TxApplied      int64     `json:"tx_applied"`
-	RowsApplied    int64     `json:"rows_applied"`
-	Anomalies      int64     `json:"anomalies"`
+	AppliedLSN  string `json:"applied_lsn"`
+	LagSeconds  int64  `json:"lag_seconds"`
+	LagBytes    int64  `json:"lag_bytes"`
+	TxApplied   int64  `json:"tx_applied"`
+	RowsApplied int64  `json:"rows_applied"`
+	Anomalies   int64  `json:"anomalies"`
+	// Unconverted counts field values a lifted column could not hold and
+	// stored as NULL; the document keeps the original.
+	Unconverted    int64     `json:"unconverted"`
 	LastCommitTime time.Time `json:"last_commit_time"`
 	SourceVersion  string    `json:"source_version"`
 	TargetVersion  string    `json:"target_version"`
@@ -81,7 +85,3 @@ const checkpointUpsert = `INSERT INTO ` + metaSchema + `.mongo_checkpoint (job_i
 	ON CONFLICT (job_id) DO UPDATE SET resume_token = excluded.resume_token, updated_at = now()`
 
 func qname(table string) string { return pgx.Identifier{targetSchema, table}.Sanitize() }
-
-func tableDDL(table string) string {
-	return `CREATE TABLE IF NOT EXISTS ` + qname(table) + ` (_id text PRIMARY KEY, doc jsonb NOT NULL)`
-}

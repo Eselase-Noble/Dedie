@@ -88,23 +88,34 @@ func checkNames(list []Collection) error {
 	return nil
 }
 
-// row turns a document into the two values stored for it: its key as text
-// and the whole document as JSON. clean reports whether the JSON had to be
-// altered to be storable.
-func row(doc bson.Raw) (id, js string, clean bool, err error) {
+// row turns a document into the values stored for it: its key as text, the
+// whole document as JSON, and one value per lifted column. clean reports
+// whether the JSON had to be altered to be storable, and dropped how many
+// field values did not fit their column.
+func row(doc bson.Raw, cols []column) (values []any, clean bool, dropped int, err error) {
 	key, err := doc.LookupErr("_id")
 	if err != nil {
-		return "", "", false, errors.New("a document has no _id")
+		return nil, false, 0, errors.New("a document has no _id")
 	}
-	if js, err = mongodb.DocumentJSON(doc); err != nil {
-		return "", "", false, err
+	js, err := mongodb.DocumentJSON(doc)
+	if err != nil {
+		return nil, false, 0, err
 	}
 	// jsonb cannot hold the null character; MongoDB strings can.
 	clean = true
 	if strings.Contains(js, `\u0000`) {
 		js, clean = strings.ReplaceAll(js, `\u0000`, ""), false
 	}
-	return keyText(key), js, clean, nil
+	values = make([]any, 0, 2+len(cols))
+	values = append(values, keyText(key), js)
+	for _, c := range cols {
+		v, ok := c.value(doc)
+		if !ok {
+			dropped++
+		}
+		values = append(values, v)
+	}
+	return values, clean, dropped, nil
 }
 
 // keyText is the text form of a document key.

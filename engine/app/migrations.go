@@ -7,6 +7,7 @@ import (
 
 	"dedie/engine/connector"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/mongopg"
 	"dedie/engine/secure"
 	"dedie/engine/store"
 )
@@ -224,4 +225,28 @@ func (a *App) MigrationAction(ctx context.Context, actor Actor, id, action strin
 	a.Store.AddJobEvent(ctx, j.ID, "info", action+" requested by "+actor.User.Email)
 	a.audit(ctx, actor, "migration."+action, j.ID, map[string]string{"name": j.Name})
 	return nil
+}
+
+// SuggestColumns samples a MongoDB connection and proposes which fields
+// of each collection to lift into typed columns when it is migrated.
+func (a *App) SuggestColumns(ctx context.Context, actor Actor, connID string, cfg migrate.Config) (map[string][]migrate.ColumnSpec, error) {
+	if err := actor.require(PermManageMigrations); err != nil {
+		return nil, err
+	}
+	c, err := a.conn(ctx, actor, connID)
+	if err != nil {
+		return nil, err
+	}
+	if c.Kind != "mongodb" {
+		return nil, invalid("columns are suggested for MongoDB sources; relational tables already have them")
+	}
+	src, err := a.config(c)
+	if err != nil {
+		return nil, err
+	}
+	out, err := mongopg.Suggest(ctx, src, cfg)
+	if err != nil {
+		return nil, &Error{Status: 422, Message: err.Error()}
+	}
+	return out, nil
 }
