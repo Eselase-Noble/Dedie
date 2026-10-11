@@ -8,6 +8,8 @@ import { formatBytes, formatDuration, formatNumber, formatTime } from "@/lib/for
 import { useLoad } from "@/lib/hooks";
 import type { MigrationAction, MigrationDetail, OnExisting, PreflightReport } from "@/lib/types";
 import ExistingObjectsDialog from "@/components/migrations/ExistingObjects";
+import { download } from "@/lib/csv";
+import { copyText } from "@/lib/desktop";
 import { useSession } from "@/components/session";
 import { Banner, ConfirmDialog, Loading, PageHeader, Progress, StatusBadge } from "@/components/ui";
 
@@ -48,19 +50,48 @@ function Figure({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function Preflight({ report }: { report: PreflightReport }) {
+/** Renders a preflight report as plain text, for a ticket or a change request. */
+function reportText(name: string, report: PreflightReport): string {
+  const lines = [`Preflight for ${name}: ${report.ok ? "passed" : "FAILED"} (${report.tables} table(s))`, ""];
+  for (const c of report.checks) {
+    lines.push(`[${c.status.toUpperCase()}] ${c.name}`);
+    for (const line of c.detail.split("\n")) lines.push(`    ${line}`);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+function Preflight({ report, name }: { report: PreflightReport; name: string }) {
+  const [only, setOnly] = useState<"all" | "attention">("all");
+  const count = (status: string) => report.checks.filter((c) => c.status === status).length;
+  const shown = only === "all" ? report.checks : report.checks.filter((c) => c.status !== "ok");
   return (
-    <table className="data">
-      <tbody>
-        {report.checks.map((c, i) => (
-          <tr key={i}>
-            <td style={{ width: 70 }}><StatusBadge status={c.status} /></td>
-            <td style={{ width: 220 }}><strong>{c.name}</strong></td>
-            <td className="pre-line">{c.detail}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <>
+      <div className="preflight-bar">
+        <span><strong>{count("fail")}</strong> blocking</span>
+        <span><strong>{count("warn")}</strong> to read</span>
+        <span><strong>{count("ok")}</strong> passed</span>
+        <span className="spacer" />
+        <div className="segmented small">
+          <button type="button" className={only === "all" ? "active" : ""} onClick={() => setOnly("all")}>All</button>
+          <button type="button" className={only === "attention" ? "active" : ""} onClick={() => setOnly("attention")}>Needs attention</button>
+        </div>
+        <button className="btn small" onClick={() => copyText(reportText(name, report))}>Copy</button>
+        <button className="btn small" onClick={() => download(`preflight-${name.replace(/[^A-Za-z0-9]+/g, "-").toLowerCase()}.txt`, reportText(name, report), "text/plain;charset=utf-8")}>Download</button>
+      </div>
+      <table className="data">
+        <tbody>
+          {shown.map((c, i) => (
+            <tr key={i}>
+              <td style={{ width: 70 }}><StatusBadge status={c.status} /></td>
+              <td style={{ width: 220 }}><strong>{c.name}</strong></td>
+              <td className="pre-line">{c.detail}</td>
+            </tr>
+          ))}
+          {shown.length === 0 && <tr><td colSpan={3} className="empty">Nothing needs attention.</td></tr>}
+        </tbody>
+      </table>
+    </>
   );
 }
 
@@ -302,7 +333,7 @@ function Detail({ id }: { id: string }) {
         )}
         <div className="card-body flush table-wrap">
           {report
-            ? <Preflight report={report} />
+            ? <Preflight report={report} name={job.name} />
             : <div className="empty">Not run yet. Preflight inspects both databases without changing either.</div>}
         </div>
       </div>

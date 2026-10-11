@@ -2,7 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
-import type { ColumnSpec, Connection, Migration, Validation } from "@/lib/types";
+import type { ColumnSpec, Connection, Migration, Validation, OnExisting } from "@/lib/types";
 import { Banner, Checkbox, Field, Modal } from "./ui";
 
 /** Splits a comma or newline separated list, dropping blanks. */
@@ -54,14 +54,16 @@ const OFFLINE_HINTS: Record<string, string> = {
   oracle: "Read as of one moment with flashback queries. Needs only an account that can read the tables; no LogMiner.",
 };
 
-export default function MigrationForm({ connections, onClose, onCreated }: {
+export default function MigrationForm({ connections, onClose, onCreated, initialMode = "migrate" }: {
   connections: Connection[]; onClose: () => void; onCreated: (job: Migration) => void;
+  initialMode?: "migrate" | "sync" | "offline";
 }) {
   // Migrations run between two databases of the same kind, or across the
   // two engines in either direction.
   const candidates = connections.filter((c) => c.kind in TARGET_KINDS);
   const [name, setName] = useState("");
-  const [mode, setMode] = useState<"migrate" | "sync" | "offline">("migrate");
+  const [mode, setMode] = useState<"migrate" | "sync" | "offline">(initialMode);
+  const [onExisting, setOnExisting] = useState<OnExisting>("fail");
   const [sourceId, setSourceId] = useState((candidates.find((c) => c.kind !== "mongodb") ?? candidates[0])?.id ?? "");
   const source = candidates.find((c) => c.id === sourceId);
   const targets = candidates.filter((c) => c.id !== sourceId && (TARGET_KINDS[source?.kind ?? ""] ?? []).includes(c.kind));
@@ -120,6 +122,7 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
           fence_source: fence && !sync && !offline && !mongo && !oracle,
           validation,
           keep_slot: keepSlot && !offline && !mysql && !mongo,
+          on_existing: onExisting,
           cutover_timeout_seconds: timeout,
         },
       });
@@ -239,6 +242,18 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
               <option value="checksum">checksum</option>
               <option value="count">count</option>
               <option value="none">none</option>
+            </select>
+          </Field>
+          <Field label="If the target already has some of the objects" className="span2"
+            hint={onExisting === "fail"
+              ? "Preflight lists them and the migration does not start until you decide. Nothing on the target is touched."
+              : onExisting === "skip"
+                ? "Each is left exactly as it is and is not migrated. An existing table receives no rows and changes to its source are not followed."
+                : "Each is dropped on the target and created again from the source. A dropped table loses the data it holds there. Preflight shows exactly what would be dropped before anything is."}>
+            <select className="select" value={onExisting} onChange={(e) => setOnExisting(e.target.value as OnExisting)}>
+              <option value="fail">Refuse, and ask me</option>
+              <option value="skip">Keep them and skip them</option>
+              <option value="replace">Replace them</option>
             </select>
           </Field>
           {!offline && (

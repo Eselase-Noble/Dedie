@@ -411,3 +411,9 @@ ul.plain li { margin-bottom: 6px; }
 .choice > span { display: grid; gap: 2px; }
 .choice.selected { border-color: var(--accent); background: var(--accent-soft); }
 .choice.danger.selected { border-color: var(--danger); background: var(--danger-soft); }
+
+/* The summary line above a preflight report. */
+.preflight-bar { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 13px; flex-wrap: wrap; }
+.preflight-bar strong { color: var(--text); }
+.preflight-bar .spacer { flex: 1; }
+.segmented.small button { padding: 3px 10px; font-size: 12.5px; }

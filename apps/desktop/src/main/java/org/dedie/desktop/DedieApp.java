@@ -36,6 +36,7 @@ import netscape.javascript.JSObject;
 public final class DedieApp extends Application {
 
     private static final String WEBSITE = "https://eselase-noble.github.io/Dedie/";
+    private static final String GUIDES = "https://github.com/Eselase-Noble/Dedie/blob/main/docs/";
 
     private final Engine engine = new Engine();
     private final Preferences prefs = Preferences.userNodeForPackage(DedieApp.class);
@@ -107,7 +108,14 @@ public final class DedieApp extends Application {
 
     private MenuBar menuBar() {
         Menu file = new Menu("File");
+        // The pages open their own forms when asked to in the address, so
+        // these items work from wherever the window happens to be.
         file.getItems().addAll(
+                item("New Connection…", "Shortcut+N", () -> page("connections/?new=1")),
+                item("New Migration…", "Shortcut+M", () -> page("migrations/?new=migrate")),
+                item("New Offline Migration…", "Shortcut+Shift+M", () -> page("migrations/?new=offline")),
+                item("New Continuous Sync…", null, () -> page("migrations/?new=sync")),
+                new SeparatorMenuItem(),
                 item("Open in Browser", null, () -> open(url)),
                 item("Reload", "Shortcut+R", () -> script("window.location.reload()")),
                 new SeparatorMenuItem(),
@@ -139,6 +147,8 @@ public final class DedieApp extends Application {
 
         Menu help = new Menu("Help");
         help.getItems().addAll(
+                item("Setting Up Dedie", null, () -> open(GUIDES + "setup.md")),
+                item("Preparing Your Databases", null, () -> open(GUIDES + "databases.md")),
                 item("Dedie Website", null, () -> open(WEBSITE)),
                 item("Show Log", null, () -> open(Engine.logFile().toUri().toString())),
                 item("Open Data Folder", null, () -> open(Engine.logFile().getParent().toUri().toString())),

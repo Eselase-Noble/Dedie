@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, errorMessage } from "@/lib/api";
 import { formatTime } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
@@ -41,6 +41,13 @@ export default function ConnectionsPage() {
   // undefined: form closed; null: creating; a connection: editing it.
   const [editing, setEditing] = useState<Connection | null | undefined>(undefined);
   const [deleting, setDeleting] = useState<Connection | null>(null);
+  // "?new=1" opens the form for a new connection, for the desktop
+  // application's File menu.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("new") === null) return;
+    setEditing(null);
+    window.history.replaceState(null, "", window.location.pathname);
+  }, []);
   const [testing, setTesting] = useState("");
   const [result, setResult] = useState<{ name: string; info?: ServerInfo; error?: string } | null>(null);
 
