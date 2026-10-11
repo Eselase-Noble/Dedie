@@ -39,7 +39,7 @@ func Run(ctx context.Context, jobID string, cfg migrate.Config, st State, srcCfg
 	out, err := r.run(ctx)
 	// Never leave the source read-only behind a job that did not finish.
 	if err != nil && st.Fenced {
-		if uerr := unfence(ctx, srcCfg); uerr != nil {
+		if uerr := Unfence(ctx, srcCfg); uerr != nil {
 			rep.Event("error", "the source database is still read-only and could not be reset: "+message(uerr))
 		} else {
 			st.Fenced = false
@@ -104,7 +104,7 @@ func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 	for {
 		r.rep.SetPhase(migrate.PhaseStreaming)
 		started := time.Now()
-		reason, err := stream(ctx, r.jobID, r.cfg, r.st, r.plan, r.srcCfg, r.dstCfg, r.rep)
+		reason, err := r.stream(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
@@ -125,12 +125,12 @@ func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 			continue
 		}
 		switch reason {
-		case stopPause:
+		case StopPause:
 			r.rep.Event("info", "paused; the job can resume for as long as the source still has its binary logs from "+r.st.Applied.File+" onwards")
 			return migrate.Paused, nil
-		case stopAbort:
+		case StopAbort:
 			return r.abort(ctx), nil
-		case stopCutover:
+		case StopCutover:
 			done, err := r.finalize(ctx)
 			if err != nil {
 				return "", err
@@ -140,6 +140,22 @@ func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 			}
 		}
 	}
+}
+
+// stream opens the apply connection to the target and replays the binary log
+// into it.
+func (r *runner) stream(ctx context.Context) (string, error) {
+	target, err := newApplier(ctx, r.dstCfg, r.jobID, func(msg string) {
+		r.st.Anomalies++
+		if r.st.Anomalies <= 20 {
+			r.rep.Event("warn", msg)
+		}
+	})
+	if err != nil {
+		return "", err
+	}
+	defer target.Close()
+	return Stream(ctx, r.jobID, r.cfg, r.st, r.plan, r.srcCfg, target, r.rep)
 }
 
 func (r *runner) schemaPhase(ctx context.Context) error {
@@ -197,7 +213,7 @@ func (r *runner) snapshotPhase(ctx context.Context) error {
 	if _, err := r.dst.ExecContext(ctx, "UPDATE `"+checkpointTable+"` SET binlog_file = '', binlog_pos = 0 WHERE job_id = ?", r.jobID); err != nil {
 		return err
 	}
-	conns, pos, err := openSnapshot(ctx, r.src, r.cfg.SnapshotWorkers)
+	conns, pos, err := OpenSnapshot(ctx, r.src, r.cfg.SnapshotWorkers)
 	if err != nil {
 		return err
 	}
@@ -239,7 +255,7 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 			why = err.Error()
 		}
 		if r.st.Fenced {
-			if uerr := unfence(ctx, r.srcCfg); uerr != nil {
+			if uerr := Unfence(ctx, r.srcCfg); uerr != nil {
 				r.rep.Event("error", "could not make the source writable again: "+message(uerr))
 			} else {
 				r.st.Fenced = false
@@ -278,7 +294,7 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 // operator to inspect or drop.
 func (r *runner) abort(ctx context.Context) migrate.Outcome {
 	if r.st.Fenced {
-		if err := unfence(ctx, r.srcCfg); err != nil {
+		if err := Unfence(ctx, r.srcCfg); err != nil {
 			r.rep.Event("error", "could not make the source writable again: "+message(err))
 		} else {
 			r.st.Fenced = false

@@ -9,6 +9,7 @@ import { useLoad } from "@/lib/hooks";
 import { beginDrag, useStoredSize } from "@/lib/resize";
 import type { Catalog, QueryResponse } from "@/lib/types";
 import ResultGrid from "@/components/ResultGrid";
+import CreateObject from "@/components/CreateObjects";
 import SchemaTree from "@/components/SchemaTree";
 import { useSession } from "@/components/session";
 import SqlEditor from "@/components/SqlEditor";
@@ -19,7 +20,7 @@ const LAST_CONNECTION = "dedie.query.connection";
 
 export default function QueryPage() {
   const { can } = useSession();
-  const { data: connections, error: loadError } = useLoad(() => api.connections(), []);
+  const { data: connections, error: loadError, reload: reloadConnections } = useLoad(() => api.connections(), []);
   const [connId, setConnId] = useState("");
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [catalogError, setCatalogError] = useState("");
@@ -37,6 +38,10 @@ export default function QueryPage() {
   // Hides the editor so a large result can use the whole height.
   const [maximized, setMaximized] = useState(false);
   const selection = useRef<() => string>(() => "");
+  // The object being created from the Create menu, if any.
+  const [creating, setCreating] = useState<"database" | "schema" | "table" | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const [notice, setNotice] = useState("");
 
   // Pane sizes are draggable and remembered. The limits leave room for the
   // other pane whatever the window size.
@@ -137,6 +142,20 @@ export default function QueryPage() {
         </select>
         {connection?.read_only && <Badge>read-only connection</Badge>}
         <span className="spacer" />
+        {mayWrite && (
+          <div className="popover-anchor">
+            <button className="btn small" onClick={() => setShowCreate((v) => !v)} aria-expanded={showCreate}>Create…</button>
+            {showCreate && (
+              <div className="popover menu">
+                <button onClick={() => { setCreating("database"); setShowCreate(false); }}>New database</button>
+                {connection?.kind !== "mysql" && (
+                  <button onClick={() => { setCreating("schema"); setShowCreate(false); }}>New schema</button>
+                )}
+                <button onClick={() => { setCreating("table"); setShowCreate(false); }}>New table</button>
+              </div>
+            )}
+          </div>
+        )}
         <button className="btn small" onClick={() => setShowTree((v) => !v)} aria-pressed={showTree}>
           {showTree ? "Hide schema" : "Show schema"}
         </button>
@@ -145,6 +164,22 @@ export default function QueryPage() {
         </button>
       </div>
       {loadError && <Banner tone="error">{loadError}</Banner>}
+      {notice && <Banner tone="ok">{notice}</Banner>}
+      {creating && connection && (
+        <CreateObject
+          what={creating}
+          connection={connection}
+          catalog={catalog}
+          canAddConnection={can("connections.manage")}
+          onClose={() => setCreating(null)}
+          onCreated={(message) => {
+            setCreating(null);
+            setNotice(message);
+            void loadCatalog(connId);
+            void reloadConnections();
+          }}
+        />
+      )}
 
       <div className="workspace-body">
         {showTree && (

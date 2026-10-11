@@ -17,6 +17,25 @@ export type Role = "owner" | "admin" | "operator" | "analyst" | "viewer";
 
 export const ROLES: Role[] = ["owner", "admin", "operator", "analyst", "viewer"];
 
+/** One column in the table designer. */
+export interface ColumnDef {
+  name: string;
+  type: string;
+  nullable: boolean;
+  primary_key: boolean;
+  default: string;
+}
+
+/** Whether a connection's server answered the last check. */
+export interface ConnectionStatus {
+  online: boolean;
+  version?: string;
+  encrypted: boolean;
+  latency_ms: number;
+  error?: string;
+  checked_at: string;
+}
+
 export interface User {
   id: string;
   org_id: string;

@@ -38,26 +38,20 @@ func variable(ctx context.Context, db *sql.DB, name string) string {
 	return v.String
 }
 
-func preflight(ctx context.Context, src, dst *sql.DB, plan *Plan, cfg migrate.Config) (*migrate.Report, error) {
-	r := &migrate.Report{Tables: len(plan.Tables)}
-
-	var srcVer, dstVer string
+// CheckSource records every finding about the source side: version, binary
+// log settings, privileges and the tables selected. It is shared by all
+// pipelines that read from MySQL. It returns the source's version string.
+func CheckSource(ctx context.Context, src *sql.DB, plan *Plan, cfg migrate.Config, r *migrate.Report) (string, error) {
+	var srcVer string
 	if err := src.QueryRowContext(ctx, "SELECT VERSION()").Scan(&srcVer); err != nil {
-		return nil, err
+		return "", err
 	}
-	if err := dst.QueryRowContext(ctx, "SELECT VERSION()").Scan(&dstVer); err != nil {
-		return nil, err
-	}
-	srcNum, dstNum := mysql.VersionNum(srcVer), mysql.VersionNum(dstVer)
+	srcNum := mysql.VersionNum(srcVer)
 	switch {
-	case strings.Contains(strings.ToLower(srcVer+dstVer), "mariadb"):
-		r.Add("Versions", "fail", "MariaDB is not supported by this pipeline; its binary log and catalog differ from MySQL's")
+	case strings.Contains(strings.ToLower(srcVer), "mariadb"):
+		r.Add("Source version", "fail", "MariaDB is not supported as a source; its binary log and catalog differ from MySQL's")
 	case srcNum < 50600:
-		r.Add("Versions", "fail", "MySQL "+srcVer+" is too old; version 5.6 or newer is required")
-	case dstNum/100 < srcNum/100:
-		r.Add("Versions", "fail", fmt.Sprintf("target (%s) is older than source (%s); downgrades are not supported", dstVer, srcVer))
-	default:
-		r.Add("Versions", "ok", srcVer+" → "+dstVer)
+		r.Add("Source version", "fail", "MySQL "+srcVer+" is too old; version 5.6 or newer is required")
 	}
 
 	if strings.EqualFold(variable(ctx, src, "log_bin"), "ON") {
@@ -76,7 +70,7 @@ func preflight(ctx context.Context, src, dst *sql.DB, plan *Plan, cfg migrate.Co
 	} else {
 		r.Add("Row images", "fail", fmt.Sprintf("binlog_row_image is %s; set it to FULL so every change carries the whole row", image))
 	}
-	if _, err := binlogStatus(ctx, src); err != nil {
+	if _, err := BinlogStatus(ctx, src); err != nil {
 		r.Add("Replication privileges", "fail", "cannot read the binary log position ("+message(err)+"); the source account needs REPLICATION CLIENT and REPLICATION SLAVE")
 	} else {
 		r.Add("Replication privileges", "ok", "source account can read the binary log position")
@@ -104,6 +98,33 @@ func preflight(ctx context.Context, src, dst *sql.DB, plan *Plan, cfg migrate.Co
 		r.Add("Tables without a primary key", "warn", strings.Join(plan.NoKey, ", ")+
 			"\nChanges to these tables are matched on every column, which is slow on large tables and can miss rows that hold approximate numbers. Add a primary key if you can.")
 	}
+	if cfg.FenceSource && srcNum < 80022 {
+		r.Add("Read-only cutover", "fail", "making a single database read-only needs MySQL 8.0.22 or newer on the source; turn the option off and stop application writes yourself at cutover")
+	}
+	if !mysql.Encrypted(ctx, src) {
+		r.Add("Source encryption", "warn", "the connection is not using TLS; data will cross the network in clear text")
+	}
+	return srcVer, nil
+}
+
+func preflight(ctx context.Context, src, dst *sql.DB, plan *Plan, cfg migrate.Config) (*migrate.Report, error) {
+	r := &migrate.Report{Tables: len(plan.Tables)}
+	srcVer, err := CheckSource(ctx, src, plan, cfg, r)
+	if err != nil {
+		return nil, err
+	}
+	var dstVer string
+	if err := dst.QueryRowContext(ctx, "SELECT VERSION()").Scan(&dstVer); err != nil {
+		return nil, err
+	}
+	switch {
+	case strings.Contains(strings.ToLower(dstVer), "mariadb"):
+		r.Add("Versions", "fail", "MariaDB is not supported as a target by this pipeline")
+	case mysql.VersionNum(dstVer)/100 < mysql.VersionNum(srcVer)/100:
+		r.Add("Versions", "fail", fmt.Sprintf("target (%s) is older than source (%s); downgrades are not supported", dstVer, srcVer))
+	default:
+		r.Add("Versions", "ok", srcVer+" → "+dstVer)
+	}
 
 	var dstDB sql.NullString
 	if err := dst.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&dstDB); err != nil {
@@ -117,7 +138,7 @@ func preflight(ctx context.Context, src, dst *sql.DB, plan *Plan, cfg migrate.Co
 		marks = append(marks, "?")
 	}
 	if len(marks) > 0 {
-		existing, err := queryStrings(ctx, dst, `SELECT table_name FROM information_schema.tables
+		existing, err := QueryStrings(ctx, dst, `SELECT table_name FROM information_schema.tables
 			WHERE table_schema = ? AND table_name IN (`+strings.Join(marks, ",")+`) ORDER BY 1`, names...)
 		if err != nil {
 			return nil, err
@@ -133,16 +154,9 @@ func preflight(ctx context.Context, src, dst *sql.DB, plan *Plan, cfg migrate.Co
 		}
 	}
 
-	if cfg.FenceSource && srcNum < 80022 {
-		r.Add("Read-only cutover", "fail", "making a single database read-only needs MySQL 8.0.22 or newer on the source; turn the option off and stop application writes yourself at cutover")
-	}
-
 	// Objects the pipeline does not carry over. Reported, never silently dropped.
 	r.Add("Not migrated", "warn", "recreate these on the target yourself: user accounts and privileges. Views, routines, triggers and events are created under the migrating account, not their original DEFINER")
 
-	if !mysql.Encrypted(ctx, src) {
-		r.Add("Source encryption", "warn", "the connection is not using TLS; data will cross the network in clear text")
-	}
 	if !mysql.Encrypted(ctx, dst) {
 		r.Add("Target encryption", "warn", "the connection is not using TLS; data will cross the network in clear text")
 	}

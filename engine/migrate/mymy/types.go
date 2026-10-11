@@ -120,9 +120,9 @@ func itoa(n uint64) string {
 	return string(b[i:])
 }
 
-// strings scans every column of a query's rows as text. It suits the SHOW
+// QueryStrings scans every column of a query's rows as text. It suits the SHOW
 // statements, whose column sets differ between server versions.
-func queryStrings(ctx context.Context, q querier, query string, args ...any) ([][]string, error) {
+func QueryStrings(ctx context.Context, q Querier, query string, args ...any) ([][]string, error) {
 	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -151,18 +151,18 @@ func queryStrings(ctx context.Context, q querier, query string, args ...any) ([]
 	return out, rows.Err()
 }
 
-type querier interface {
+type Querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
-// binlogStatus returns the source's current binary log position.
-func binlogStatus(ctx context.Context, q querier) (Position, error) {
+// BinlogStatus returns the source's current binary log position.
+func BinlogStatus(ctx context.Context, q Querier) (Position, error) {
 	// SHOW MASTER STATUS was renamed in MySQL 8.2 and removed in 8.4.
-	rows, err := queryStrings(ctx, q, "SHOW BINARY LOG STATUS")
+	rows, err := QueryStrings(ctx, q, "SHOW BINARY LOG STATUS")
 	if err != nil {
-		rows, err = queryStrings(ctx, q, "SHOW MASTER STATUS")
+		rows, err = QueryStrings(ctx, q, "SHOW MASTER STATUS")
 	}
 	if err != nil {
 		return Position{}, err

@@ -143,13 +143,29 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .table-wrap { overflow-x: auto; }
 table.data { width: 100%; border-collapse: collapse; }
-table.data th, table.data td { text-align: left; padding: 7px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+/* Rows stay on one line and the table scrolls sideways when it is wider
+   than the window; a row never breaks into several lines. Cells that hold
+   prose opt back in to wrapping with the "wrap" class. */
+table.data th, table.data td { text-align: left; padding: 7px 14px; border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
+table.data td { max-width: 560px; overflow: hidden; text-overflow: ellipsis; }
+table.data td.wrap, table.data td:has(pre), table.data td:has(.row-actions) { white-space: normal; overflow: visible; max-width: none; }
+table.data td.pre-line { white-space: pre-line; overflow: visible; max-width: 900px; min-width: 320px; }
+table.data td.center, table.data th.center { text-align: center; }
+table.data.column-editor td { padding: 5px 8px; overflow: visible; }
+table.data.column-editor .input { min-width: 130px; }
+.card { overflow-x: auto; }
+.status { display: inline-flex; align-items: center; gap: 6px; }
+.status .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--text-faint); }
+.status .dot.online { background: #1e9e55; box-shadow: 0 0 0 3px var(--ok-soft); }
+.status .dot.offline { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+.status .dot.pending { background: var(--border-strong); }
+.status-error { color: var(--text-muted); max-width: 260px; overflow: hidden; text-overflow: ellipsis; margin-left: 4px; font-size: 12.5px; }
 table.data th { font-size: 12px; font-weight: 600; color: var(--text-muted); background: var(--bg-subtle); white-space: nowrap; }
 table.data tr:last-child td { border-bottom: none; }
 table.data tbody tr:hover td { background: #fafbfc; }
 table.data td.num, table.data th.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.data td.nowrap { white-space: nowrap; }
-.row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+.row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; }
 .empty { padding: 28px 14px; text-align: center; color: var(--text-muted); }
 .muted { color: var(--text-muted); }
 .faint { color: var(--text-faint); }
@@ -232,6 +248,9 @@ body.dragging-y, body.dragging-y * { cursor: row-resize !important; }
 .popover-anchor { position: relative; }
 .popover { position: absolute; right: 0; top: 32px; width: min(560px, 80vw); z-index: 20; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--radius); box-shadow: var(--shadow-lg); }
 .popover .history { max-height: 50vh; }
+.popover.menu { width: 180px; padding: 4px; display: flex; flex-direction: column; }
+.popover.menu button { border: none; background: none; text-align: left; padding: 7px 10px; border-radius: 4px; cursor: pointer; }
+.popover.menu button:hover { background: var(--bg-muted); }
 .cell-value { max-height: 60vh; overflow: auto; background: var(--bg-subtle); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; white-space: pre-wrap; word-break: break-word; }
 .auth-alt .btn { flex: none; width: auto; }
 .auth-alt span { white-space: nowrap; }

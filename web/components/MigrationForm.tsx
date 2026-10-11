@@ -10,19 +10,27 @@ function parseList(text: string): string[] {
   return text.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
 }
 
+/** Which kinds of target each kind of source can be migrated to. */
+const TARGET_KINDS: Record<string, string[]> = {
+  postgres: ["postgres"],
+  mysql: ["mysql", "postgres"],
+};
+
 export default function MigrationForm({ connections, onClose, onCreated }: {
   connections: Connection[]; onClose: () => void; onCreated: (job: Migration) => void;
 }) {
-  // Migrations run between two databases of the same kind.
+  // Migrations run between two databases of the same kind, or from MySQL
+  // to PostgreSQL.
   const candidates = connections.filter((c) => c.kind === "postgres" || c.kind === "mysql");
   const [name, setName] = useState("");
   const [sourceId, setSourceId] = useState(candidates[0]?.id ?? "");
   const source = candidates.find((c) => c.id === sourceId);
-  const targets = candidates.filter((c) => c.kind === source?.kind && c.id !== sourceId);
+  const targets = candidates.filter((c) => c.id !== sourceId && (TARGET_KINDS[source?.kind ?? ""] ?? []).includes(c.kind));
   const [chosenTarget, setTargetId] = useState("");
   // Fall back to the first valid target when the source changes kind.
   const targetId = targets.some((c) => c.id === chosenTarget) ? chosenTarget : targets[0]?.id ?? "";
   const mysql = source?.kind === "mysql";
+  const crossEngine = !!source && !!targetId && candidates.find((c) => c.id === targetId)?.kind !== source.kind;
   // What to migrate: the whole database, selected schemas, or selected tables.
   const [scope, setScope] = useState<"database" | "schema" | "table">("database");
   const [schemas, setSchemas] = useState("");
@@ -80,7 +88,14 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
       <form id="migration-form" onSubmit={submit}>
         {error && <Banner tone="error">{error}</Banner>}
         {!targetId && (
-          <Banner tone="warn">A migration needs two connections of the same kind (PostgreSQL or MySQL): a source and an empty target.</Banner>
+          <Banner tone="warn">A migration needs a source and an empty target: two PostgreSQL connections, two MySQL connections, or MySQL to PostgreSQL.</Banner>
+        )}
+        {crossEngine && (
+          <Banner tone="info">
+            MySQL to PostgreSQL translates the schema: tables, keys, indexes and foreign keys are recreated with
+            equivalent types in the target&apos;s <span className="mono">public</span> schema. Views, routines and triggers are not
+            translated. The preflight check lists every difference before anything is changed.
+          </Banner>
         )}
         <p className="hint" style={{ marginBottom: 12 }}>
           Creating a migration changes nothing on either database. Run the preflight check, then start it.

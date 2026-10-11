@@ -32,6 +32,15 @@ type Column struct {
 	Generated bool
 	// Binary columns hold bytes rather than text and are transferred as such.
 	Binary bool
+
+	// The rest describes the column for pipelines that translate the
+	// schema to another database.
+	ColumnType    string // full type, for example "decimal(12,2)" or "enum('a','b')"
+	Charset       string // character set of text columns, lower case
+	Nullable      bool
+	Default       *string // nil when the column has no default
+	Extra         string  // information_schema extra, lower case
+	AutoIncrement bool
 }
 
 // Table is a source table that will be copied and replicated.
@@ -86,7 +95,7 @@ var binaryTypes = map[string]bool{
 var definerRe = regexp.MustCompile("(?i)\\s+DEFINER\\s*=\\s*(`[^`]*`|'[^']*'|[^@\\s]+)@(`[^`]*`|'[^']*'|\\S+)")
 
 // BuildPlan reads the source catalog for the connection's database.
-func BuildPlan(ctx context.Context, src querier, database string, cfg migrate.Config) (*Plan, error) {
+func BuildPlan(ctx context.Context, src Querier, database string, cfg migrate.Config) (*Plan, error) {
 	p := &Plan{Database: database, byName: map[string]*Table{}}
 	excluded := map[string]bool{}
 	for _, e := range cfg.ExcludeTables {
@@ -144,7 +153,8 @@ func BuildPlan(ctx context.Context, src querier, database string, cfg migrate.Co
 	sort.Strings(p.Missing)
 
 	rows, err = src.QueryContext(ctx, `SELECT table_name, column_name, LOWER(data_type), column_type LIKE '%unsigned%',
-			extra LIKE '%GENERATED%', column_key = 'PRI'
+			extra LIKE '%VIRTUAL GENERATED%' OR extra LIKE '%STORED GENERATED%', column_key = 'PRI',
+			column_type, LOWER(COALESCE(character_set_name, '')), is_nullable = 'YES', column_default, LOWER(extra)
 		FROM information_schema.columns WHERE table_schema = ? ORDER BY table_name, ordinal_position`, database)
 	if err != nil {
 		return nil, err
@@ -153,10 +163,16 @@ func BuildPlan(ctx context.Context, src querier, database string, cfg migrate.Co
 		var table string
 		var c Column
 		var pk bool
-		if err := rows.Scan(&table, &c.Name, &c.DataType, &c.Unsigned, &c.Generated, &pk); err != nil {
+		var def sql.NullString
+		if err := rows.Scan(&table, &c.Name, &c.DataType, &c.Unsigned, &c.Generated, &pk,
+			&c.ColumnType, &c.Charset, &c.Nullable, &def, &c.Extra); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		if def.Valid {
+			c.Default = &def.String
+		}
+		c.AutoIncrement = strings.Contains(c.Extra, "auto_increment")
 		c.Binary = binaryTypes[c.DataType]
 		if t := p.byName[table]; t != nil {
 			if pk {
@@ -196,10 +212,13 @@ func BuildPlan(ctx context.Context, src querier, database string, cfg migrate.Co
 	return p, nil
 }
 
+// Table returns the planned table with that name, or nil.
+func (p *Plan) Table(name string) *Table { return p.byName[name] }
+
 // showCreate runs SHOW CREATE <kind> and returns the statement, which sits in
 // a different column for each kind of object.
-func showCreate(ctx context.Context, src querier, kind, name string, column int) (string, error) {
-	rows, err := queryStrings(ctx, src, "SHOW CREATE "+kind+" "+mysql.Quote(name))
+func showCreate(ctx context.Context, src Querier, kind, name string, column int) (string, error) {
+	rows, err := QueryStrings(ctx, src, "SHOW CREATE "+kind+" "+mysql.Quote(name))
 	if err != nil {
 		return "", err
 	}
@@ -216,9 +235,9 @@ func (p *Plan) portable(ddl string) string {
 	return strings.ReplaceAll(ddl, mysql.Quote(p.Database)+".", "")
 }
 
-func (p *Plan) loadViews(ctx context.Context, src querier) error {
+func (p *Plan) loadViews(ctx context.Context, src Querier) error {
 	var names []string
-	rows, err := queryStrings(ctx, src, `SELECT table_name FROM information_schema.views WHERE table_schema = ? ORDER BY 1`, p.Database)
+	rows, err := QueryStrings(ctx, src, `SELECT table_name FROM information_schema.views WHERE table_schema = ? ORDER BY 1`, p.Database)
 	if err != nil {
 		return err
 	}
@@ -236,8 +255,8 @@ func (p *Plan) loadViews(ctx context.Context, src querier) error {
 	return nil
 }
 
-func (p *Plan) loadRoutines(ctx context.Context, src querier) error {
-	rows, err := queryStrings(ctx, src, `SELECT routine_name, routine_type FROM information_schema.routines WHERE routine_schema = ? ORDER BY 1`, p.Database)
+func (p *Plan) loadRoutines(ctx context.Context, src Querier) error {
+	rows, err := QueryStrings(ctx, src, `SELECT routine_name, routine_type FROM information_schema.routines WHERE routine_schema = ? ORDER BY 1`, p.Database)
 	if err != nil {
 		return err
 	}
@@ -261,8 +280,8 @@ func (p *Plan) loadRoutines(ctx context.Context, src querier) error {
 // effects of a trigger are already in the stream, so a trigger created
 // earlier would apply them a second time; a scheduled event would start
 // changing data on the target while it is still a replica.
-func (p *Plan) loadTriggersAndEvents(ctx context.Context, src querier, tableScope bool) error {
-	rows, err := queryStrings(ctx, src, `SELECT trigger_name, event_object_table FROM information_schema.triggers WHERE trigger_schema = ? ORDER BY 1`, p.Database)
+func (p *Plan) loadTriggersAndEvents(ctx context.Context, src Querier, tableScope bool) error {
+	rows, err := QueryStrings(ctx, src, `SELECT trigger_name, event_object_table FROM information_schema.triggers WHERE trigger_schema = ? ORDER BY 1`, p.Database)
 	if err != nil {
 		return err
 	}
@@ -281,7 +300,7 @@ func (p *Plan) loadTriggersAndEvents(ctx context.Context, src querier, tableScop
 	if tableScope {
 		return nil
 	}
-	rows, err = queryStrings(ctx, src, `SELECT event_name FROM information_schema.events WHERE event_schema = ? ORDER BY 1`, p.Database)
+	rows, err = QueryStrings(ctx, src, `SELECT event_name FROM information_schema.events WHERE event_schema = ? ORDER BY 1`, p.Database)
 	if err != nil {
 		return err
 	}

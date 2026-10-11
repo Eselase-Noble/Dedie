@@ -20,11 +20,11 @@ import (
 	"dedie/engine/migrate"
 )
 
-// Why the stream loop returned.
+// Why Stream returned.
 const (
-	stopPause   = "pause"
-	stopAbort   = "abort"
-	stopCutover = "cutover"
+	StopPause   = "pause"
+	StopAbort   = "abort"
+	StopCutover = "cutover"
 )
 
 // insertChunk caps the rows of one row event sent in a single INSERT.
@@ -44,48 +44,53 @@ type streamer struct {
 	plan   *Plan
 	srcCfg connector.Config
 
-	mon *sql.DB   // source: binary log position, fencing
-	dst *sql.Conn // target: one connection, so transactions stay together
+	mon    *sql.DB // source: binary log position, fencing
+	target Applier
 
-	pos   Position // end of the last event read
-	inTx  bool     // inside a source transaction
-	wrote bool     // a target transaction is open
+	pos  Position // end of the last event read
+	inTx bool     // inside a source transaction
 
 	cutting     bool
 	cutTarget   Position
 	cutDeadline time.Time
 }
 
-// stream runs until the operator pauses, aborts or the cutover drain
-// completes, and returns which of those happened.
-func stream(ctx context.Context, jobID string, cfg migrate.Config, st *State, plan *Plan, srcCfg, dstCfg connector.Config, rep migrate.Reporter) (string, error) {
-	s := &streamer{jobID: jobID, cfg: cfg, st: st, rep: rep, plan: plan, srcCfg: srcCfg}
-	bg := context.WithoutCancel(ctx)
+// Applier writes the changes read from the binary log to a target database.
+// The reader decides what happened and in which order; the applier knows how
+// to express it for one kind of target. Row values arrive as decoded by the
+// binary log reader and are described by the table's columns.
+type Applier interface {
+	// Checkpoint returns the position stored by the last commit, or a zero
+	// Position when the job has not committed anything yet.
+	Checkpoint(ctx context.Context) (Position, error)
+	Insert(ctx context.Context, t *Table, rows [][]any) error
+	Update(ctx context.Context, t *Table, before, after []any) error
+	Delete(ctx context.Context, t *Table, row []any) error
+	Truncate(ctx context.Context, t *Table) error
+	// Commit ends the target transaction and stores pos with it, atomically.
+	// It reports false when the source transaction touched nothing that is
+	// being migrated, in which case there was nothing to commit.
+	Commit(ctx context.Context, pos Position) (bool, error)
+	// Rollback discards an open target transaction.
+	Rollback(ctx context.Context)
+	Close()
+}
 
-	// Foreign-key checks stay on: InnoDB does not log the rows changed by a
-	// cascading action, so the target has to carry out the cascade itself.
-	dstDB, err := mysql.Open(ctx, dstCfg, targetParams(nil), mysql.FoundRows)
-	if err != nil {
-		return "", fmt.Errorf("target: %w", err)
-	}
-	defer dstDB.Close()
-	if s.dst, err = dstDB.Conn(ctx); err != nil {
-		return "", err
-	}
-	defer s.dst.Close()
-	if _, err := s.dst.ExecContext(ctx, checkpointDDL); err != nil {
-		return "", fmt.Errorf("create checkpoint table: %s", message(err))
-	}
+// Stream replays the source's binary log into target until the operator
+// pauses, aborts or the cutover drain completes, and returns which of those
+// happened.
+func Stream(ctx context.Context, jobID string, cfg migrate.Config, st *State, plan *Plan, srcCfg connector.Config, target Applier, rep migrate.Reporter) (string, error) {
+	s := &streamer{jobID: jobID, cfg: cfg, st: st, rep: rep, plan: plan, srcCfg: srcCfg, target: target}
+	bg := context.WithoutCancel(ctx)
 
 	// Resume from the position the target itself recorded, if any.
 	s.pos = st.Start
-	var file string
-	var pos uint64
-	err = s.dst.QueryRowContext(ctx, "SELECT binlog_file, binlog_pos FROM `"+checkpointTable+"` WHERE job_id = ?", jobID).Scan(&file, &pos)
-	if err == nil && file != "" {
-		s.pos = Position{File: file, Pos: uint32(pos)}
-	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	saved, err := target.Checkpoint(ctx)
+	if err != nil {
 		return "", err
+	}
+	if saved.File != "" {
+		s.pos = saved
 	}
 
 	if s.mon, err = mysql.Open(ctx, srcCfg, nil); err != nil {
@@ -125,9 +130,7 @@ func stream(ctx context.Context, jobID string, cfg migrate.Config, st *State, pl
 	}
 
 	reason, err := s.loop(ctx, events)
-	if s.wrote {
-		s.dst.ExecContext(bg, "ROLLBACK")
-	}
+	target.Rollback(bg)
 	s.saveProgress(bg)
 	return reason, err
 }
@@ -140,9 +143,9 @@ func (s *streamer) loop(ctx context.Context, events *replication.BinlogStreamer)
 			s.saveProgress(ctx)
 			switch s.rep.Desired() {
 			case "pause":
-				return stopPause, nil
+				return StopPause, nil
 			case "abort":
-				return stopAbort, nil
+				return StopAbort, nil
 			case "cutover":
 				if !s.cutting {
 					if err := s.beginCutover(ctx); err != nil {
@@ -155,7 +158,7 @@ func (s *streamer) loop(ctx context.Context, events *replication.BinlogStreamer)
 			}
 		}
 		if s.cutting && !s.inTx && s.pos.reached(s.cutTarget) {
-			return stopCutover, nil
+			return StopCutover, nil
 		}
 
 		rctx, cancel := context.WithTimeout(ctx, time.Second)
@@ -178,7 +181,7 @@ func (s *streamer) loop(ctx context.Context, events *replication.BinlogStreamer)
 
 // saveProgress refreshes the lag figure and persists the state.
 func (s *streamer) saveProgress(ctx context.Context) {
-	if cur, err := binlogStatus(ctx, s.mon); err == nil {
+	if cur, err := BinlogStatus(ctx, s.mon); err == nil {
 		s.st.SourceLSN = cur.String()
 		s.st.LagBytes = s.lag(ctx, cur)
 	}
@@ -196,7 +199,7 @@ func (s *streamer) lag(ctx context.Context, cur Position) int64 {
 		return 0
 	}
 	// The source has moved on to later files: add up what lies between.
-	logs, err := queryStrings(ctx, s.mon, "SHOW BINARY LOGS")
+	logs, err := QueryStrings(ctx, s.mon, "SHOW BINARY LOGS")
 	if err != nil {
 		return 0
 	}
@@ -271,33 +274,18 @@ func (s *streamer) advance(h *replication.EventHeader) {
 	}
 }
 
-func (s *streamer) begin(ctx context.Context) error {
-	if s.wrote {
-		return nil
-	}
-	if _, err := s.dst.ExecContext(ctx, "BEGIN"); err != nil {
-		return fmt.Errorf("begin target transaction: %s", message(err))
-	}
-	s.wrote = true
-	return nil
-}
-
 // commit ends the target transaction together with the checkpoint, so after
 // a crash the target itself knows which source transaction it applied last.
 func (s *streamer) commit(ctx context.Context, h *replication.EventHeader) error {
 	s.inTx = false
-	if !s.wrote {
-		return nil
+	applied, err := s.target.Commit(ctx, s.pos)
+	if err != nil {
+		return err
 	}
-	if _, err := s.dst.ExecContext(ctx, checkpointUpsert, s.jobID, s.pos.File, uint64(s.pos.Pos)); err != nil {
-		return fmt.Errorf("record checkpoint: %s", message(err))
+	if applied {
+		s.st.TxApplied++
+		s.st.LastCommitTime = time.Unix(int64(h.Timestamp), 0).UTC()
 	}
-	if _, err := s.dst.ExecContext(ctx, "COMMIT"); err != nil {
-		return fmt.Errorf("commit on target: %s", message(err))
-	}
-	s.wrote = false
-	s.st.TxApplied++
-	s.st.LastCommitTime = time.Unix(int64(h.Timestamp), 0).UTC()
 	return nil
 }
 
@@ -306,26 +294,12 @@ func (s *streamer) applyRows(ctx context.Context, t *Table, typ replication.Even
 		return fmt.Errorf("table %s has %d columns in the binary log but had %d when the migration started; "+
 			"schema changes on the source are not replicated", t.Name, e.ColumnCount, len(t.Cols))
 	}
-	if err := s.begin(ctx); err != nil {
-		return err
-	}
 	switch typ {
 	case replication.WRITE_ROWS_EVENTv0, replication.WRITE_ROWS_EVENTv1, replication.WRITE_ROWS_EVENTv2:
-		names := strings.Join(t.writable(), ", ")
-		tuple := "(" + strings.TrimSuffix(strings.Repeat("?,", len(t.writable())), ",") + ")"
 		for start := 0; start < len(e.Rows); start += insertChunk {
 			chunk := e.Rows[start:min(start+insertChunk, len(e.Rows))]
-			var args []any
-			for _, row := range chunk {
-				for i, c := range t.Cols {
-					if !c.Generated {
-						args = append(args, binlogValue(c, row[i]))
-					}
-				}
-			}
-			stmt := "INSERT INTO " + t.QName() + " (" + names + ") VALUES " + strings.TrimSuffix(strings.Repeat(tuple+",", len(chunk)), ",")
-			if _, err := s.dst.ExecContext(ctx, stmt, args...); err != nil {
-				return fmt.Errorf("apply insert on %s: %s", t.Name, message(err))
+			if err := s.target.Insert(ctx, t, chunk); err != nil {
+				return fmt.Errorf("apply insert on %s: %w", t.Name, err)
 			}
 			s.st.RowsApplied += int64(len(chunk))
 		}
@@ -333,84 +307,24 @@ func (s *streamer) applyRows(ctx context.Context, t *Table, typ replication.Even
 	case replication.UPDATE_ROWS_EVENTv0, replication.UPDATE_ROWS_EVENTv1, replication.UPDATE_ROWS_EVENTv2:
 		// Rows come in pairs: the image before the change, then after.
 		for i := 0; i+1 < len(e.Rows); i += 2 {
-			before, after := e.Rows[i], e.Rows[i+1]
-			var sets []string
-			var args []any
-			for j, c := range t.Cols {
-				if !c.Generated {
-					sets = append(sets, mysql.Quote(c.Name)+" = ?")
-					args = append(args, binlogValue(c, after[j]))
-				}
+			if err := s.target.Update(ctx, t, e.Rows[i], e.Rows[i+1]); err != nil {
+				return fmt.Errorf("apply update on %s: %w", t.Name, err)
 			}
-			where, args := t.where(before, args)
-			res, err := s.dst.ExecContext(ctx, "UPDATE "+t.QName()+" SET "+strings.Join(sets, ", ")+" WHERE "+where, args...)
-			if err != nil {
-				return fmt.Errorf("apply update on %s: %s", t.Name, message(err))
-			}
-			s.expectOne(res, "update", t)
+			s.st.RowsApplied++
 		}
 
 	case replication.DELETE_ROWS_EVENTv0, replication.DELETE_ROWS_EVENTv1, replication.DELETE_ROWS_EVENTv2:
 		for _, row := range e.Rows {
-			where, args := t.where(row, nil)
-			res, err := s.dst.ExecContext(ctx, "DELETE FROM "+t.QName()+" WHERE "+where, args...)
-			if err != nil {
-				return fmt.Errorf("apply delete on %s: %s", t.Name, message(err))
+			if err := s.target.Delete(ctx, t, row); err != nil {
+				return fmt.Errorf("apply delete on %s: %w", t.Name, err)
 			}
-			s.expectOne(res, "delete", t)
+			s.st.RowsApplied++
 		}
 
 	default:
 		return fmt.Errorf("unsupported row event %s on table %s; if binlog_row_value_options is set to PARTIAL_JSON on the source, unset it", typ, t.Name)
 	}
 	return nil
-}
-
-// where builds the row lookup from a before-image: the primary key when
-// there is one, otherwise every column.
-func (t *Table) where(row []any, args []any) (string, []any) {
-	var conds []string
-	add := func(c Column, v any) {
-		name := mysql.Quote(c.Name)
-		switch {
-		case v == nil:
-			conds = append(conds, name+" IS NULL")
-		case c.DataType == "json":
-			conds = append(conds, name+" = CAST(? AS JSON)")
-			args = append(args, binlogValue(c, v))
-		default:
-			conds = append(conds, name+" = ?")
-			args = append(args, binlogValue(c, v))
-		}
-	}
-	if len(t.PK) > 0 {
-		for _, i := range t.PK {
-			add(t.Cols[i], row[i])
-		}
-		return strings.Join(conds, " AND "), args
-	}
-	for i, c := range t.Cols {
-		if !c.Generated {
-			add(c, row[i])
-		}
-	}
-	// Identical rows are interchangeable; change exactly one of them.
-	return strings.Join(conds, " AND ") + " LIMIT 1", args
-}
-
-// expectOne counts statements that did not hit exactly one row. That means
-// the target has drifted from the source, for example because something
-// else wrote to it.
-func (s *streamer) expectOne(res sql.Result, op string, t *Table) {
-	s.st.RowsApplied++
-	n, err := res.RowsAffected()
-	if err != nil || n == 1 {
-		return
-	}
-	s.st.Anomalies++
-	if s.st.Anomalies <= 20 {
-		s.rep.Event("warn", fmt.Sprintf("%s on %s matched %d rows on the target (expected 1)", op, t.Name, n))
-	}
 }
 
 // schemaChange handles statements logged for the migrated database.
@@ -422,10 +336,8 @@ func (s *streamer) schemaChange(ctx context.Context, query string) error {
 		if t == nil {
 			return nil
 		}
-		for _, stmt := range []string{"SET SESSION foreign_key_checks = 0", "TRUNCATE TABLE " + t.QName(), "SET SESSION foreign_key_checks = 1"} {
-			if _, err := s.dst.ExecContext(ctx, stmt); err != nil {
-				return fmt.Errorf("apply truncate on %s: %s", t.Name, message(err))
-			}
+		if err := s.target.Truncate(ctx, t); err != nil {
+			return fmt.Errorf("apply truncate on %s: %w", t.Name, err)
 		}
 		return nil
 	}
@@ -444,7 +356,7 @@ func (s *streamer) schemaChange(ctx context.Context, query string) error {
 // commit has been applied.
 func (s *streamer) beginCutover(ctx context.Context) error {
 	if s.cfg.FenceSource && !s.st.Fenced {
-		if err := fence(ctx, s.mon, s.plan.Database); err != nil {
+		if err := Fence(ctx, s.mon, s.plan.Database); err != nil {
 			s.rep.Event("error", "cutover cancelled: could not make the source read-only: "+message(err))
 			s.rep.SetDesired("run")
 			return nil
@@ -453,7 +365,7 @@ func (s *streamer) beginCutover(ctx context.Context) error {
 		s.rep.SaveState(*s.st)
 		s.rep.Event("info", "source database is now read-only")
 	}
-	target, err := binlogStatus(ctx, s.mon)
+	target, err := BinlogStatus(ctx, s.mon)
 	if err != nil {
 		return fmt.Errorf("read the source's binary log position: %s", message(err))
 	}
@@ -467,7 +379,7 @@ func (s *streamer) beginCutover(ctx context.Context) error {
 func (s *streamer) cancelCutover(ctx context.Context, why string) {
 	s.cutting = false
 	if s.st.Fenced {
-		if err := unfence(ctx, s.srcCfg); err != nil {
+		if err := Unfence(ctx, s.srcCfg); err != nil {
 			s.rep.Event("error", "could not make the source writable again: "+message(err))
 		} else {
 			s.st.Fenced = false
