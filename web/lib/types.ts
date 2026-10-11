@@ -144,6 +144,7 @@ export type Validation = "checksum" | "count" | "none";
 
 export interface MigrationConfig {
   schemas: string[] | null;
+  tables?: string[] | null;
   exclude_tables: string[] | null;
   snapshot_workers: number;
   fence_source: boolean;

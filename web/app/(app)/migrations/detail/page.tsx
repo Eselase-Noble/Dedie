@@ -139,8 +139,8 @@ function Detail({ id }: { id: string }) {
               ? <li>Make the source database read-only and disconnect its client sessions.</li>
               : <li>Assume writes to the source have already been stopped. <strong>Stop your application first</strong>; this migration is not configured to fence the source.</li>}
             <li>Wait for the remaining changes to be applied to the target.</li>
-            <li>Synchronize sequences and validate every table ({job.config.validation || "checksum"}).</li>
-            <li>Create triggers, refresh statistics and remove the replication slot.</li>
+            <li>Synchronize sequences and auto-increment counters, then validate every table ({job.config.validation || "checksum"}).</li>
+            <li>Create triggers, refresh statistics and remove what the migration left on both servers.</li>
           </ol>
           <p>
             If validation finds a difference, or the stream does not drain in time, cutover is cancelled
@@ -158,8 +158,8 @@ function Detail({ id }: { id: string }) {
       body: (
         <>
           <p>
-            Replication stops and the replication slot and publication are removed from the source. The source
-            database keeps running normally.
+            Replication stops and anything the migration created on the source (for PostgreSQL, the replication
+            slot and publication) is removed. The source database keeps running normally.
           </p>
           <p>
             Tables already copied to the target are left in place for you to inspect or drop. An aborted migration
@@ -229,8 +229,8 @@ function Detail({ id }: { id: string }) {
         <Stepper job={job} />
         <div className="figures">
           <Figure label="Replication lag">{job.phase === "streaming" || job.phase === "cutover" ? formatBytes(st.lag_bytes ?? 0) : "—"}</Figure>
-          <Figure label="Applied LSN"><span className="mono">{st.applied_lsn || "—"}</span></Figure>
-          <Figure label="Source LSN"><span className="mono">{st.source_lsn || "—"}</span></Figure>
+          <Figure label="Applied position"><span className="mono">{st.applied_lsn || "—"}</span></Figure>
+          <Figure label="Source position"><span className="mono">{st.source_lsn || "—"}</span></Figure>
           <Figure label="Transactions applied">{formatNumber(st.tx_applied ?? 0)}</Figure>
           <Figure label="Row changes applied">{formatNumber(st.rows_applied ?? 0)}</Figure>
           <Figure label="Apply anomalies">
@@ -239,7 +239,7 @@ function Detail({ id }: { id: string }) {
           <Figure label="Last applied commit">{formatTime(st.last_commit_time)}</Figure>
           <Figure label="Source version"><span title={st.source_version}>{st.source_version || "—"}</span></Figure>
           <Figure label="Target version"><span title={st.target_version}>{st.target_version || "—"}</span></Figure>
-          <Figure label="Replication slot"><span className="mono">{st.slot || "—"}</span></Figure>
+          {st.slot && <Figure label="Replication slot"><span className="mono">{st.slot}</span></Figure>}
         </div>
       </div>
 
@@ -304,14 +304,18 @@ function Detail({ id }: { id: string }) {
       <div className="card">
         <div className="card-head"><h2>Configuration</h2></div>
         <div className="figures" style={{ borderTop: "none" }}>
+          <Figure label="Level">{job.config.tables?.length ? "table" : job.config.schemas?.length ? "schema" : "database"}</Figure>
           <Figure label="Schemas">{job.config.schemas?.length ? job.config.schemas.join(", ") : "all"}</Figure>
+          <Figure label="Tables">
+            <span title={job.config.tables?.join(", ")}>{job.config.tables?.length ? job.config.tables.join(", ") : "all"}</span>
+          </Figure>
           <Figure label="Excluded tables">
             <span title={job.config.exclude_tables?.join(", ")}>{job.config.exclude_tables?.length ? job.config.exclude_tables.join(", ") : "none"}</span>
           </Figure>
           <Figure label="Snapshot workers">{job.config.snapshot_workers || 4}</Figure>
           <Figure label="Validation">{job.config.validation || "checksum"}</Figure>
           <Figure label="Fence source at cutover">{fenced ? "yes" : "no"}</Figure>
-          <Figure label="Keep replication slot">{job.config.keep_slot ? "yes" : "no"}</Figure>
+          {job.kind === "postgres-postgres" && <Figure label="Keep replication slot">{job.config.keep_slot ? "yes" : "no"}</Figure>}
           <Figure label="Cutover timeout">{job.config.cutover_timeout_seconds || 300}s</Figure>
         </div>
       </div>

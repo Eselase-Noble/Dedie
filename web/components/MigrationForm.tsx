@@ -13,12 +13,20 @@ function parseList(text: string): string[] {
 export default function MigrationForm({ connections, onClose, onCreated }: {
   connections: Connection[]; onClose: () => void; onCreated: (job: Migration) => void;
 }) {
-  // Only PostgreSQL to PostgreSQL migrations exist in this version.
-  const candidates = connections.filter((c) => c.kind === "postgres");
+  // Migrations run between two databases of the same kind.
+  const candidates = connections.filter((c) => c.kind === "postgres" || c.kind === "mysql");
   const [name, setName] = useState("");
   const [sourceId, setSourceId] = useState(candidates[0]?.id ?? "");
-  const [targetId, setTargetId] = useState(candidates[1]?.id ?? "");
+  const source = candidates.find((c) => c.id === sourceId);
+  const targets = candidates.filter((c) => c.kind === source?.kind && c.id !== sourceId);
+  const [chosenTarget, setTargetId] = useState("");
+  // Fall back to the first valid target when the source changes kind.
+  const targetId = targets.some((c) => c.id === chosenTarget) ? chosenTarget : targets[0]?.id ?? "";
+  const mysql = source?.kind === "mysql";
+  // What to migrate: the whole database, selected schemas, or selected tables.
+  const [scope, setScope] = useState<"database" | "schema" | "table">("database");
   const [schemas, setSchemas] = useState("");
+  const [tables, setTables] = useState("");
   const [exclude, setExclude] = useState("");
   const [workers, setWorkers] = useState(4);
   const [validation, setValidation] = useState<Validation>("checksum");
@@ -38,7 +46,8 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
         source_id: sourceId,
         target_id: targetId,
         config: {
-          schemas: parseList(schemas),
+          schemas: scope === "schema" && !mysql ? parseList(schemas) : [],
+          tables: scope === "table" ? parseList(tables) : [],
           exclude_tables: parseList(exclude),
           snapshot_workers: workers,
           fence_source: fence,
@@ -62,7 +71,7 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
       footer={
         <>
           <button className="btn" type="button" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="btn primary" type="submit" form="migration-form" disabled={busy || candidates.length < 2}>
+          <button className="btn primary" type="submit" form="migration-form" disabled={busy || !targetId}>
             {busy ? "Creating…" : "Create migration"}
           </button>
         </>
@@ -70,8 +79,8 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
     >
       <form id="migration-form" onSubmit={submit}>
         {error && <Banner tone="error">{error}</Banner>}
-        {candidates.length < 2 && (
-          <Banner tone="warn">A migration needs two PostgreSQL connections: a source and an empty target.</Banner>
+        {!targetId && (
+          <Banner tone="warn">A migration needs two connections of the same kind (PostgreSQL or MySQL): a source and an empty target.</Banner>
         )}
         <p className="hint" style={{ marginBottom: 12 }}>
           Creating a migration changes nothing on either database. Run the preflight check, then start it.
@@ -81,21 +90,42 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} required autoFocus
               placeholder="orders database: 13 to 17" />
           </Field>
-          <Field label="Source" hint="Stays online. Needs wal_level = logical and a role with REPLICATION.">
+          <Field label="Source" hint={mysql ? "Stays online. Needs binary logging in ROW format and an account with RELOAD, REPLICATION SLAVE and REPLICATION CLIENT." : "Stays online. Needs wal_level = logical and a role with REPLICATION."}>
             <select className="select" value={sourceId} onChange={(e) => setSourceId(e.target.value)} required>
-              {candidates.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.database})</option>)}
+              {candidates.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.kind}, {c.database})</option>)}
             </select>
           </Field>
           <Field label="Target" hint="Must not already contain the tables being migrated.">
             <select className="select" value={targetId} onChange={(e) => setTargetId(e.target.value)} required>
-              {candidates.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.database})</option>)}
+              {targets.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.kind}, {c.database})</option>)}
             </select>
           </Field>
-          <Field label="Schemas" hint="Comma separated. Leave empty to migrate every schema.">
-            <input className="input" value={schemas} onChange={(e) => setSchemas(e.target.value)} placeholder="public, billing" />
+          <Field label="Level" className="span2"
+            hint={scope === "database"
+              ? "Everything in the source connection's database is migrated."
+              : scope === "schema"
+                ? "Everything in the schemas you list is migrated."
+                : "Only the tables you list are migrated, with their indexes, constraints and triggers. Views and other standalone objects are left out."}>
+            <select className="select" value={mysql && scope === "schema" ? "database" : scope}
+              onChange={(e) => setScope(e.target.value as "database" | "schema" | "table")}>
+              <option value="database">Database: everything</option>
+              {!mysql && <option value="schema">Schema: selected schemas</option>}
+              <option value="table">Table: selected tables</option>
+            </select>
           </Field>
-          <Field label="Excluded tables" hint="Comma separated schema.table names.">
-            <input className="input" value={exclude} onChange={(e) => setExclude(e.target.value)} placeholder="public.sessions" />
+          {scope === "schema" && !mysql && (
+            <Field label="Schemas" hint="Comma separated.">
+              <input className="input" value={schemas} onChange={(e) => setSchemas(e.target.value)} placeholder="public, billing" required />
+            </Field>
+          )}
+          {scope === "table" && (
+            <Field label="Tables" hint={mysql ? "Comma separated table names." : "Comma separated schema.table names."}>
+              <input className="input" value={tables} onChange={(e) => setTables(e.target.value)}
+                placeholder={mysql ? "orders, order_items" : "public.orders, public.order_items"} required />
+            </Field>
+          )}
+          <Field label="Excluded tables" hint={mysql ? "Comma separated table names. The source connection's database is migrated." : "Comma separated schema.table names."}>
+            <input className="input" value={exclude} onChange={(e) => setExclude(e.target.value)} placeholder={mysql ? "sessions, audit_trail" : "public.sessions"} />
           </Field>
           <Field label="Snapshot workers" hint="Tables copied in parallel during the initial copy (1 to 16).">
             <input className="input" type="number" min={1} max={16} value={workers} onChange={(e) => setWorkers(Number(e.target.value))} />
@@ -115,14 +145,14 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
               label="Fence the source at cutover"
               checked={fence}
               onChange={setFence}
-              hint="At cutover the source database is made read-only and its client sessions are disconnected, so no write can land after the final sync. The source stays read-only once the migration completes. Leave this off if you will stop application writes yourself."
+              hint={mysql ? "At cutover the source database is made read-only (needs MySQL 8.0.22 or newer), so no write can land after the final sync. It stays read-only once the migration completes. Leave this off if you will stop application writes yourself." : "At cutover the source database is made read-only and its client sessions are disconnected, so no write can land after the final sync. The source stays read-only once the migration completes. Leave this off if you will stop application writes yourself."}
             />
-            <Checkbox
+            {!mysql && <Checkbox
               label="Keep the replication slot after completion"
               checked={keepSlot}
               onChange={setKeepSlot}
               hint="The source retains WAL for a kept slot until you drop it. Leave off unless you have a reason to keep it."
-            />
+            />}
           </div>
         </div>
       </form>

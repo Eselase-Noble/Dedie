@@ -17,19 +17,20 @@ func (c *cli) migrateCreate(args []string) error {
 	fs.StringVar(&in.Name, "name", "", "name for this migration")
 	fs.StringVar(&in.SourceID, "source", "", "source connection")
 	fs.StringVar(&in.TargetID, "target", "", "target connection")
-	schemas := fs.String("schemas", "", "comma-separated schemas to migrate (default: all)")
-	exclude := fs.String("exclude", "", "comma-separated schema.table names to leave out")
+	schemas := fs.String("schemas", "", "schema level: comma-separated schemas to migrate (PostgreSQL)")
+	tables := fs.String("tables", "", "table level: comma-separated tables to migrate (schema.table for PostgreSQL, table for MySQL)")
+	exclude := fs.String("exclude", "", "comma-separated tables to leave out")
 	fs.IntVar(&in.Config.SnapshotWorkers, "workers", 4, "tables copied in parallel during the initial copy")
 	fs.StringVar(&in.Config.Validation, "validation", "checksum", "cutover validation: checksum, count or none")
 	fs.BoolVar(&in.Config.FenceSource, "fence", false, "at cutover, make the source read-only and disconnect its clients")
 	fs.BoolVar(&in.Config.KeepSlot, "keep-slot", false, "keep the replication slot on the source after completion")
 	fs.Parse(args)
-	in.Config.Schemas, in.Config.ExcludeTables = splitList(*schemas), splitList(*exclude)
+	in.Config.Schemas, in.Config.Tables, in.Config.ExcludeTables = splitList(*schemas), splitList(*tables), splitList(*exclude)
 	j, err := c.app.CreateMigration(c.ctx, c.actor, in)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Created migration %s. Next: dedie migrate preflight %s\n", j.ID, j.ID)
+	fmt.Printf("Created migration %s (%s level). Next: dedie migrate preflight %s\n", j.ID, in.Config.Scope(), j.ID)
 	return nil
 }
 

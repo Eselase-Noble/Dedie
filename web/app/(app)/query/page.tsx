@@ -126,7 +126,7 @@ export default function QueryPage() {
             <SchemaTree
               key={connId}
               catalog={catalog}
-              onPick={(schema, table) => setSql(`SELECT * FROM ${quoteIdent(schema)}.${quoteIdent(table)} LIMIT 100`)}
+              onPick={(schema, table) => setSql(`SELECT * FROM ${quoteIdent(schema, connection?.kind)}.${quoteIdent(table, connection?.kind)} LIMIT 100`)}
             />
           )}
         </div>
