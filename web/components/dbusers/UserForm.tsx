@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
 import type { AccountChange, Connection, DbAccount } from "@/lib/types";
 import { Banner, Checkbox, Field, Modal } from "@/components/ui";
+import { copyText } from "@/lib/desktop";
 
 /** A random password of letters and digits that is safe to paste anywhere. */
 function generatePassword(): string {
@@ -96,7 +97,7 @@ export default function UserForm({ connection, existing, roles, onClose, onSaved
             <input className="input mono" value={password} onChange={(e) => setPassword(e.target.value)} required={!existing && canLogin}
               minLength={password ? 8 : undefined} autoComplete="off" spellCheck={false} />
             <button className="btn" type="button" onClick={() => setPassword(generatePassword())}>Generate</button>
-            {password && <button className="btn" type="button" onClick={() => void navigator.clipboard?.writeText(password)}>Copy</button>}
+            {password && <button className="btn" type="button" onClick={() => copyText(password)}>Copy</button>}
           </div>
         </Field>
         <Checkbox label="May sign in" checked={canLogin} onChange={setCanLogin}

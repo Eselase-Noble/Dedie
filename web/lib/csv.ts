@@ -1,3 +1,4 @@
+import { desktop } from "./desktop";
 import type { ResultSet } from "./types";
 
 function cell(value: string | null): string {
@@ -14,6 +15,11 @@ export function toCSV(result: ResultSet): string {
 
 /** Offers text to the browser as a file download. */
 export function download(filename: string, text: string, mime = "text/csv;charset=utf-8"): void {
+  const bridge = desktop();
+  if (bridge) {
+    bridge.save(filename, text);
+    return;
+  }
   const url = URL.createObjectURL(new Blob([text], { type: mime }));
   const a = document.createElement("a");
   a.href = url;

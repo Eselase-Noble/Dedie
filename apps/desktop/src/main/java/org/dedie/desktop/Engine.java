@@ -28,6 +28,30 @@ final class Engine {
     private static final String BINARY = isWindows() ? "dedie-server.exe" : "dedie-server";
 
     private Process process;
+    private volatile boolean stopping;
+
+    /** Where the engine's log is written: next to its data, as desktop.log. */
+    static Path logFile() {
+        String dir = System.getenv("DEDIE_DATA_DIR");
+        Path data = dir != null && !dir.isBlank() ? Path.of(dir) : Path.of(System.getProperty("user.home"), ".dedie");
+        return data.resolve("desktop.log");
+    }
+
+    /**
+     * Completes when the engine process ends without having been asked to,
+     * so the window can say so instead of showing a page that no longer works.
+     */
+    CompletableFuture<Void> stoppedUnexpectedly() {
+        CompletableFuture<Void> crashed = new CompletableFuture<>();
+        if (process != null) {
+            process.onExit().thenRun(() -> {
+                if (!stopping) {
+                    crashed.complete(null);
+                }
+            });
+        }
+        return crashed;
+    }
 
     /**
      * Starts the engine and completes with the address of its interface.
@@ -38,10 +62,14 @@ final class Engine {
         Path binary;
         try {
             binary = locate();
-            // Standard error carries the server's log; let it through to
-            // whatever started the desktop application.
+            stopping = false;
+            // Standard error carries the server's log. It is kept in a
+            // file, where Help > Show log finds it; an application started
+            // from a desktop icon has no terminal to print to.
+            Path log = logFile();
+            Files.createDirectories(log.getParent());
             process = new ProcessBuilder(binary.toString(), "--addr", "127.0.0.1:0")
-                    .redirectError(ProcessBuilder.Redirect.INHERIT)
+                    .redirectError(ProcessBuilder.Redirect.appendTo(log.toFile()))
                     .start();
         } catch (IOException e) {
             url.completeExceptionally(e);
@@ -61,7 +89,7 @@ final class Engine {
                 // The stream closes when the process ends; handled below.
             }
             url.completeExceptionally(new IOException(
-                    "The Dedie engine stopped before it was ready. Run " + binary + " in a terminal to see why."));
+                    "The Dedie engine stopped before it was ready. Its log is in " + logFile() + "."));
         }, "dedie-engine-output");
         reader.setDaemon(true);
         reader.start();
@@ -74,6 +102,7 @@ final class Engine {
      * time the application starts.
      */
     void stop() {
+        stopping = true;
         if (process == null || !process.isAlive()) {
             return;
         }
