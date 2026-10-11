@@ -1,15 +1,16 @@
 name: Website
 
-# Publishes the site/ directory to the gh-pages branch, which GitHub Pages
-# serves at https://eselase-noble.github.io/Dedie/.
+# Publishes the site/ directory to https://eselase-noble.github.io/Dedie/.
+# The repository's Pages setting can use either source:
+#   - "Deploy from a branch" with gh-pages / (root): served from the branch
+#     that the publish job pushes.
+#   - "GitHub Actions": served by the deploy job.
+# Whichever source is not selected is skipped without failing the run.
 on:
   push:
     branches: [main]
     paths: ["site/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 concurrency:
   group: pages
@@ -17,7 +18,10 @@ concurrency:
 
 jobs:
   publish:
+    name: Publish to the gh-pages branch
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -31,3 +35,22 @@ jobs:
           git add -A
           git commit -q -m "Publish website from ${GITHUB_SHA::7}"
           git push -q --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" gh-pages
+
+  deploy:
+    name: Deploy with GitHub Actions
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # This job only succeeds when the Pages source is "GitHub Actions".
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4
