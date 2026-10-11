@@ -848,3 +848,221 @@ func (e *eventReporter) Event(level, msg string) {
 	e.on(msg)
 	e.memReporter.Event(level, msg)
 }
+
+// previewLine writes one statement of a preview for comparison.
+func previewLine(s migrate.Statement) string { return s.Phase + " | " + s.Kind + " | " + s.Name }
+
+// findStatement returns the previewed statement of that kind and name.
+func findStatement(t *testing.T, list []migrate.Statement, kind, name string) migrate.Statement {
+	t.Helper()
+	for _, s := range list {
+		if s.Kind == kind && s.Name == name {
+			return s
+		}
+	}
+	t.Fatalf("the preview has no %s %s", kind, name)
+	return migrate.Statement{}
+}
+
+// checkPhaseOrder fails unless the statements come phase by phase, in the
+// order a job moves through the phases, each complete and unterminated.
+func checkPhaseOrder(t *testing.T, list []migrate.Statement) {
+	t.Helper()
+	order := map[string]int{migrate.PhaseSchema: 1, migrate.PhaseIndexing: 2, migrate.PhaseCutover: 3}
+	last := 0
+	for _, s := range list {
+		n := order[s.Phase]
+		if n == 0 || n < last {
+			t.Errorf("%s: out of phase order", previewLine(s))
+		}
+		last = n
+		if s.Kind == "" || s.Name == "" || strings.TrimSpace(s.SQL) == "" || strings.HasSuffix(strings.TrimSpace(s.SQL), ";") {
+			t.Errorf("%s: incomplete or terminated statement %q", previewLine(s), s.SQL)
+		}
+	}
+}
+
+// TestMigrationPreview reads the statements of a migration before it is
+// started. A preview must be the real script, so the test runs it, as it
+// is, against the target; and it must be only a preview, so both databases
+// are compared with what they were before.
+func TestMigrationPreview(t *testing.T) {
+	var _ migrate.Previewer = pipeline{}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	srcCfg, dstCfg, src := setup(t, ctx)
+	dst, err := postgres.Connect(ctx, dstCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close(context.Background())
+
+	// Everything a job leaves behind: on the source the key logging it
+	// switches on, beside the schema's own objects; on the target the
+	// relations and constraints of every schema that is not the server's
+	// own, the checkpoint schema among them.
+	state := func() (source, target string) {
+		t.Helper()
+		if err := src.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM user_objects) || ' | ' || (SELECT COUNT(*) FROM user_log_groups) FROM dual`).Scan(&source); err != nil {
+			t.Fatal(err)
+		}
+		if err := dst.QueryRow(ctx, `SELECT concat_ws(' | ',
+			(SELECT string_agg(nspname, ',' ORDER BY nspname) FROM pg_namespace WHERE nspname NOT LIKE 'pg\_%' AND nspname <> 'information_schema'),
+			coalesce((SELECT string_agg(c.relname || ':' || c.relkind::text, ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+				WHERE n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'), ''),
+			coalesce((SELECT string_agg(conname || ':' || contype::text, ',' ORDER BY conname) FROM pg_constraint k JOIN pg_namespace n ON n.oid = k.connamespace
+				WHERE k.contype IN ('p', 'u', 'c', 'f') AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'), ''))`).Scan(&target); err != nil {
+			t.Fatal(err)
+		}
+		return source, target
+	}
+	srcBefore, dstBefore := state()
+	if dstBefore != "public |  | " {
+		t.Fatalf("the target is not empty: %s", dstBefore)
+	}
+	unchanged := func(when string) {
+		t.Helper()
+		source, target := state()
+		if source != srcBefore {
+			t.Errorf("%s changed the source:\nbefore %s\nafter  %s", when, srcBefore, source)
+		}
+		if target != dstBefore {
+			t.Errorf("%s changed the target:\nbefore %s\nafter  %s", when, dstBefore, target)
+		}
+	}
+
+	// A job that follows changes, which would switch key logging on at the
+	// source; its preview must not.
+	cfg := migrate.Config{}
+	list, err := pipeline{}.Preview(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged("the preview")
+	// The table of JSON and BOOLEAN columns exists on newer servers only
+	// and is left out of the comparison.
+	outline := func(list []migrate.Statement) string {
+		var lines []string
+		for _, s := range list {
+			if !strings.Contains(s.Name, "dedie_it_modern") {
+				lines = append(lines, previewLine(s))
+			}
+		}
+		return strings.Join(lines, "\n")
+	}
+	// Schemas, sequences and tables before the copy; indexes, among them
+	// the one behind the unique constraint, and check constraints after
+	// it; foreign keys at the very end. The index on an expression has no
+	// translation.
+	want := []string{
+		"schema | schema | dedie_test", "schema | sequence | dedie_test.dedie_it_seq",
+		"schema | table | dedie_test.dedie_it_customers", "schema | table | dedie_test.dedie_it_events",
+		"schema | table | dedie_test.dedie_it_invoices", "schema | table | dedie_test.Dedie_It_Mixed",
+		"indexing | index | dedie_test.dedie_it_cust_code", "indexing | index | dedie_test.dedie_it_cust_nums",
+		"indexing | check constraint | dedie_test.dedie_it_customers dedie_it_cust_bal",
+		"cutover | foreign key | dedie_test.dedie_it_invoices dedie_it_inv_cust",
+	}
+	if got := outline(list); got != strings.Join(want, "\n") {
+		t.Errorf("preview:\n got:\n%s\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+	checkPhaseOrder(t, list)
+	for _, exact := range []struct{ kind, name, sql string }{
+		{"schema", "dedie_test", `CREATE SCHEMA IF NOT EXISTS "dedie_test"`},
+		{"table", "dedie_test.Dedie_It_Mixed", `CREATE TABLE "dedie_test"."Dedie_It_Mixed" (` + "\n" + `  "Id" integer NOT NULL,` + "\n" + `  "Note" varchar(50),` + "\n" + `  PRIMARY KEY ("Id")` + "\n)"},
+		{"index", "dedie_test.dedie_it_cust_code", `CREATE UNIQUE INDEX "dedie_it_cust_code" ON "dedie_test"."dedie_it_customers" ("code")`},
+		{"check constraint", "dedie_test.dedie_it_customers dedie_it_cust_bal", `ALTER TABLE "dedie_test"."dedie_it_customers" ADD CONSTRAINT "dedie_it_cust_bal" CHECK (balance >= 0)`},
+		{"foreign key", "dedie_test.dedie_it_invoices dedie_it_inv_cust", `ALTER TABLE "dedie_test"."dedie_it_invoices" ADD CONSTRAINT "dedie_it_inv_cust" ` +
+			`FOREIGN KEY ("customer_id") REFERENCES "dedie_test"."dedie_it_customers" ("id") ON DELETE CASCADE`},
+	} {
+		if s := findStatement(t, list, exact.kind, exact.name); s.SQL != exact.sql {
+			t.Errorf("%s %s:\n got %s\nwant %s", exact.kind, exact.name, s.SQL, exact.sql)
+		}
+	}
+	if s := findStatement(t, list, "sequence", "dedie_test.dedie_it_seq").SQL; !strings.HasPrefix(s, `CREATE SEQUENCE "dedie_test"."dedie_it_seq" INCREMENT BY 5 MINVALUE 1 NO MAXVALUE START WITH `) {
+		t.Errorf("sequence: %s", s)
+	}
+	customers := findStatement(t, list, "table", "dedie_test.dedie_it_customers").SQL
+	for _, part := range []string{`CREATE TABLE "dedie_test"."dedie_it_customers" (`, `"id" bigint GENERATED BY DEFAULT AS IDENTITY NOT NULL`, `"status" char(1) DEFAULT 'A' NOT NULL`,
+		`"small" smallint`, `"huge" numeric(30,0)`, `"born" timestamp(0) DEFAULT LOCALTIMESTAMP(0)`, `"seen" timestamptz(6)`, `"tenure" interval year to month`,
+		`"avatar" bytea`, `"ticket" numeric DEFAULT nextval('"dedie_test"."dedie_it_seq"'::regclass)`, `PRIMARY KEY ("id")`} {
+		if !strings.Contains(customers, part) {
+			t.Errorf("CREATE TABLE of customers lacks %q:\n%s", part, customers)
+		}
+	}
+
+	// A table-level job previews its tables only; the foreign key to a
+	// table that is not migrated is left out.
+	scoped, err := Preview(ctx, srcCfg, dstCfg, migrate.Config{Mode: migrate.ModeOffline, Tables: []string{"DEDIE_IT_INVOICES"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := outline(scoped); !strings.Contains(got, "schema | table | dedie_test.dedie_it_invoices") ||
+		strings.Contains(got, "dedie_it_customers") || strings.Contains(got, "foreign key") {
+		t.Errorf("table scope previews:\n%s", got)
+	}
+
+	// What the target already has: a table and a sequence of the
+	// migration. From here on the previews depend on it.
+	if _, err := dst.PgConn().Exec(ctx, `CREATE SCHEMA dedie_test; CREATE TABLE dedie_test.dedie_it_events (other int);
+		INSERT INTO dedie_test.dedie_it_events VALUES (42); CREATE SEQUENCE dedie_test.dedie_it_seq`).ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	_, dstBefore = state()
+
+	// Under the default policy the job would refuse to start; its preview
+	// still shows every object as it would be created.
+	again, err := Preview(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(again) != fmt.Sprint(list) {
+		t.Error("the default policy previews something else once the target holds some of the names")
+	}
+
+	// Kept: the table and the sequence are left out. Nothing is dropped.
+	cfg.OnExisting = migrate.ExistingSkip
+	skip, err := Preview(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkPhaseOrder(t, skip)
+	if len(skip) != len(list)-2 {
+		t.Errorf("skip previews %d statements of %d", len(skip), len(list))
+	}
+	for _, s := range skip {
+		if s.Kind == "drop" || s.Name == "dedie_test.dedie_it_events" || s.Name == "dedie_test.dedie_it_seq" {
+			t.Errorf("skip previews %s: %s", previewLine(s), s.SQL)
+		}
+	}
+
+	// Replaced: the drops come first, then the whole migration.
+	cfg.OnExisting = migrate.ExistingReplace
+	replace, err := Preview(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkPhaseOrder(t, replace)
+	drops := []migrate.Statement{
+		{Phase: migrate.PhaseSchema, Kind: "drop", Name: "dedie_test.dedie_it_events", SQL: `DROP TABLE IF EXISTS dedie_test.dedie_it_events CASCADE`},
+		{Phase: migrate.PhaseSchema, Kind: "drop", Name: "dedie_test.dedie_it_seq", SQL: `DROP SEQUENCE IF EXISTS dedie_test.dedie_it_seq CASCADE`},
+	}
+	if len(replace) != len(drops)+len(list) || fmt.Sprint(replace[:len(drops)]) != fmt.Sprint(drops) || fmt.Sprint(replace[len(drops):]) != fmt.Sprint(list) {
+		t.Errorf("replace previews:\n%v", replace)
+	}
+	unchanged("the previews")
+
+	// The preview is the script: every statement runs, in order, as it is.
+	// Nothing in it depends on the rows the job would copy in between.
+	for _, s := range replace {
+		if _, err := dst.PgConn().Exec(ctx, s.SQL).ReadAll(); err != nil {
+			t.Fatalf("%s: %v\n%s", previewLine(s), err, s.SQL)
+		}
+	}
+	_, built := state()
+	for _, part := range []string{"dedie_test,public | ", "Dedie_It_Mixed:r", "dedie_it_cust_code:i,dedie_it_cust_nums:i,dedie_it_customers:r,dedie_it_customers_id_seq:S,dedie_it_customers_pkey:i,dedie_it_events:r,dedie_it_invoices:r",
+		"dedie_it_seq:S", "dedie_it_cust_bal:c,dedie_it_customers_pkey:p,dedie_it_inv_cust:f,dedie_it_invoices_pkey:p"} {
+		if !strings.Contains(built, part) {
+			t.Errorf("the script did not build %q:\n%s", part, built)
+		}
+	}
+}

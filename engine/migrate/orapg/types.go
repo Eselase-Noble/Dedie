@@ -54,6 +54,10 @@ func (pipeline) Run(ctx context.Context, jobID string, cfg migrate.Config, state
 	return Run(ctx, jobID, cfg, st, src, dst, rep)
 }
 
+func (pipeline) Preview(ctx context.Context, src, dst connector.Config, cfg migrate.Config) ([]migrate.Statement, error) {
+	return Preview(ctx, src, dst, cfg)
+}
+
 // State is the job's durable progress. Field names match the other
 // pipelines where the meaning is the same, so the interface shows them
 // alike.

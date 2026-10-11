@@ -60,7 +60,7 @@ func (r *runner) buildPlan(ctx context.Context) error {
 		// With every table kept there is nothing to plan; say why,
 		// rather than that the schema appears to be empty.
 		if len(r.st.SkippedTables) > 0 && strings.Contains(err.Error(), "there are no tables to migrate") {
-			return errors.New("every table to be migrated already exists on the target and is kept; nothing is left to migrate")
+			return pgpg.ErrNothingLeft
 		}
 		return err
 	}
@@ -239,7 +239,7 @@ func (r *runner) schemaPhase(ctx context.Context) error {
 			}
 			r.rep.Event("warn", fmt.Sprintf("kept %d existing table(s) and %d other object(s) on the target as they are, as chosen; they are left out of the migration", n, m))
 			if len(r.plan.Tables) == 0 {
-				return errors.New("every table to be migrated already exists on the target and is kept; nothing is left to migrate")
+				return pgpg.ErrNothingLeft
 			}
 		}
 	}
