@@ -1,52 +1,49 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "@/lib/api";
-import { download, toCSV } from "@/lib/csv";
-import { formatNumber, formatTime, quoteIdent } from "@/lib/format";
-import { clearHistory, loadHistory, pushHistory, type HistoryItem } from "@/lib/history";
+import { quoteIdent } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 import { beginDrag, useStoredSize } from "@/lib/resize";
-import type { Catalog, QueryResponse } from "@/lib/types";
-import ResultGrid from "@/components/ResultGrid";
+import { loadTabs, newId, newQueryTab, saveTabs, type Tab } from "@/lib/tabs";
+import type { Catalog, CatalogTable, SavedQuery } from "@/lib/types";
 import CreateObject from "@/components/CreateObjects";
-import SchemaTree from "@/components/SchemaTree";
+import QueryTab from "@/components/query/QueryTab";
+import SavedQueries, { SaveQueryDialog } from "@/components/query/SavedQueries";
+import TableDetails from "@/components/query/TableDetails";
+import TableTab from "@/components/query/TableTab";
+import SchemaTree, { type TableAction } from "@/components/SchemaTree";
 import { useSession } from "@/components/session";
-import SqlEditor from "@/components/SqlEditor";
 import { Badge, Banner, Loading } from "@/components/ui";
 
-const ROW_LIMITS = [100, 500, 1000, 5000, 10000];
 const LAST_CONNECTION = "dedie.query.connection";
 
+/**
+ * The query browser: a schema tree beside any number of tabs. A query tab
+ * is an editor with its results; a table tab pages through one table and
+ * can edit it. Open tabs are remembered for each connection.
+ */
 export default function QueryPage() {
   const { can } = useSession();
   const { data: connections, error: loadError, reload: reloadConnections } = useLoad(() => api.connections(), []);
+  const { data: saved, reload: reloadSaved } = useLoad(() => api.savedQueries(), []);
   const [connId, setConnId] = useState("");
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [catalogError, setCatalogError] = useState("");
   const [catalogLoading, setCatalogLoading] = useState(false);
-  const [sql, setSql] = useState("");
-  const [write, setWrite] = useState(false);
-  const [maxRows, setMaxRows] = useState(1000);
-  const [running, setRunning] = useState(false);
-  const [response, setResponse] = useState<QueryResponse | null>(null);
-  const [error, setError] = useState("");
-  const [tab, setTab] = useState(0);
-  const [history, setHistory] = useState<HistoryItem[]>([]);
-  const [showHistory, setShowHistory] = useState(false);
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  const [active, setActive] = useState("");
   const [showTree, setShowTree] = useState(true);
-  // Hides the editor so a large result can use the whole height.
-  const [maximized, setMaximized] = useState(false);
-  const selection = useRef<() => string>(() => "");
   // The object being created from the Create menu, if any.
   const [creating, setCreating] = useState<"database" | "schema" | "table" | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [showSaved, setShowSaved] = useState(false);
+  const [saving, setSaving] = useState<Tab | null>(null);
+  const [details, setDetails] = useState<{ schema: string; table: CatalogTable } | null>(null);
   const [notice, setNotice] = useState("");
 
-  // Pane sizes are draggable and remembered. The limits leave room for the
-  // other pane whatever the window size.
+  // The tree's width is draggable and remembered.
   const [treeWidth, setTreeWidth] = useStoredSize("dedie.query.tree", 270, 180, () => Math.max(220, window.innerWidth * 0.45));
-  const [editorHeight, setEditorHeight] = useStoredSize("dedie.query.editor", 280, 110, () => Math.max(160, window.innerHeight - 260));
 
   const connection = connections?.find((c) => c.id === connId) ?? null;
   const mayWrite = can("query.write") && !!connection && !connection.read_only;
@@ -79,10 +76,9 @@ export default function QueryPage() {
 
   useEffect(() => {
     if (!connId) return;
-    setWrite(false);
-    setResponse(null);
-    setError("");
-    setHistory(loadHistory(connId));
+    const stored = loadTabs(connId);
+    setTabs(stored.tabs);
+    setActive(stored.tabs.some((t) => t.id === stored.active) ? stored.active : stored.tabs[0].id);
     try {
       window.localStorage.setItem(LAST_CONNECTION, connId);
     } catch {
@@ -90,6 +86,10 @@ export default function QueryPage() {
     }
     void loadCatalog(connId);
   }, [connId, loadCatalog]);
+
+  useEffect(() => {
+    if (connId && tabs.length > 0) saveTabs(connId, tabs, active);
+  }, [connId, tabs, active]);
 
   // Table and column names for the editor's completions. A table is offered
   // both by its bare name and qualified with its schema.
@@ -105,31 +105,45 @@ export default function QueryPage() {
     return out;
   }, [catalog]);
 
-  // Runs the selected text when there is a selection, otherwise everything.
-  const run = async (selected?: string) => {
-    const statement = (selected ?? selection.current()).trim() || sql.trim();
-    if (!connId || !statement || running) return;
-    setRunning(true);
-    setError("");
-    try {
-      const res = await api.query(connId, { sql: statement, write: write && mayWrite, max_rows: maxRows });
-      setResponse(res);
-      setTab(0);
-    } catch (err) {
-      setResponse(null);
-      setError(errorMessage(err));
-    } finally {
-      setHistory(pushHistory(connId, statement));
-      setRunning(false);
-    }
+  const findTable = useCallback((schema: string, table: string): CatalogTable | null => {
+    const s = catalog?.schemas.find((x) => x.name === schema);
+    return s?.tables.find((t) => t.name === table) ?? s?.views.find((t) => t.name === table) ?? null;
+  }, [catalog]);
+
+  const openTab = (tab: Tab) => {
+    setTabs((list) => [...list, tab]);
+    setActive(tab.id);
   };
+  const addQuery = (sql = "", title = "", savedId?: string) => {
+    const n = tabs.filter((t) => t.kind === "query").length + 1;
+    openTab({ ...newQueryTab(n, sql, title), savedId });
+  };
+  const closeTab = (id: string) => {
+    setTabs((list) => {
+      const index = list.findIndex((t) => t.id === id);
+      const next = list.filter((t) => t.id !== id);
+      // The last tab is replaced rather than removed, so there is always
+      // somewhere to type.
+      const kept = next.length > 0 ? next : [newQueryTab(1)];
+      if (id === active) setActive(kept[Math.min(index, kept.length - 1)].id);
+      return kept;
+    });
+  };
+  const patchTab = (id: string, change: Partial<Tab>) => setTabs((list) => list.map((t) => (t.id === id ? { ...t, ...change } : t)));
 
-  const current = response?.results[Math.min(tab, (response?.results.length ?? 1) - 1)] ?? null;
-
-  const exportCSV = () => {
-    if (!current) return;
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    download(`${connection?.name ?? "result"}-${stamp}.csv`, toCSV(current));
+  const onTree = (action: TableAction, schema: string, table: string) => {
+    if (action === "details") {
+      const t = findTable(schema, table);
+      if (t) setDetails({ schema, table: t });
+      return;
+    }
+    if (action === "select") {
+      addQuery(`SELECT * FROM ${quoteIdent(schema, connection?.kind)}.${quoteIdent(table, connection?.kind)} LIMIT 100`, table);
+      return;
+    }
+    const existing = tabs.find((t) => t.kind === "table" && t.schema === schema && t.table === table);
+    if (existing) setActive(existing.id);
+    else openTab({ id: newId(), kind: "table", title: table, sql: "", schema, table });
   };
 
   return (
@@ -142,6 +156,7 @@ export default function QueryPage() {
         </select>
         {connection?.read_only && <Badge>read-only connection</Badge>}
         <span className="spacer" />
+        <button className="btn small" onClick={() => setShowSaved(true)}>Saved queries{saved && saved.length > 0 ? ` (${saved.length})` : ""}</button>
         {mayWrite && (
           <div className="popover-anchor">
             <button className="btn small" onClick={() => setShowCreate((v) => !v)} aria-expanded={showCreate}>Create…</button>
@@ -187,125 +202,49 @@ export default function QueryPage() {
             <div className="pane tree-pane" style={{ width: treeWidth }}>
               {catalogLoading && <Loading />}
               {catalogError && <Banner tone="error">{catalogError}</Banner>}
-              {catalog && !catalogLoading && (
-                <SchemaTree
-                  key={connId}
-                  catalog={catalog}
-                  onPick={(schema, table) => setSql(`SELECT * FROM ${quoteIdent(schema, connection?.kind)}.${quoteIdent(table, connection?.kind)} LIMIT 100`)}
-                />
-              )}
+              {catalog && !catalogLoading && <SchemaTree key={connId} catalog={catalog} onPick={onTree} />}
             </div>
             <div className="splitter x" role="separator" aria-orientation="vertical" title="Drag to resize"
               onPointerDown={(e) => beginDrag(e, "x", treeWidth, setTreeWidth)} />
           </>
         )}
 
-        <div className="pane main-pane">
-          {!maximized && (
-            <>
-              <div className="editor-pane" style={{ height: editorHeight }}>
-                <SqlEditor value={sql} onChange={setSql} onRun={run} kind={connection?.kind} schema={completions} selection={selection} />
+        <div className="tab-area">
+          <div className="doc-tabs" role="tablist">
+            {tabs.map((t) => (
+              <div key={t.id} role="tab" aria-selected={t.id === active} className={`doc-tab ${t.id === active ? "active" : ""}`}
+                onClick={() => setActive(t.id)} title={t.kind === "table" ? `${t.schema}.${t.table}` : t.title}>
+                <span className="doc-kind">{t.kind === "table" ? "▦" : "›_"}</span>
+                <span className="doc-title">{t.title}</span>
+                <button className="doc-close" aria-label={`Close ${t.title}`} onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}>×</button>
               </div>
-              <div className="splitter y" role="separator" aria-orientation="horizontal" title="Drag to resize"
-                onPointerDown={(e) => beginDrag(e, "y", editorHeight, setEditorHeight)} />
-            </>
-          )}
-
-          <div className="run-bar">
-            <button className="btn primary" onClick={() => run()} disabled={running || !connId || !sql.trim()}>
-              {running ? "Running…" : "Run"}
-            </button>
-            <span className="hint">Ctrl/Cmd + Enter · runs the selection when text is selected</span>
-            <label className="hint inline">
-              Max rows
-              <select className="select" value={maxRows} onChange={(e) => setMaxRows(Number(e.target.value))}>
-                {ROW_LIMITS.map((n) => <option key={n} value={n}>{formatNumber(n)}</option>)}
-              </select>
-            </label>
-            {mayWrite && (
-              <label className="inline">
-                <input type="checkbox" checked={write} onChange={(e) => setWrite(e.target.checked)} />
-                Allow writes
-              </label>
-            )}
-            {write && mayWrite && <Badge tone="warn">read-write: changes are committed immediately</Badge>}
-            <span className="spacer" />
-            <button className="btn small" onClick={() => setMaximized((v) => !v)} aria-pressed={maximized}>
-              {maximized ? "Show editor" : "Maximize results"}
-            </button>
-            <div className="popover-anchor">
-              <button className="btn small" onClick={() => setShowHistory((v) => !v)} aria-expanded={showHistory}>
-                History ({history.length})
-              </button>
-              {showHistory && (
-                <div className="popover">
-                  <div className="card-head">
-                    <h2>History for this connection</h2>
-                    <button className="btn small" disabled={history.length === 0}
-                      onClick={() => { clearHistory(connId); setHistory([]); }}>
-                      Clear
-                    </button>
-                  </div>
-                  <div className="history">
-                    {history.length === 0 && <div className="empty">Nothing run yet.</div>}
-                    {history.map((h) => (
-                      <button key={h.at + h.sql} onClick={() => { setSql(h.sql); setShowHistory(false); }} title={h.sql}>
-                        <div className="sql">{h.sql}</div>
-                        <div className="faint" style={{ fontSize: 11.5 }}>{formatTime(h.at)}</div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
+            ))}
+            <button className="doc-new" onClick={() => addQuery()} title="New query tab">+</button>
           </div>
-
-          <div className="results-pane">
-            {error && (
-              <Banner tone="error">
-                <pre>{error}</pre>
-              </Banner>
-            )}
-            {!response && !error && (
-              <div className="empty">
-                {connId ? "Run a statement to see its result here. Click a table on the left to start from a SELECT." : "Add a connection to start querying."}
-              </div>
-            )}
-            {response && (
-              <>
-                {response.results.length > 1 && (
-                  <div className="tabs" role="tablist">
-                    {response.results.map((r, i) => (
-                      <button key={i} role="tab" aria-selected={i === tab} className={`tab ${i === tab ? "active" : ""}`} onClick={() => setTab(i)}>
-                        Result {i + 1}{r.command ? ` · ${r.command}` : ""}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {current ? <ResultGrid result={current} /> : <div className="empty">Statement executed; no result returned.</div>}
-                <div className="result-meta">
-                  {current && current.columns.length > 0 && (
-                    <span>
-                      {formatNumber(current.rows.length)} row{current.rows.length === 1 ? "" : "s"} · {formatNumber(current.columns.length)} column{current.columns.length === 1 ? "" : "s"}
-                    </span>
-                  )}
-                  {current?.command && <span className="mono">{current.command}</span>}
-                  <span>{formatNumber(response.duration_ms)} ms</span>
-                  <span>{response.read_only ? "read-only transaction" : "read-write session"}</span>
-                  {current?.truncated && (
-                    <Badge tone="warn">truncated at {formatNumber(current.rows.length)} rows; raise the limit or add LIMIT</Badge>
-                  )}
-                  <span className="spacer" />
-                  {current && current.columns.length > 0 && <span className="hint">Click a cell to see its full value</span>}
-                  {current && current.columns.length > 0 && (
-                    <button className="btn small" onClick={exportCSV}>Export CSV</button>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
+          {!connection && <div className="empty" style={{ margin: "auto" }}>Add a connection to start querying.</div>}
+          {connection && tabs.map((t) => t.kind === "table" ? (
+            <TableTab key={`${connId}:${t.id}`} connection={connection} schema={t.schema ?? ""} table={t.table ?? ""}
+              info={findTable(t.schema ?? "", t.table ?? "")} mayWrite={mayWrite} active={t.id === active} />
+          ) : (
+            <QueryTab key={`${connId}:${t.id}`} connection={connection} mayWrite={mayWrite} completions={completions}
+              sql={t.sql} onSql={(sql) => patchTab(t.id, { sql })} onSave={() => setSaving(t)} active={t.id === active} />
+          ))}
         </div>
       </div>
+
+      {details && <TableDetails schema={details.schema} table={details.table} onClose={() => setDetails(null)} />}
+      {showSaved && (
+        <SavedQueries queries={saved ?? []} onClose={() => setShowSaved(false)} onDeleted={() => void reloadSaved()}
+          onOpen={(q: SavedQuery) => addQuery(q.sql, q.name, q.id)} />
+      )}
+      {saving && connection && (
+        <SaveQueryDialog sql={saving.sql} kind={connection.kind} existing={saved?.find((q) => q.id === saving.savedId) ?? null}
+          onClose={() => setSaving(null)}
+          onSaved={(q) => {
+            patchTab(saving.id, { title: q.name, savedId: q.id });
+            void reloadSaved();
+          }} />
+      )}
     </div>
   );
 }

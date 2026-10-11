@@ -472,3 +472,23 @@ export interface ChannelInput {
   events: string[];
   enabled: boolean;
 }
+
+export interface RowChange {
+  schema: string;
+  table: string;
+  action: "insert" | "update" | "delete";
+  key?: Record<string, string | null>;
+  values?: Record<string, string | null>;
+}
+
+export interface SavedQuery {
+  id: string;
+  user_id: string;
+  owner: string;
+  name: string;
+  sql: string;
+  kind: string;
+  shared: boolean;
+  created_at: string;
+  updated_at: string;
+}

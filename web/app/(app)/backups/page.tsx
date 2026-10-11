@@ -86,7 +86,7 @@ export default function BackupsPage() {
                     </td>
                     <td>
                       <StatusBadge status={b.status} />
-                      {b.error && <div className="pre-line" style={{ color: "var(--danger)", maxWidth: 320 }}>{b.error}</div>}
+                      {b.error && <div className="pre-line" style={{ color: "var(--danger)", minWidth: 260, maxWidth: 420 }}>{b.error}</div>}
                     </td>
                     <td className="num">{b.status === "completed" ? formatBytes(b.size_bytes) : "—"}</td>
                     <td className="nowrap muted" title={b.sha256 ? `SHA-256 ${b.sha256}` : ""}>{formatTime(b.verified_at)}</td>
