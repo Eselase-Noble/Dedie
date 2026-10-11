@@ -19,6 +19,7 @@ import (
 	_ "dedie/engine/connector/postgres"
 	_ "dedie/engine/migrate/mymy"
 	_ "dedie/engine/migrate/mypg"
+	_ "dedie/engine/migrate/pgmy"
 	_ "dedie/engine/migrate/pgpg"
 )
 

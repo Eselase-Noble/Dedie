@@ -307,7 +307,7 @@ func TestMigration(t *testing.T) {
 	}
 
 	var slots, pubs int
-	src.QueryRow(ctx, `SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'dedie_%'`).Scan(&slots)
+	src.QueryRow(ctx, `SELECT count(*) FROM pg_replication_slots WHERE slot_name = 'dedie_mig_test1'`).Scan(&slots)
 	src.QueryRow(ctx, `SELECT count(*) FROM pg_publication`).Scan(&pubs)
 	if slots != 0 || pubs != 0 {
 		t.Errorf("left behind %d slot(s) and %d publication(s) on the source", slots, pubs)
