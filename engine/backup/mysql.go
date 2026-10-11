@@ -2,6 +2,7 @@ package backup
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -77,10 +78,11 @@ func mysqlTool(name string) (string, error) {
 	return path, nil
 }
 
-// dumpMySQL writes a mysqldump of the database to w. The dump is taken in
+// dumpMySQL writes a gzip-compressed mysqldump to w. The dump is taken in
 // one transaction, so InnoDB tables are consistent with each other without
-// blocking writers, and it includes routines, triggers and events.
-func dumpMySQL(ctx context.Context, cfg connector.Config, w io.Writer) error {
+// blocking writers. A full or schema backup includes routines, triggers and
+// events.
+func dumpMySQL(ctx context.Context, cfg connector.Config, opts Options, w io.Writer) error {
 	tool, err := mysqlTool("mysqldump")
 	if err != nil {
 		return err
@@ -92,18 +94,41 @@ func dumpMySQL(ctx context.Context, cfg connector.Config, w io.Writer) error {
 	defer cleanup()
 	// --defaults-file must come first; it also stops the tool from reading
 	// option files that belong to whoever runs this process.
-	cmd := exec.CommandContext(ctx, tool, "--defaults-file="+options, "--single-transaction", "--routines", "--triggers",
-		"--events", "--hex-blob", "--set-gtid-purged=OFF", "--no-tablespaces", "--default-character-set=utf8mb4", cfg.Database)
+	args := []string{"--defaults-file=" + options, "--single-transaction", "--hex-blob", "--set-gtid-purged=OFF",
+		"--no-tablespaces", "--default-character-set=utf8mb4"}
+	switch opts.Type {
+	case TypeSchema:
+		args = append(args, "--no-data", "--routines", "--triggers", "--events")
+	case TypeData:
+		args = append(args, "--no-create-info", "--skip-triggers")
+	case TypeTables:
+		args = append(args, "--triggers")
+	default:
+		args = append(args, "--routines", "--triggers", "--events")
+	}
+	// "--" ends the options, so a table name can never be read as one.
+	args = append(args, "--", cfg.Database)
+	if opts.Type == TypeTables {
+		for _, t := range opts.Tables {
+			// Accept database.table as the catalog shows it.
+			if _, name, ok := strings.Cut(t, "."); ok {
+				t = name
+			}
+			args = append(args, t)
+		}
+	}
+	cmd := exec.CommandContext(ctx, tool, args...)
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+	zw := gzip.NewWriter(w)
 	var stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = w, &stderr
+	cmd.Stdout, cmd.Stderr = zw, &stderr
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		return fmt.Errorf("mysqldump failed: %s", tail(&stderr))
 	}
-	return nil
+	return zw.Close()
 }
 
 // restoreMySQL replays a dump into the database. Unlike a PostgreSQL restore
