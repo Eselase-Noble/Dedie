@@ -5,6 +5,7 @@ import { api, errorMessage } from "@/lib/api";
 import { formatDuration } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 import type { ConnectionUsage, DbAccount, SessionFilter } from "@/lib/types";
+import Pools from "@/components/dbusers/Pools";
 import UserForm from "@/components/dbusers/UserForm";
 import { Badge, Banner, Checkbox, ConfirmDialog, Field, Loading, Modal, PageHeader, Progress } from "@/components/ui";
 
@@ -99,7 +100,7 @@ export default function DatabaseUsersPage() {
         <>
           <div className="card">
             <div className="card-head">
-              <h2>Connections in use</h2>
+              <h2>Server connections</h2>
               <span className="muted">
                 {data.used_connections} of {data.max_connections}
                 {data.reserved_connections > 0 && ` (${data.reserved_connections} reserved for administrators)`}
@@ -150,6 +151,8 @@ export default function DatabaseUsersPage() {
               </table>
             </div>
           </div>
+
+          <Pools connection={connection} data={data} readOnly={readOnly} onDone={(m) => void done(m)} />
 
           <div className="card">
             <div className="card-head"><h2>Users and roles</h2><span className="muted">{data.accounts.length}</span></div>
