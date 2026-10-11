@@ -76,7 +76,7 @@ func preflight(ctx context.Context, src, dst *sql.DB, plan *Plan, cfg migrate.Co
 	} else {
 		r.Add("Row images", "fail", fmt.Sprintf("binlog_row_image is %s; set it to FULL so every change carries the whole row", image))
 	}
-	if _, err := binlogStatus(ctx, src); err != nil {
+	if _, err := BinlogStatus(ctx, src); err != nil {
 		r.Add("Replication privileges", "fail", "cannot read the binary log position ("+message(err)+"); the source account needs REPLICATION CLIENT and REPLICATION SLAVE")
 	} else {
 		r.Add("Replication privileges", "ok", "source account can read the binary log position")
@@ -117,7 +117,7 @@ func preflight(ctx context.Context, src, dst *sql.DB, plan *Plan, cfg migrate.Co
 		marks = append(marks, "?")
 	}
 	if len(marks) > 0 {
-		existing, err := queryStrings(ctx, dst, `SELECT table_name FROM information_schema.tables
+		existing, err := QueryStrings(ctx, dst, `SELECT table_name FROM information_schema.tables
 			WHERE table_schema = ? AND table_name IN (`+strings.Join(marks, ",")+`) ORDER BY 1`, names...)
 		if err != nil {
 			return nil, err

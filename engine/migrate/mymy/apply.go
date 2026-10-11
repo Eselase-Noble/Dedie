@@ -39,7 +39,7 @@ func message(err error) string {
 // for as long as each pass makes progress, which resolves dependencies
 // between views and routines without sorting them. It returns the soft
 // statements that still fail.
-func applyStmts(ctx context.Context, dst querier, list []Stmt) ([]Stmt, error) {
+func applyStmts(ctx context.Context, dst Querier, list []Stmt) ([]Stmt, error) {
 	var failed []Stmt
 	pending := list[:0:0]
 	for _, s := range list {

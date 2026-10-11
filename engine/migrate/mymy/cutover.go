@@ -10,14 +10,14 @@ import (
 	"dedie/engine/migrate"
 )
 
-// fence makes the source database read-only (MySQL 8.0.22 and newer). The
+// Fence makes the source database read-only (MySQL 8.0.22 and newer). The
 // statement waits for transactions that are changing the database to finish,
 // and from then on the server refuses writes to it from every session.
 //
 // While it waits, the server queues new statements on the database behind
 // it. The wait is therefore capped: if a long transaction is in the way, the
 // fence gives up and cutover is cancelled rather than stalling the source.
-func fence(ctx context.Context, src *sql.DB, database string) error {
+func Fence(ctx context.Context, src *sql.DB, database string) error {
 	conn, err := src.Conn(ctx)
 	if err != nil {
 		return err
@@ -30,8 +30,8 @@ func fence(ctx context.Context, src *sql.DB, database string) error {
 	return err
 }
 
-// unfence undoes fence.
-func unfence(ctx context.Context, srcCfg connector.Config) error {
+// Unfence undoes Fence.
+func Unfence(ctx context.Context, srcCfg connector.Config) error {
 	ctx = context.WithoutCancel(ctx)
 	src, err := mysql.Open(ctx, srcCfg, nil)
 	if err != nil {
@@ -54,7 +54,7 @@ func syncAutoIncrement(ctx context.Context, src, dst *sql.DB, plan *Plan) (int, 
 	defer conn.Close()
 	// Ask for current figures rather than cached statistics.
 	conn.ExecContext(ctx, "SET SESSION information_schema_stats_expiry = 0")
-	rows, err := queryStrings(ctx, conn, `SELECT table_name, auto_increment FROM information_schema.tables
+	rows, err := QueryStrings(ctx, conn, `SELECT table_name, auto_increment FROM information_schema.tables
 		WHERE table_schema = ? AND auto_increment IS NOT NULL`, plan.Database)
 	if err != nil {
 		return 0, err

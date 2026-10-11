@@ -23,14 +23,14 @@ const (
 	batchBytes = 1 << 20
 )
 
-// openSnapshot opens one read connection per worker, all looking at the same
+// OpenSnapshot opens one read connection per worker, all looking at the same
 // instant, and returns the binary log position of that instant.
 //
 // A global read lock is held only for as long as it takes to read the
 // position and start the transactions, typically a few milliseconds. From
 // then on each connection reads its own consistent view while writes on the
 // source continue.
-func openSnapshot(ctx context.Context, src *sql.DB, workers int) ([]*sql.Conn, Position, error) {
+func OpenSnapshot(ctx context.Context, src *sql.DB, workers int) ([]*sql.Conn, Position, error) {
 	lock, err := src.Conn(ctx)
 	if err != nil {
 		return nil, Position{}, err
@@ -41,7 +41,7 @@ func openSnapshot(ctx context.Context, src *sql.DB, workers int) ([]*sql.Conn, P
 	}
 	defer lock.ExecContext(context.WithoutCancel(ctx), "UNLOCK TABLES")
 
-	pos, err := binlogStatus(ctx, lock)
+	pos, err := BinlogStatus(ctx, lock)
 	if err != nil {
 		return nil, pos, err
 	}
