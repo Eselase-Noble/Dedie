@@ -1,4 +1,4 @@
-package orapg
+package orasrc
 
 import (
 	"errors"
@@ -10,23 +10,23 @@ import (
 
 // LogMiner operation codes, as V$LOGMNR_CONTENTS numbers them.
 const (
-	opInsert     = 1
-	opDelete     = 2
-	opUpdate     = 3
-	opDDL        = 5
-	opCommit     = 7
-	opLobLocator = 9
-	opRollback   = 36
+	OpInsert     = 1
+	OpDelete     = 2
+	OpUpdate     = 3
+	OpDDL        = 5
+	OpCommit     = 7
+	OpLobLocator = 9
+	OpRollback   = 36
 )
 
-// redo is one reconstructed statement, reduced to its column values. A
+// Redo is one reconstructed statement, reduced to its column values. A
 // nil value stands for NULL.
-type redo struct {
-	// values are the columns of an INSERT, or those assigned by an UPDATE.
-	values map[string]*string
-	// where holds the columns that identify the row an UPDATE or DELETE
+type Redo struct {
+	// Values are the columns of an INSERT, or those assigned by an UPDATE.
+	Values map[string]*string
+	// Where holds the columns that identify the row an UPDATE or DELETE
 	// changed, as they were before it.
-	where map[string]*string
+	Where map[string]*string
 }
 
 // Token kinds of a reconstructed statement.
@@ -265,12 +265,12 @@ func (l *lexer) skipTo(word string) bool {
 	}
 }
 
-// parseRedo reads the statement LogMiner reconstructed for a row change.
-func parseRedo(op int, text string) (*redo, error) {
+// ParseRedo reads the statement LogMiner reconstructed for a row change.
+func ParseRedo(op int, text string) (*Redo, error) {
 	l := &lexer{s: text}
-	r := &redo{values: map[string]*string{}, where: map[string]*string{}}
+	r := &Redo{Values: map[string]*string{}, Where: map[string]*string{}}
 	switch op {
-	case opInsert:
+	case OpInsert:
 		// insert into "O"."T"("A","B") values (v, v);
 		if !l.skipTo("into") {
 			return nil, errors.New("not an INSERT")
@@ -302,12 +302,12 @@ func parseRedo(op int, text string) (*redo, error) {
 			if err != nil {
 				return nil, err
 			}
-			r.values[cols[i]] = v
+			r.Values[cols[i]] = v
 			if i < len(cols)-1 && !l.accept(",") {
 				return nil, errors.New("the INSERT has fewer values than columns")
 			}
 		}
-	case opUpdate:
+	case OpUpdate:
 		// update "O"."T" set "A" = v, "B" = v where ...;
 		if !l.skipTo("set") {
 			return nil, errors.New("not an UPDATE")
@@ -321,23 +321,23 @@ func parseRedo(op int, text string) (*redo, error) {
 			if err != nil {
 				return nil, err
 			}
-			r.values[t.text] = v
+			r.Values[t.text] = v
 			if !l.accept(",") {
 				break
 			}
 		}
 		if l.accept("where") {
-			if err := l.conditions(r.where); err != nil {
+			if err := l.conditions(r.Where); err != nil {
 				return nil, err
 			}
 		}
-	case opDelete, opLobLocator:
+	case OpDelete, OpLobLocator:
 		// delete from "O"."T" where ...;
 		// ... select "C" into loc from "O"."T" where ... for update;
 		if !l.skipTo("where") {
 			return nil, errors.New("the statement has no WHERE clause")
 		}
-		if err := l.conditions(r.where); err != nil {
+		if err := l.conditions(r.Where); err != nil {
 			return nil, err
 		}
 	default:
@@ -346,11 +346,11 @@ func parseRedo(op int, text string) (*redo, error) {
 	return r, nil
 }
 
-// keys works out which rows a statement leaves changed, by primary key:
+// Keys works out which rows a statement leaves changed, by primary key:
 // gone is the key a row no longer has, now the key it has after the
 // change. Either may be nil. An update that leaves the key alone reports
 // only now.
-func (r *redo) keys(t *Table, op int) (gone, now []string, err error) {
+func (r *Redo) Keys(t *Table, op int) (gone, now []string, err error) {
 	pick := func(m map[string]*string) ([]string, bool) {
 		key := make([]string, len(t.PK))
 		for i, col := range t.PK {
@@ -364,33 +364,33 @@ func (r *redo) keys(t *Table, op int) (gone, now []string, err error) {
 	}
 	missing := fmt.Errorf("a change to %s did not carry its primary key; supplemental logging of the key is not in effect for this table", t.Label())
 	switch op {
-	case opInsert:
-		key, ok := pick(r.values)
+	case OpInsert:
+		key, ok := pick(r.Values)
 		if !ok {
 			return nil, nil, missing
 		}
 		return nil, key, nil
-	case opDelete:
-		key, ok := pick(r.where)
+	case OpDelete:
+		key, ok := pick(r.Where)
 		if !ok {
 			return nil, nil, missing
 		}
 		return key, nil, nil
-	case opLobLocator:
-		key, ok := pick(r.where)
+	case OpLobLocator:
+		key, ok := pick(r.Where)
 		if !ok {
 			return nil, nil, missing
 		}
 		return nil, key, nil
 	}
-	old, ok := pick(r.where)
+	old, ok := pick(r.Where)
 	if !ok {
 		return nil, nil, missing
 	}
 	changed := false
 	next := append([]string(nil), old...)
 	for i, col := range t.PK {
-		if v, set := r.values[t.Cols[col].Name]; set && v != nil && *v != old[i] {
+		if v, set := r.Values[t.Cols[col].Name]; set && v != nil && *v != old[i] {
 			next[i], changed = *v, true
 		}
 	}

@@ -18,6 +18,7 @@ import (
 	"dedie/engine/connector/oracle"
 	"dedie/engine/connector/postgres"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/orasrc"
 )
 
 var errInterrupted = errors.New("interrupted by operator")
@@ -37,7 +38,7 @@ func copyTable(ctx context.Context, src *sql.DB, dstCfg connector.Config, t *Tab
 	for i, c := range t.Cols {
 		targets[i] = qident(c.Target)
 	}
-	rows, err := src.QueryContext(ctx, fmt.Sprintf("SELECT %s FROM %s AS OF SCN %d", selectList(t), t.Source(), scn))
+	rows, err := src.QueryContext(ctx, fmt.Sprintf("SELECT %s FROM %s AS OF SCN %d", orasrc.SelectList(t.Table), t.Source(), scn))
 	if err != nil {
 		return snapshotError(err)
 	}
@@ -88,7 +89,7 @@ func snapshotError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if undoGone(err) {
+	if orasrc.UndoGone(err) {
 		return errors.New("the source overwrote the undo data the copy was reading from (ORA-01555, snapshot too old). " +
 			"Raise UNDO_RETENTION on the source to longer than the copy takes, or copy with more workers, and run the job again")
 	}

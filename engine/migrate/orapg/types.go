@@ -17,6 +17,10 @@
 // That keeps large objects and every data type on the same code path as
 // the copy, and makes replaying a change harmless. The position in the
 // redo stream is committed on the target together with the rows it covers.
+//
+// Everything that concerns the source alone (its catalog, reading values,
+// consistent reads, the redo stream) lives in package orasrc, which the
+// other pipelines out of Oracle share. What is here is the PostgreSQL side.
 package orapg
 
 import (

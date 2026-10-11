@@ -1,4 +1,4 @@
-package orapg
+package orasrc
 
 import (
 	"context"
@@ -21,8 +21,8 @@ var sessionFormats = []string{
 	`ALTER SESSION SET NLS_NUMERIC_CHARACTERS = '.,'`,
 }
 
-// pinned takes one connection out of the pool and sets its formats.
-func pinned(ctx context.Context, src *sql.DB) (*sql.Conn, error) {
+// Pinned takes one connection out of the pool and sets its formats.
+func Pinned(ctx context.Context, src *sql.DB) (*sql.Conn, error) {
 	conn, err := src.Conn(ctx)
 	if err != nil {
 		return nil, oracle.Friendly(err)
@@ -36,10 +36,10 @@ func pinned(ctx context.Context, src *sql.DB) (*sql.Conn, error) {
 	return conn, nil
 }
 
-// currentSCN reads the database's system change number. V$DATABASE is
+// CurrentSCN reads the database's system change number. V$DATABASE is
 // the usual place; an account without access to it may still be allowed
 // to ask DBMS_FLASHBACK.
-func currentSCN(ctx context.Context, src oracle.Queryer) (int64, error) {
+func CurrentSCN(ctx context.Context, src oracle.Queryer) (int64, error) {
 	var scn int64
 	err := src.QueryRowContext(ctx, `SELECT current_scn FROM v$database`).Scan(&scn)
 	if err == nil {
@@ -51,24 +51,24 @@ func currentSCN(ctx context.Context, src oracle.Queryer) (int64, error) {
 	return 0, fmt.Errorf("cannot read the current SCN (%s); grant the account SELECT on V_$DATABASE or EXECUTE on DBMS_FLASHBACK", oracle.Friendly(err))
 }
 
-// oldestOpen returns the SCN at which the oldest transaction still open
+// OldestOpen returns the SCN at which the oldest transaction still open
 // began, or 0 when there is none or the account cannot see them.
-func oldestOpen(ctx context.Context, src oracle.Queryer) int64 {
+func OldestOpen(ctx context.Context, src oracle.Queryer) int64 {
 	var scn sql.NullInt64
 	_ = src.QueryRowContext(ctx, `SELECT MIN(start_scn) FROM v$transaction WHERE start_scn > 0`).Scan(&scn)
 	return scn.Int64
 }
 
-// keyWhere is the condition that selects one row by primary key, with
+// KeyWhere is the condition that selects one row by primary key, with
 // the key bound as text. Fixed-width and binary keys need a conversion
 // to compare equal.
-func keyWhere(t *Table) string {
+func KeyWhere(t *Table) string {
 	conds := make([]string, len(t.PK))
 	for i, col := range t.PK {
 		c := t.Cols[col]
 		bind := fmt.Sprintf(":%d", i+1)
 		switch {
-		case c.Kind == kBinary:
+		case c.Kind == KindBinary:
 			bind = "HEXTORAW(" + bind + ")"
 		case c.DataType == "CHAR" || c.DataType == "NCHAR":
 			bind = fmt.Sprintf("CAST(%s AS %s(%d))", bind, c.DataType, max(c.CharLength, 1))
@@ -78,23 +78,24 @@ func keyWhere(t *Table) string {
 	return strings.Join(conds, " AND ")
 }
 
-// errUndoGone reports that Oracle no longer keeps the undo needed to
+// ErrUndoGone reports that Oracle no longer keeps the undo needed to
 // read the source as of a past moment.
-var errUndoGone = errors.New("the source no longer holds the undo data for that moment")
+var ErrUndoGone = errors.New("the source no longer holds the undo data for that moment")
 
-// errRedefined reports that a table cannot be read as of a moment before,
+// ErrRedefined reports that a table cannot be read as of a moment before,
 // or within a few seconds after, the last change to its definition.
-var errRedefined = errors.New("the table's definition changed after that moment")
+var ErrRedefined = errors.New("the table's definition changed after that moment")
 
-// undoGone recognises "snapshot too old" and its relatives.
-func undoGone(err error) bool {
-	return hasCode(err, "ORA-01555", "ORA-08180", "ORA-08181", "ORA-30052")
+// UndoGone recognises "snapshot too old" and its relatives.
+func UndoGone(err error) bool {
+	return HasCode(err, "ORA-01555", "ORA-08180", "ORA-08181", "ORA-30052")
 }
 
-// redefined recognises a flashback query refused because of DDL.
-func redefined(err error) bool { return hasCode(err, "ORA-01466") }
+// Redefined recognises a flashback query refused because of DDL.
+func Redefined(err error) bool { return HasCode(err, "ORA-01466") }
 
-func hasCode(err error, codes ...string) bool {
+// HasCode reports whether an error carries one of the given ORA- codes.
+func HasCode(err error, codes ...string) bool {
 	if err == nil {
 		return false
 	}
@@ -110,31 +111,31 @@ func hasCode(err error, codes ...string) bool {
 // pastError maps the failures of a flashback query to their sentinels.
 func pastError(err error) error {
 	switch {
-	case undoGone(err):
-		return errUndoGone
-	case redefined(err):
-		return errRedefined
+	case UndoGone(err):
+		return ErrUndoGone
+	case Redefined(err):
+		return ErrRedefined
 	}
 	return oracle.Friendly(err)
 }
 
-// settle returns an SCN at which every table can be read with a flashback
+// Settle returns an SCN at which every table can be read with a flashback
 // query. Oracle refuses one for the first few seconds after a table's
 // definition changed, and switching on key logging is such a change, so
 // right after it the first SCNs tried may not do.
-func settle(ctx context.Context, src oracle.Queryer, plan *Plan) (int64, error) {
+func Settle(ctx context.Context, src oracle.Queryer, cat *Catalog) (int64, error) {
 	var last error
 	for attempt := 0; attempt < 30; attempt++ {
-		scn, err := currentSCN(ctx, src)
+		scn, err := CurrentSCN(ctx, src)
 		if err != nil {
 			return 0, err
 		}
 		last = nil
-		for _, t := range plan.Tables {
+		for _, t := range cat.Tables {
 			var n int
 			err := src.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s AS OF SCN %d WHERE ROWNUM < 1", t.Source(), scn)).Scan(&n)
 			if err != nil {
-				if !redefined(err) {
+				if !Redefined(err) {
 					return 0, fmt.Errorf("%s: %w", t.Label(), oracle.Friendly(err))
 				}
 				last = fmt.Errorf("%s: %w", t.Label(), oracle.Friendly(err))
@@ -153,10 +154,10 @@ func settle(ctx context.Context, src oracle.Queryer, plan *Plan) (int64, error) 
 	return 0, fmt.Errorf("the tables could not be read as of one moment; their definition keeps changing (%w)", last)
 }
 
-// fetchRow reads one row by primary key in the form the copy uses. With
+// FetchRow reads one row by primary key in the form the copy uses. With
 // an SCN it reads the row as it was at that moment. It returns nil when
 // the row does not exist.
-func fetchRow(ctx context.Context, src oracle.Queryer, t *Table, key []string, scn int64) ([]any, error) {
+func FetchRow(ctx context.Context, src oracle.Queryer, t *Table, key []string, scn int64) ([]any, error) {
 	asOf := ""
 	if scn > 0 {
 		asOf = fmt.Sprintf(" AS OF SCN %d", scn)
@@ -165,7 +166,7 @@ func fetchRow(ctx context.Context, src oracle.Queryer, t *Table, key []string, s
 	for i, k := range key {
 		args[i] = k
 	}
-	rows, err := src.QueryContext(ctx, "SELECT "+selectList(t)+" FROM "+t.Source()+asOf+" WHERE "+keyWhere(t), args...)
+	rows, err := src.QueryContext(ctx, "SELECT "+SelectList(t)+" FROM "+t.Source()+asOf+" WHERE "+KeyWhere(t), args...)
 	if err != nil {
 		return nil, pastError(err)
 	}
@@ -185,4 +186,30 @@ func fetchRow(ctx context.Context, src oracle.Queryer, t *Table, key []string, s
 		return nil, oracle.Friendly(err)
 	}
 	return values, nil
+}
+
+// StartPosition picks the moment the copy reads the source at and the
+// SCN the redo stream is first read from.
+//
+// The redo stream is read from before the snapshot, far enough back
+// to include the first change of every transaction still open when
+// the snapshot is taken. The order of these three reads is what
+// guarantees it: a transaction open at the snapshot either began
+// before the first read, and is then seen by the second, or began
+// after it.
+func StartPosition(ctx context.Context, src oracle.Queryer, cat *Catalog) (snapshot, mineFrom int64, err error) {
+	before, err := CurrentSCN(ctx, src)
+	if err != nil {
+		return 0, 0, err
+	}
+	oldest := OldestOpen(ctx, src)
+	snapshot, err = Settle(ctx, src, cat)
+	if err != nil {
+		return 0, 0, err
+	}
+	mineFrom = before
+	if oldest > 0 && oldest < before {
+		mineFrom = oldest
+	}
+	return snapshot, mineFrom, nil
 }

@@ -14,6 +14,7 @@ import (
 	"dedie/engine/connector/oracle"
 	"dedie/engine/connector/postgres"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/orasrc"
 )
 
 // maxStreamRetries is how many times in a row the stream is restarted
@@ -30,9 +31,9 @@ type runner struct {
 	plan   *Plan
 	src    *sql.DB
 	dst    *pgx.Conn
-	// keyless remembers the tables already reported as not followed.
-	keyless    map[string]bool
-	undoWarned bool
+	// follow reads the source's changes and hands them to this runner
+	// to apply. It outlives a restart of the stream.
+	follow *orasrc.Follower
 }
 
 // Run drives a job from wherever its saved state left it to completion,
@@ -41,7 +42,7 @@ type runner struct {
 // the checkpoint stored on the target.
 func Run(ctx context.Context, jobID string, cfg migrate.Config, st State, srcCfg, dstCfg connector.Config, rep migrate.Reporter) (migrate.Outcome, error) {
 	cfg.Defaults()
-	r := &runner{jobID: jobID, cfg: cfg, st: &st, srcCfg: srcCfg, dstCfg: dstCfg, rep: rep, keyless: map[string]bool{}}
+	r := &runner{jobID: jobID, cfg: cfg, st: &st, srcCfg: srcCfg, dstCfg: dstCfg, rep: rep}
 	return r.run(ctx)
 }
 
@@ -101,6 +102,7 @@ func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 		return migrate.Completed, nil
 	}
 
+	r.follow = r.follower()
 	retries := 0
 	for {
 		r.rep.SetPhase(migrate.PhaseStreaming)
@@ -108,7 +110,7 @@ func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 		if err := r.reconnect(ctx); err != nil {
 			return "", err
 		}
-		reason, err := r.stream(ctx)
+		reason, err := r.follow.Follow(ctx, r.st.MineFrom)
 		if err != nil {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
@@ -129,12 +131,12 @@ func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 			continue
 		}
 		switch reason {
-		case stopPause:
+		case orasrc.StopPause:
 			r.rep.Event("info", "paused; the job can resume for as long as the source still has its redo logs from "+r.st.AppliedLSN+" onwards")
 			return migrate.Paused, nil
-		case stopAbort:
+		case orasrc.StopAbort:
 			return r.abort(ctx), nil
-		case stopCutover:
+		case orasrc.StopCutover:
 			done, err := r.finalize(ctx)
 			if err != nil {
 				return "", err
@@ -232,37 +234,17 @@ func (r *runner) schemaPhase(ctx context.Context) error {
 	return nil
 }
 
-// logKeys makes the redo stream carry the primary key of every changed
-// row, for the tables where it does not already. Without the key a
-// change cannot be matched to its row on the target. It must happen
-// before the copy is taken, so that every change after it is covered.
+// logKeys switches on primary key logging on the source for the tables
+// that need it, and remembers which, so that it can be switched off again.
 func (r *runner) logKeys(ctx context.Context) error {
-	logged, everywhere := keyLogged(ctx, r.src, r.plan)
-	if everywhere {
-		return nil
-	}
-	conn, err := r.src.Conn(ctx)
-	if err != nil {
-		return oracle.Friendly(err)
-	}
-	defer conn.Close()
-	// Wait briefly for transactions in flight instead of failing at once.
-	conn.ExecContext(ctx, `ALTER SESSION SET DDL_LOCK_TIMEOUT = 30`)
 	added := 0
-	for _, t := range r.plan.Tables {
-		if len(t.PK) == 0 || logged[t.Label()] {
-			continue
-		}
-		if _, err := conn.ExecContext(ctx, "ALTER TABLE "+t.Source()+" ADD SUPPLEMENTAL LOG DATA (PRIMARY KEY) COLUMNS"); err != nil {
-			if strings.Contains(err.Error(), "ORA-00054") {
-				return fmt.Errorf("switch on primary key logging for %s: a transaction has held the table for more than 30 seconds, and the change needs it for an instant. "+
-					"Start the job again when that transaction has ended, or switch the logging on yourself beforehand with ALTER TABLE ... ADD SUPPLEMENTAL LOG DATA (PRIMARY KEY) COLUMNS", t.Label())
-			}
-			return fmt.Errorf("switch on primary key logging for %s: %w", t.Label(), oracle.Friendly(err))
-		}
-		r.st.LogGroups = append(r.st.LogGroups, t.Label())
+	err := orasrc.LogKeys(ctx, r.src, r.plan.Catalog, func(table string) {
+		r.st.LogGroups = append(r.st.LogGroups, table)
 		r.save()
 		added++
+	})
+	if err != nil {
+		return err
 	}
 	if added > 0 {
 		r.rep.Event("info", fmt.Sprintf("switched on primary key supplemental logging for %d table(s) on the source", added))
@@ -275,21 +257,10 @@ func (r *runner) unlogKeys(ctx context.Context) {
 	if len(r.st.LogGroups) == 0 || r.cfg.KeepSlot {
 		return
 	}
-	conn, err := r.src.Conn(ctx)
+	left, err := orasrc.UnlogKeys(ctx, r.src, r.st.LogGroups)
 	if err != nil {
-		r.rep.Event("warn", "could not connect to the source to switch primary key logging off again: "+oracle.Friendly(err).Error())
+		r.rep.Event("warn", "could not connect to the source to switch primary key logging off again: "+err.Error())
 		return
-	}
-	defer conn.Close()
-	conn.ExecContext(ctx, `ALTER SESSION SET DDL_LOCK_TIMEOUT = 30`)
-	var left []string
-	for _, label := range r.st.LogGroups {
-		owner, name, _ := strings.Cut(label, ".")
-		_, err := conn.ExecContext(ctx, "ALTER TABLE "+oracle.QName(owner, name)+" DROP SUPPLEMENTAL LOG DATA (PRIMARY KEY) COLUMNS")
-		// ORA-32587: the log group is already gone; ORA-00942: so is the table.
-		if err != nil && !strings.Contains(err.Error(), "ORA-32587") && !strings.Contains(err.Error(), "ORA-00942") {
-			left = append(left, label)
-		}
 	}
 	if len(left) > 0 {
 		r.rep.Event("warn", "primary key supplemental logging is still on for: "+strings.Join(left, ", ")+
@@ -313,25 +284,11 @@ func (r *runner) snapshotPhase(ctx context.Context) error {
 		return err
 	}
 
-	// The redo stream is read from before the snapshot, far enough back
-	// to include the first change of every transaction still open when
-	// the snapshot is taken. The order of these three reads is what
-	// guarantees it: a transaction open at the snapshot either began
-	// before the first read, and is then seen by the second, or began
-	// after it.
-	before, err := currentSCN(ctx, r.src)
+	scn, mineFrom, err := orasrc.StartPosition(ctx, r.src, r.plan.Catalog)
 	if err != nil {
 		return err
 	}
-	oldest := oldestOpen(ctx, r.src)
-	scn, err := settle(ctx, r.src, r.plan)
-	if err != nil {
-		return err
-	}
-	r.st.SnapshotSCN, r.st.MineFrom = scn, before
-	if oldest > 0 && oldest < before {
-		r.st.MineFrom = oldest
-	}
+	r.st.SnapshotSCN, r.st.MineFrom = scn, mineFrom
 	r.st.ConsistentLSN = fmt.Sprintf("SCN %d", scn)
 	r.save()
 	r.rep.Event("info", fmt.Sprintf("copying %d table(s) as of SCN %d with %d worker(s)", len(r.plan.Tables), scn, r.cfg.SnapshotWorkers))
@@ -348,19 +305,9 @@ func (r *runner) snapshotPhase(ctx context.Context) error {
 // to where the source's counter stands, so the target never hands out a
 // number the source already used.
 func (r *runner) syncSequences(ctx context.Context) (int, error) {
-	owners := make([]string, len(r.plan.Owners))
-	for i, o := range r.plan.Owners {
-		owners[i] = literal(o)
-	}
-	// LAST_NUMBER is at or beyond every value handed out, cached ones included.
-	rows, err := query(ctx, r.src, `SELECT sequence_owner, sequence_name, TO_CHAR(last_number) FROM all_sequences
-		WHERE sequence_owner IN (`+strings.Join(owners, ", ")+`)`)
+	next, err := orasrc.SequencePositions(ctx, r.src, r.plan.Catalog)
 	if err != nil {
 		return 0, err
-	}
-	next := map[string]string{}
-	for _, row := range rows {
-		next[row[0]+"."+row[1]] = row[2]
 	}
 	n := 0
 	for _, s := range r.plan.Sequences {

@@ -2,73 +2,34 @@ package orapg
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"dedie/engine/connector/oracle"
 	"dedie/engine/migrate"
-)
-
-// valueKind says how a column's values are read from Oracle and written
-// to PostgreSQL.
-type valueKind int
-
-const (
-	kText valueKind = iota
-	kNumber
-	kDate
-	kTimestamp
-	kTimestampTZ
-	kTimestampLTZ
-	kIntervalYM
-	kIntervalDS
-	kBinary
-	kRowid
-	kXML
-	kJSON
-	kBool
+	"dedie/engine/migrate/orasrc"
 )
 
 // Column is a source column with its translation.
 type Column struct {
-	Name     string // as Oracle stores it
-	Target   string // on the target
-	DataType string
-	// Precision and Scale are those of a NUMBER; Scale is also the
-	// fractional seconds of a TIMESTAMP.
-	Precision  sql.NullInt64
-	Scale      sql.NullInt64
-	CharLength int64
-	Nullable   bool
-	Virtual    bool
-	Default    string
-	// IdentitySeq is the sequence behind an identity column.
-	IdentitySeq string
-	PGType      string
-	Kind        valueKind
+	orasrc.Column
+	Target string // its name on the target
+	PGType string
 }
 
 // Table is a source table and where it goes.
 type Table struct {
-	Owner, Name    string // source
-	Schema, Target string // target
-	Cols           []Column
-	PK             []int
-	EstRows        int64
+	*orasrc.Table
+	Schema, Target string
+	// Cols are the source table's columns, in the same order, each with
+	// its translation. They take the place of the embedded table's own.
+	Cols []Column
 }
-
-// Source is the table's quoted name in Oracle.
-func (t *Table) Source() string { return oracle.QName(t.Owner, t.Name) }
 
 // QName is the table's quoted name in PostgreSQL.
 func (t *Table) QName() string { return pgx.Identifier{t.Schema, t.Target}.Sanitize() }
-
-// Label names the table in messages.
-func (t *Table) Label() string { return t.Owner + "." + t.Name }
 
 // Sequence is a source sequence that is recreated on the target.
 type Sequence struct {
@@ -88,9 +49,10 @@ type Stmt struct {
 
 // Plan is what will be migrated and how it is translated.
 type Plan struct {
-	// Owners are the Oracle schemas in scope.
-	Owners []string
-	Tables []*Table
+	// Catalog is the source as it describes itself; everything else here
+	// is derived from it.
+	Catalog *orasrc.Catalog
+	Tables  []*Table
 	// Pre creates schemas, sequences and tables; Post builds indexes and
 	// check constraints once the data is in; Final adds foreign keys.
 	// Foreign keys wait until the end because rows are applied table by
@@ -100,19 +62,21 @@ type Plan struct {
 	Sequences        []Sequence
 	// Notes list everything that was translated with a change in meaning
 	// or could not be carried over. Preflight shows them to the operator.
-	Notes []string
-	// Unsupported lists columns whose type cannot be migrated.
-	Unsupported []string
-	byName      map[string]*Table
+	Notes  []string
+	byName map[string]*Table
+	bySrc  map[*orasrc.Table]*Table
 }
 
 // Table finds a table by its Oracle owner and name.
 func (p *Plan) Table(owner, name string) *Table { return p.byName[owner+"."+name] }
 
-// translate sets a column's PostgreSQL type and how its values are read.
-// It returns a note when the translation changes meaning, and false when
-// the type cannot be migrated.
-func translate(c *Column) (note string, ok bool) {
+// of finds the translation of a table of the catalog.
+func (p *Plan) of(t *orasrc.Table) *Table { return p.bySrc[t] }
+
+// translate picks the PostgreSQL type for a column. It returns a note
+// when the translation changes meaning, and false when the type cannot
+// be migrated.
+func translate(c orasrc.Column) (pgType, note string, ok bool) {
 	t := c.DataType
 	fraction := func() string {
 		n := int64(6)
@@ -127,321 +91,122 @@ func translate(c *Column) (note string, ok bool) {
 	}
 	switch {
 	case t == "VARCHAR2" || t == "NVARCHAR2" || t == "VARCHAR":
-		c.Kind, c.PGType = kText, "text"
+		pgType = "text"
 		if c.CharLength > 0 {
-			c.PGType = fmt.Sprintf("varchar(%d)", c.CharLength)
+			pgType = fmt.Sprintf("varchar(%d)", c.CharLength)
 		}
 	case t == "CHAR" || t == "NCHAR":
-		c.Kind, c.PGType = kText, fmt.Sprintf("char(%d)", max(c.CharLength, 1))
+		pgType = fmt.Sprintf("char(%d)", max(c.CharLength, 1))
 	case t == "CLOB" || t == "NCLOB" || t == "LONG":
-		c.Kind, c.PGType = kText, "text"
+		pgType = "text"
 	case t == "NUMBER":
-		c.Kind = kNumber
 		p, s := c.Precision, c.Scale
 		switch {
 		case !p.Valid:
 			// NUMBER without a precision holds any number.
-			c.PGType = "numeric"
+			pgType = "numeric"
 		case s.Int64 == 0 && p.Int64 <= 4:
-			c.PGType = "smallint"
+			pgType = "smallint"
 		case s.Int64 == 0 && p.Int64 <= 9:
-			c.PGType = "integer"
+			pgType = "integer"
 		case s.Int64 == 0 && p.Int64 <= 18:
-			c.PGType = "bigint"
+			pgType = "bigint"
 		case s.Int64 < 0 || s.Int64 > p.Int64:
-			c.PGType = "numeric"
+			pgType = "numeric"
 		default:
-			c.PGType = fmt.Sprintf("numeric(%d,%d)", p.Int64, s.Int64)
+			pgType = fmt.Sprintf("numeric(%d,%d)", p.Int64, s.Int64)
 		}
 	case t == "FLOAT":
 		// FLOAT is a decimal number with a binary precision; up to 53
 		// bits fits a double.
-		c.Kind, c.PGType = kNumber, "numeric"
+		pgType = "numeric"
 		if c.Precision.Valid && c.Precision.Int64 <= 53 {
-			c.PGType = "double precision"
+			pgType = "double precision"
 		}
 	case t == "BINARY_FLOAT":
-		c.Kind, c.PGType = kNumber, "real"
+		pgType = "real"
 	case t == "BINARY_DOUBLE":
-		c.Kind, c.PGType = kNumber, "double precision"
+		pgType = "double precision"
 	case t == "DATE":
 		// An Oracle DATE carries a time of day.
-		c.Kind, c.PGType = kDate, "timestamp(0)"
+		pgType = "timestamp(0)"
 	case strings.HasPrefix(t, "TIMESTAMP") && strings.HasSuffix(t, "WITH LOCAL TIME ZONE"):
-		c.Kind, c.PGType, note = kTimestampLTZ, "timestamptz"+fraction(), lossy
+		pgType, note = "timestamptz"+fraction(), lossy
 	case strings.HasPrefix(t, "TIMESTAMP") && strings.HasSuffix(t, "WITH TIME ZONE"):
-		c.Kind, c.PGType, note = kTimestampTZ, "timestamptz"+fraction(), lossy
+		pgType, note = "timestamptz"+fraction(), lossy
 		if note == "" {
 			note = "TIMESTAMP WITH TIME ZONE keeps the zone each value was entered in; PostgreSQL keeps the instant only"
 		}
 	case strings.HasPrefix(t, "TIMESTAMP"):
-		c.Kind, c.PGType, note = kTimestamp, "timestamp"+fraction(), lossy
+		pgType, note = "timestamp"+fraction(), lossy
 	case strings.HasPrefix(t, "INTERVAL YEAR"):
-		c.Kind, c.PGType = kIntervalYM, "interval year to month"
+		pgType = "interval year to month"
 	case strings.HasPrefix(t, "INTERVAL DAY"):
-		c.Kind, c.PGType = kIntervalDS, "interval day to second"
+		pgType = "interval day to second"
 	case t == "RAW" || t == "LONG RAW" || t == "BLOB":
-		c.Kind, c.PGType = kBinary, "bytea"
+		pgType = "bytea"
 	case t == "ROWID" || t == "UROWID":
-		c.Kind, c.PGType, note = kRowid, "text", "a ROWID is stored as text and no longer points at a row"
+		pgType, note = "text", "a ROWID is stored as text and no longer points at a row"
 	case t == "XMLTYPE":
-		c.Kind, c.PGType = kXML, "xml"
+		pgType = "xml"
 	case t == "JSON":
-		c.Kind, c.PGType = kJSON, "jsonb"
+		pgType = "jsonb"
 	case t == "BOOLEAN":
-		c.Kind, c.PGType = kBool, "boolean"
+		pgType = "boolean"
 	default:
-		return "", false
+		return "", "", false
 	}
-	return note, true
-}
-
-// scopeOf works out which Oracle schemas and tables the options select.
-// Names are matched without regard to case, as Oracle does for unquoted
-// names. only is nil when every table of the schemas is wanted.
-func scopeOf(cfg migrate.Config, user string) (owners []string, only, exclude map[string]bool) {
-	seen := map[string]bool{}
-	addOwner := func(o string) {
-		o = strings.ToUpper(strings.TrimSpace(o))
-		if o != "" && !seen[o] {
-			seen[o] = true
-			owners = append(owners, o)
-		}
-	}
-	full := func(name string) string {
-		name = strings.ToUpper(strings.TrimSpace(name))
-		if !strings.Contains(name, ".") {
-			name = strings.ToUpper(user) + "." + name
-		}
-		return name
-	}
-	exclude = map[string]bool{}
-	for _, t := range cfg.ExcludeTables {
-		exclude[full(t)] = true
-	}
-	if len(cfg.Tables) > 0 {
-		only = map[string]bool{}
-		for _, t := range cfg.Tables {
-			name := full(t)
-			only[name] = true
-			addOwner(name[:strings.Index(name, ".")])
-		}
-		return owners, only, exclude
-	}
-	for _, s := range cfg.Schemas {
-		addOwner(s)
-	}
-	if len(owners) == 0 {
-		addOwner(user)
-	}
-	return owners, nil, exclude
-}
-
-// query runs a catalog query and returns its rows as text; NULL comes
-// back as an empty string.
-func query(ctx context.Context, src oracle.Queryer, text string, args ...any) ([][]string, error) {
-	rows, err := src.QueryContext(ctx, text, args...)
-	if err != nil {
-		return nil, oracle.Friendly(err)
-	}
-	defer rows.Close()
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, err
-	}
-	var out [][]string
-	for rows.Next() {
-		raw := make([]sql.NullString, len(cols))
-		dest := make([]any, len(cols))
-		for i := range raw {
-			dest[i] = &raw[i]
-		}
-		if err := rows.Scan(dest...); err != nil {
-			return nil, oracle.Friendly(err)
-		}
-		row := make([]string, len(cols))
-		for i, v := range raw {
-			row[i] = v.String
-		}
-		out = append(out, row)
-	}
-	return out, oracle.Friendly(rows.Err())
-}
-
-func nullInt(s string) sql.NullInt64 {
-	var n sql.NullInt64
-	if s != "" {
-		if _, err := fmt.Sscan(s, &n.Int64); err == nil {
-			n.Valid = true
-		}
-	}
-	return n
+	return pgType, note, true
 }
 
 // BuildPlan reads the source catalog and translates it.
 func BuildPlan(ctx context.Context, src oracle.Queryer, cfg migrate.Config) (*Plan, error) {
-	var user string
-	if err := src.QueryRowContext(ctx, `SELECT SYS_CONTEXT('USERENV','CURRENT_SCHEMA') FROM dual`).Scan(&user); err != nil {
-		return nil, oracle.Friendly(err)
-	}
-	owners, only, exclude := scopeOf(cfg, user)
-	p := &Plan{Owners: owners, byName: map[string]*Table{}}
-	quoted := make([]string, len(owners))
-	for i, o := range owners {
-		quoted[i] = literal(o)
-	}
-	in := "IN (" + strings.Join(quoted, ", ") + ")"
-
-	known, err := query(ctx, src, `SELECT username FROM all_users WHERE username `+in)
+	cat, err := orasrc.LoadCatalog(ctx, src, cfg)
 	if err != nil {
 		return nil, err
 	}
-	if len(known) != len(owners) {
-		have := map[string]bool{}
-		for _, r := range known {
-			have[r[0]] = true
-		}
-		for _, o := range owners {
-			if !have[o] {
-				return nil, fmt.Errorf("the source has no schema named %s", o)
+	p := &Plan{Catalog: cat, byName: map[string]*Table{}, bySrc: map[*orasrc.Table]*Table{}}
+	for _, st := range cat.Tables {
+		t := &Table{Table: st, Schema: pgName(st.Owner), Target: pgName(st.Name)}
+		for _, sc := range st.Cols {
+			c := Column{Column: sc, Target: pgName(sc.Name)}
+			var note string
+			var ok bool
+			if c.PGType, note, ok = translate(sc); !ok || sc.Unsupported {
+				c.PGType = "text"
 			}
+			// PostgreSQL only makes identity columns of its integer types. A
+			// wider NUMBER behind one still only ever holds whole numbers,
+			// and a bigint outlasts any sequence.
+			if c.IdentitySeq != "" && c.PGType != "smallint" && c.PGType != "integer" {
+				c.PGType = "bigint"
+			}
+			if note != "" {
+				p.Notes = append(p.Notes, fmt.Sprintf("%s.%s: %s", t.Label(), c.Name, note))
+			}
+			t.Cols = append(t.Cols, c)
 		}
-	}
-
-	// Tables that only exist to serve another object are left out: nested
-	// and overflow tables, materialized view containers, external tables, the recycle bin.
-	rows, err := query(ctx, src, `SELECT t.owner, t.table_name, NVL(t.num_rows, 0) FROM all_tables t
-		WHERE t.owner `+in+` AND t.nested = 'NO' AND t.secondary = 'N' AND t.dropped = 'NO' AND t.temporary = 'N'
-		  AND (t.iot_type IS NULL OR t.iot_type = 'IOT')
-		  AND NOT EXISTS (SELECT 1 FROM all_external_tables e WHERE e.owner = t.owner AND e.table_name = t.table_name)
-		  AND NOT EXISTS (SELECT 1 FROM all_mviews m WHERE m.owner = t.owner AND m.container_name = t.table_name)
-		ORDER BY 1, 2`)
-	if err != nil {
-		return nil, err
-	}
-	for _, r := range rows {
-		key := strings.ToUpper(r[0] + "." + r[1])
-		if exclude[key] || (only != nil && !only[key]) {
-			continue
-		}
-		delete(only, key)
-		t := &Table{Owner: r[0], Name: r[1], Schema: pgName(r[0]), Target: pgName(r[1])}
-		fmt.Sscan(r[2], &t.EstRows)
 		p.Tables = append(p.Tables, t)
-		p.byName[r[0]+"."+r[1]] = t
+		p.byName[t.Label()] = t
+		p.bySrc[st] = t
 	}
-	if len(only) > 0 {
-		var missing []string
-		for name := range only {
-			missing = append(missing, name)
-		}
-		sort.Strings(missing)
-		return nil, fmt.Errorf("these tables do not exist on the source or cannot be read by this account: %s", strings.Join(missing, ", "))
-	}
-	if len(p.Tables) == 0 {
-		return nil, fmt.Errorf("there are no tables to migrate in %s; name the schemas to migrate if they are not the connecting user's own", strings.Join(owners, ", "))
-	}
-
-	if err := p.loadColumns(ctx, src, in); err != nil {
-		return nil, err
-	}
-	if err := p.loadKeys(ctx, src, in); err != nil {
-		return nil, err
-	}
-	// Sequences are carried over for whole schemas; a table-level
-	// migration takes only what its identity columns need.
-	if only == nil {
-		if err := p.loadSequences(ctx, src, in); err != nil {
-			return nil, err
-		}
-	}
-	// Foreign keys are read before the tables are written out, because
-	// they can change a column's type.
-	if err := p.loadForeignKeys(ctx, src, in); err != nil {
-		return nil, err
-	}
+	p.sequences()
+	// Foreign keys are translated before the tables are written out,
+	// because they can change a column's type.
+	p.foreignKeys()
 	p.buildTables()
-	if err := p.loadIndexes(ctx, src, in); err != nil {
-		return nil, err
-	}
-	if err := p.loadChecks(ctx, src, in); err != nil {
-		return nil, err
-	}
+	p.indexes()
+	p.checks()
 	return p, nil
-}
-
-func (p *Plan) loadColumns(ctx context.Context, src oracle.Queryer, in string) error {
-	// ALL_TAB_COLS also lists the hidden columns Oracle adds for itself.
-	rows, err := query(ctx, src, `SELECT c.owner, c.table_name, c.column_name, c.data_type, c.data_type_owner, c.data_precision, c.data_scale,
-			c.char_length, c.nullable, c.virtual_column, c.data_default,
-			(SELECT MAX(i.sequence_name) FROM all_tab_identity_cols i WHERE i.owner = c.owner AND i.table_name = c.table_name AND i.column_name = c.column_name)
-		FROM all_tab_cols c WHERE c.owner `+in+` AND c.hidden_column = 'NO' ORDER BY c.owner, c.table_name, c.column_id`)
-	if err != nil {
-		return err
-	}
-	for _, r := range rows {
-		t := p.Table(r[0], r[1])
-		if t == nil {
-			continue
-		}
-		c := Column{Name: r[2], Target: pgName(r[2]), DataType: r[3], Precision: nullInt(r[5]), Scale: nullInt(r[6]),
-			Nullable: r[8] == "Y", Virtual: r[9] == "YES", Default: strings.TrimSpace(r[10]), IdentitySeq: r[11]}
-		fmt.Sscan(r[7], &c.CharLength)
-		// A type with an owner other than Oracle's own is user-defined.
-		userType := r[4] != "" && r[4] != "SYS" && r[4] != "PUBLIC"
-		note, ok := translate(&c)
-		if !ok || userType {
-			p.Unsupported = append(p.Unsupported, fmt.Sprintf("%s.%s (%s)", t.Label(), c.Name, c.DataType))
-			c.Kind, c.PGType = kText, "text"
-		}
-		// PostgreSQL only makes identity columns of its integer types. A
-		// wider NUMBER behind one still only ever holds whole numbers,
-		// and a bigint outlasts any sequence.
-		if c.IdentitySeq != "" && c.PGType != "smallint" && c.PGType != "integer" {
-			c.PGType = "bigint"
-		}
-		if note != "" {
-			p.Notes = append(p.Notes, fmt.Sprintf("%s.%s: %s", t.Label(), c.Name, note))
-		}
-		t.Cols = append(t.Cols, c)
-	}
-	return nil
-}
-
-func (p *Plan) loadKeys(ctx context.Context, src oracle.Queryer, in string) error {
-	rows, err := query(ctx, src, `SELECT k.owner, k.table_name, c.column_name FROM all_constraints k
-		JOIN all_cons_columns c ON c.owner = k.owner AND c.constraint_name = k.constraint_name
-		WHERE k.owner `+in+` AND k.constraint_type = 'P' AND k.status = 'ENABLED' ORDER BY 1, 2, c.position`)
-	if err != nil {
-		return err
-	}
-	for _, r := range rows {
-		t := p.Table(r[0], r[1])
-		if t == nil {
-			continue
-		}
-		for i, c := range t.Cols {
-			if c.Name == r[2] {
-				t.PK = append(t.PK, i)
-			}
-		}
-	}
-	return nil
 }
 
 // bigintMax is the largest value a PostgreSQL sequence can reach.
 const bigintMax = "9223372036854775807"
 
-func (p *Plan) loadSequences(ctx context.Context, src oracle.Queryer, in string) error {
-	// Sequences named ISEQ$$ belong to identity columns.
-	rows, err := query(ctx, src, `SELECT sequence_owner, sequence_name, TO_CHAR(min_value), TO_CHAR(max_value), TO_CHAR(increment_by),
-			cycle_flag, TO_CHAR(cache_size), TO_CHAR(last_number)
-		FROM all_sequences WHERE sequence_owner `+in+` AND sequence_name NOT LIKE 'ISEQ$$%' ORDER BY 1, 2`)
-	if err != nil {
-		return err
-	}
-	for _, r := range rows {
-		s := Sequence{Owner: r[0], Name: r[1], Schema: pgName(r[0]), Target: pgName(r[1])}
+// sequences writes the CREATE SEQUENCE statements.
+func (p *Plan) sequences() {
+	for _, src := range p.Catalog.Sequences {
+		s := Sequence{Owner: src.Owner, Name: src.Name, Schema: pgName(src.Owner), Target: pgName(src.Name)}
 		// Oracle's default bounds are wider than a bigint; anything out
 		// of range becomes "no limit".
 		bound := func(word, v string) string {
@@ -451,18 +216,17 @@ func (p *Plan) loadSequences(ctx context.Context, src oracle.Queryer, in string)
 			}
 			return " " + word + " " + v
 		}
-		ddl := "CREATE SEQUENCE " + pgx.Identifier{s.Schema, s.Target}.Sanitize() + " INCREMENT BY " + r[4] +
-			bound("MINVALUE", r[2]) + bound("MAXVALUE", r[3]) + " START WITH " + r[7]
-		if r[6] != "" && r[6] != "0" {
-			ddl += " CACHE " + r[6]
+		ddl := "CREATE SEQUENCE " + pgx.Identifier{s.Schema, s.Target}.Sanitize() + " INCREMENT BY " + src.Increment +
+			bound("MINVALUE", src.Min) + bound("MAXVALUE", src.Max) + " START WITH " + src.Last
+		if src.Cache != "" && src.Cache != "0" {
+			ddl += " CACHE " + src.Cache
 		}
-		if r[5] == "Y" {
+		if src.Cycle {
 			ddl += " CYCLE"
 		}
 		p.Sequences = append(p.Sequences, s)
 		p.Pre = append(p.Pre, Stmt{Kind: "sequence", Name: s.Schema + "." + s.Target, SQL: ddl, Soft: true})
 	}
-	return nil
 }
 
 // buildTables writes the CREATE TABLE statements. Schemas come first and
