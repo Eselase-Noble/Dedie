@@ -54,6 +54,8 @@ type Actor struct {
 	SessionID string
 	// Token names the API token used instead of a session, if any.
 	Token string
+	// TokenID is that token's id.
+	TokenID string
 	// MustEnroll is set when the organization requires two-factor sign-in
 	// and this user has not set it up yet.
 	MustEnroll bool

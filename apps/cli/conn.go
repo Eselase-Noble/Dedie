@@ -35,11 +35,11 @@ func (c *cli) connAdd(args []string) error {
 		return err
 	}
 	in.Password = pw
-	info, err := c.app.TestInput(c.ctx, c.actor, in)
+	info, err := c.be.TestInput(in)
 	if err != nil {
 		return err
 	}
-	conn, err := c.app.SaveConnection(c.ctx, c.actor, "", in)
+	conn, err := c.be.SaveConnection("", in)
 	if err != nil {
 		return err
 	}
@@ -48,7 +48,7 @@ func (c *cli) connAdd(args []string) error {
 }
 
 func (c *cli) connList() error {
-	list, err := c.app.ListConnections(c.ctx, c.actor)
+	list, err := c.be.ListConnections()
 	if err != nil {
 		return err
 	}
@@ -69,7 +69,7 @@ func (c *cli) connTest(args []string) error {
 	if err != nil {
 		return err
 	}
-	info, err := c.app.TestConnection(c.ctx, c.actor, name)
+	info, err := c.be.TestConnection(name)
 	if err != nil {
 		return err
 	}
@@ -83,7 +83,7 @@ func (c *cli) connRemove(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := c.app.DeleteConnection(c.ctx, c.actor, name); err != nil {
+	if err := c.be.DeleteConnection(name); err != nil {
 		return err
 	}
 	fmt.Println("Deleted", name)
@@ -98,7 +98,7 @@ func (c *cli) query(args []string) error {
 	if len(pos) != 2 {
 		return fmt.Errorf("usage: dedie query [--write] <connection> <sql>")
 	}
-	resp, err := c.app.Query(c.ctx, c.actor, pos[0], app.QueryRequest{SQL: pos[1], Write: *write, MaxRows: *maxRows})
+	resp, err := c.be.Query(pos[0], app.QueryRequest{SQL: pos[1], Write: *write, MaxRows: *maxRows})
 	if err != nil {
 		return err
 	}

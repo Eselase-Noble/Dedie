@@ -34,7 +34,7 @@ func (c *cli) userAdd(args []string) error {
 	if err != nil {
 		return err
 	}
-	u, err := c.app.CreateUser(c.ctx, c.actor, *name, *email, pw, *role)
+	u, err := c.be.CreateUser(*name, *email, pw, *role)
 	if err != nil {
 		return err
 	}
@@ -46,7 +46,7 @@ func (c *cli) auditList(args []string) error {
 	fs := flag.NewFlagSet("audit list", flag.ExitOnError)
 	limit := fs.Int("n", 50, "number of entries")
 	fs.Parse(args)
-	entries, err := c.app.ListAudit(c.ctx, c.actor, 0, *limit)
+	entries, err := c.be.ListAudit(0, *limit)
 	if err != nil {
 		return err
 	}
@@ -59,7 +59,7 @@ func (c *cli) auditList(args []string) error {
 }
 
 func (c *cli) auditVerify() error {
-	v, err := c.app.VerifyAudit(c.ctx, c.actor)
+	v, err := c.be.VerifyAudit()
 	if err != nil {
 		return err
 	}

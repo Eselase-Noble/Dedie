@@ -196,7 +196,7 @@ func (a *App) AuthenticateToken(ctx context.Context, token, ip string) (Actor, e
 	if roleRank[t.Role] < roleRank[u.Role] {
 		u.Role = t.Role
 	}
-	return Actor{User: u, IP: ip, Token: t.Name}, nil
+	return Actor{User: u, IP: ip, Token: t.Name, TokenID: t.ID}, nil
 }
 
 func (a *App) Logout(ctx context.Context, actor Actor, token string) {

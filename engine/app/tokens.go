@@ -70,10 +70,13 @@ func (a *App) ListTokens(ctx context.Context, actor Actor) ([]store.APIToken, er
 }
 
 // RevokeToken deletes a token: the caller's own, or anyone's for an
-// administrator.
+// administrator. A token may revoke itself, which is how `dedie logout`
+// ends a command-line sign-in, but no other token.
 func (a *App) RevokeToken(ctx context.Context, actor Actor, id string) error {
-	if err := actor.interactive(); err != nil {
-		return err
+	if actor.TokenID != id {
+		if err := actor.interactive(); err != nil {
+			return err
+		}
 	}
 	t, err := a.Store.GetAPIToken(ctx, actor.User.OrgID, id)
 	if err != nil {

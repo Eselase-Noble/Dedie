@@ -20,7 +20,7 @@ func (c *cli) backupCreate(args []string) error {
 		return err
 	}
 	fmt.Println("Backing up", conn, "...")
-	b, err := c.app.CreateBackup(c.ctx, c.actor, app.BackupInput{ConnectionID: conn, Note: *note, Type: *typ, Tables: splitList(*tables)}, true)
+	b, err := c.be.CreateBackup(app.BackupInput{ConnectionID: conn, Note: *note, Type: *typ, Tables: splitList(*tables)}, true)
 	if err != nil {
 		return err
 	}
@@ -32,7 +32,7 @@ func (c *cli) backupCreate(args []string) error {
 }
 
 func (c *cli) backupList() error {
-	list, err := c.app.ListBackups(c.ctx, c.actor)
+	list, err := c.be.ListBackups()
 	if err != nil {
 		return err
 	}
@@ -49,7 +49,7 @@ func (c *cli) backupVerify(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := c.app.VerifyBackup(c.ctx, c.actor, id); err != nil {
+	if err := c.be.VerifyBackup(id); err != nil {
 		return err
 	}
 	fmt.Println("Backup is intact and decrypts correctly.")
@@ -71,7 +71,7 @@ func (c *cli) backupRestore(args []string) error {
 	}
 	in.Tables = splitList(*tables)
 	fmt.Println("Restoring", id, "...")
-	if _, err := c.app.RestoreBackup(c.ctx, c.actor, id, in, true); err != nil {
+	if _, err := c.be.RestoreBackup(id, in, true); err != nil {
 		return err
 	}
 	fmt.Println("Restore completed.")
@@ -83,7 +83,7 @@ func (c *cli) backupRemove(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := c.app.DeleteBackup(c.ctx, c.actor, id); err != nil {
+	if err := c.be.DeleteBackup(id); err != nil {
 		return err
 	}
 	fmt.Println("Deleted", id)
@@ -95,7 +95,7 @@ func (c *cli) backupExport(args []string) error {
 	if len(args) != 2 {
 		return errors.New("usage: dedie backup export <id> <file>")
 	}
-	src, _, err := c.app.ExportBackup(c.ctx, c.actor, args[0])
+	src, _, err := c.be.ExportBackup(args[0])
 	if err != nil {
 		return err
 	}
@@ -121,7 +121,7 @@ func (c *cli) backupExtract(args []string) error {
 	if len(args) != 2 {
 		return errors.New("usage: dedie backup extract <id> <directory>")
 	}
-	files, err := c.app.ExtractBackup(c.ctx, c.actor, args[0], args[1])
+	files, err := c.be.ExtractBackup(args[0], args[1])
 	if err != nil {
 		return err
 	}
@@ -142,7 +142,7 @@ func (c *cli) scheduleAdd(args []string) error {
 	fs.BoolVar(&in.Verify, "verify", true, "verify each backup after it is written")
 	parse(fs, args)
 	in.Tables = splitList(*tables)
-	sc, err := c.app.SaveSchedule(c.ctx, c.actor, "", in)
+	sc, err := c.be.SaveSchedule("", in)
 	if err != nil {
 		return err
 	}
@@ -151,7 +151,7 @@ func (c *cli) scheduleAdd(args []string) error {
 }
 
 func (c *cli) scheduleList() error {
-	list, err := c.app.ListSchedules(c.ctx, c.actor)
+	list, err := c.be.ListSchedules()
 	if err != nil {
 		return err
 	}
@@ -172,7 +172,7 @@ func (c *cli) scheduleRemove(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := c.app.DeleteSchedule(c.ctx, c.actor, id); err != nil {
+	if err := c.be.DeleteSchedule(id); err != nil {
 		return err
 	}
 	fmt.Println("Deleted", id)
