@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
 import type { Catalog, ColumnDef, Connection } from "@/lib/types";
 import { Banner, Checkbox, Field, Modal } from "./ui";
@@ -44,6 +44,20 @@ export default function CreateObject({ what, connection, catalog, canAddConnecti
   ]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // A PostgreSQL schema or table is created inside one database. It
+  // defaults to the connection's own, and any other database on the same
+  // server can be chosen.
+  const pickDatabase = connection.kind !== "mysql" && what !== "database";
+  const [database, setDatabase] = useState(connection.database);
+  const [databases, setDatabases] = useState<string[]>([connection.database]);
+  const elsewhere = pickDatabase && database !== connection.database;
+
+  useEffect(() => {
+    if (!pickDatabase) return;
+    api.serverObjects(connection.id)
+      .then((objects) => setDatabases(objects.databases.map((d) => d.name)))
+      .catch(() => setDatabases([connection.database]));
+  }, [pickDatabase, connection.id, connection.database]);
 
   const setColumn = (i: number, patch: Partial<ColumnDef>) =>
     setColumns((cols) => cols.map((c, j) => (j === i ? { ...c, ...patch } : c)));
@@ -59,12 +73,12 @@ export default function CreateObject({ what, connection, catalog, canAddConnecti
           ? `Database ${name} created. A connection named "${res.connection.name}" was added for it.`
           : `Database ${name} created.`);
       } else if (what === "schema") {
-        await api.createSchema(connection.id, name);
-        onCreated(`Schema ${name} created.`);
+        await api.createSchema(connection.id, name, elsewhere ? database : "");
+        onCreated(`Schema ${name} created in database ${database}.`);
       } else {
         const cols = columns.filter((c) => c.name.trim() !== "");
-        await api.createTable(connection.id, { schema, name, columns: cols });
-        onCreated(`Table ${schema}.${name} created.`);
+        await api.createTable(connection.id, { schema, name, columns: cols }, elsewhere ? database : "");
+        onCreated(pickDatabase ? `Table ${schema}.${name} created in database ${database}.` : `Table ${schema}.${name} created.`);
       }
     } catch (err) {
       setError(errorMessage(err));
@@ -93,11 +107,26 @@ export default function CreateObject({ what, connection, catalog, canAddConnecti
           create a {what}.
         </p>
 
+        {pickDatabase && (
+          <Field label="Database" hint={elsewhere
+            ? `Another database on the same server, reached with the same account. This connection stays on ${connection.database}.`
+            : `The ${what} is created in this database. Choose another to create it elsewhere on the same server.`}>
+            <select className="select" value={database} onChange={(e) => setDatabase(e.target.value)}>
+              {databases.map((d) => <option key={d} value={d}>{d}{d === connection.database ? " (this connection)" : ""}</option>)}
+            </select>
+          </Field>
+        )}
         {what === "table" && (
           <Field label={connection.kind === "mysql" ? "Database" : "Schema"}>
-            <select className="select" value={schema} onChange={(e) => setSchema(e.target.value)}>
-              {(schemas.length ? schemas : [schema]).map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+            {elsewhere ? (
+              // The schema list on screen belongs to the connection's own
+              // database, so for another one the name is typed.
+              <input className="input" value={schema} onChange={(e) => setSchema(e.target.value)} required placeholder="public" />
+            ) : (
+              <select className="select" value={schema} onChange={(e) => setSchema(e.target.value)}>
+                {(schemas.length ? schemas : [schema]).map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            )}
           </Field>
         )}
         <Field label={`${what[0].toUpperCase()}${what.slice(1)} name`}>

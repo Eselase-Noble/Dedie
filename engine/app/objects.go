@@ -28,6 +28,79 @@ func (a *App) writable(ctx context.Context, actor Actor, connID string) (store.C
 	return c, sess, err
 }
 
+// writableIn is writable for another database on the connection's server,
+// reached with the same account. PostgreSQL ties a session to one
+// database, so creating a schema or table elsewhere needs its own session.
+func (a *App) writableIn(ctx context.Context, actor Actor, connID, database string) (store.Connection, connector.Session, error) {
+	if database == "" {
+		return a.writable(ctx, actor, connID)
+	}
+	if err := actor.require(PermQueryWrite); err != nil {
+		return store.Connection{}, nil, err
+	}
+	c, err := a.conn(ctx, actor, connID)
+	if err != nil {
+		return c, nil, err
+	}
+	if c.ReadOnly {
+		return c, nil, &Error{Status: 403, Message: "this connection is marked read-only"}
+	}
+	cfg, err := a.config(c)
+	if err != nil {
+		return c, nil, err
+	}
+	cfg.Database = database
+	drv, err := connector.Get(c.Kind)
+	if err != nil {
+		return c, nil, err
+	}
+	sess, err := drv.Open(ctx, cfg)
+	if err != nil {
+		return c, nil, &Error{Status: 502, Message: "could not connect to " + database + ": " + err.Error()}
+	}
+	return c, sess, nil
+}
+
+// ServerObjects lists the databases and roles of a connection's server.
+func (a *App) ServerObjects(ctx context.Context, actor Actor, connID string) (*connector.ServerObjects, error) {
+	if err := actor.require(PermQueryRead); err != nil {
+		return nil, err
+	}
+	_, sess, err := a.open(ctx, actor, connID)
+	if err != nil {
+		return nil, err
+	}
+	defer sess.Close(context.WithoutCancel(ctx))
+	out, err := sess.ServerObjects(ctx)
+	if err != nil {
+		return nil, &Error{Status: 422, Message: err.Error()}
+	}
+	return out, nil
+}
+
+// SetOwner gives a database, schema or table to another role. database
+// names the database that holds the schema or table when it is not the
+// connection's own.
+func (a *App) SetOwner(ctx context.Context, actor Actor, connID, database string, change connector.OwnerChange) error {
+	if err := actor.require(PermServerAdmin); err != nil {
+		return err
+	}
+	if change.Kind == connector.OwnDatabase {
+		database = ""
+	}
+	c, sess, err := a.writableIn(ctx, actor, connID, database)
+	if err != nil {
+		return err
+	}
+	defer sess.Close(context.WithoutCancel(ctx))
+	if err := sess.SetOwner(ctx, change); err != nil {
+		return &Error{Status: 422, Message: err.Error()}
+	}
+	a.audit(ctx, actor, "object.set_owner", c.ID, map[string]string{"connection": c.Name, "database": database, "kind": change.Kind,
+		"schema": change.Schema, "name": change.Name, "owner": change.Owner})
+	return nil
+}
+
 // CreateDatabase creates a database on the connection's server. With
 // addConnection it also saves a connection to the new database, using the
 // same server and credentials, and returns it.
@@ -71,8 +144,10 @@ func (a *App) CreateDatabase(ctx context.Context, actor Actor, connID, name stri
 	return &created, nil
 }
 
-func (a *App) CreateSchema(ctx context.Context, actor Actor, connID, name string) error {
-	c, sess, err := a.writable(ctx, actor, connID)
+// CreateSchema creates a schema in the connection's database, or in
+// another database on the same server when one is named.
+func (a *App) CreateSchema(ctx context.Context, actor Actor, connID, database, name string) error {
+	c, sess, err := a.writableIn(ctx, actor, connID, database)
 	if err != nil {
 		return err
 	}
@@ -80,12 +155,12 @@ func (a *App) CreateSchema(ctx context.Context, actor Actor, connID, name string
 	if err := sess.CreateSchema(ctx, name); err != nil {
 		return &Error{Status: 422, Message: err.Error()}
 	}
-	a.audit(ctx, actor, "object.create_schema", c.ID, map[string]string{"connection": c.Name, "schema": name})
+	a.audit(ctx, actor, "object.create_schema", c.ID, map[string]string{"connection": c.Name, "database": database, "schema": name})
 	return nil
 }
 
-func (a *App) CreateTable(ctx context.Context, actor Actor, connID string, def connector.TableDef) error {
-	c, sess, err := a.writable(ctx, actor, connID)
+func (a *App) CreateTable(ctx context.Context, actor Actor, connID, database string, def connector.TableDef) error {
+	c, sess, err := a.writableIn(ctx, actor, connID, database)
 	if err != nil {
 		return err
 	}
@@ -93,7 +168,7 @@ func (a *App) CreateTable(ctx context.Context, actor Actor, connID string, def c
 	if err := sess.CreateTable(ctx, def); err != nil {
 		return &Error{Status: 422, Message: err.Error()}
 	}
-	a.audit(ctx, actor, "object.create_table", c.ID, map[string]any{"connection": c.Name, "schema": def.Schema, "table": def.Name, "columns": len(def.Columns)})
+	a.audit(ctx, actor, "object.create_table", c.ID, map[string]any{"connection": c.Name, "database": database, "schema": def.Schema, "table": def.Name, "columns": len(def.Columns)})
 	return nil
 }
 

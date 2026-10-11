@@ -9,7 +9,7 @@ export default function TableDetails({ schema, table, onClose }: { schema: strin
   return (
     <Modal wide title={`${schema}.${table.name}`} onClose={onClose} footer={<button className="btn primary" onClick={onClose}>Close</button>}>
       <p className="muted" style={{ marginBottom: 12 }}>
-        About {formatNumber(table.est_rows)} rows · {formatBytes(table.size_bytes)} · {table.columns.length} columns · {table.indexes.length} indexes
+        {table.owner && <>Owned by <strong>{table.owner}</strong> · </>}About {formatNumber(table.est_rows)} rows · {formatBytes(table.size_bytes)} · {table.columns.length} columns · {table.indexes.length} indexes
       </p>
       <div className="table-wrap" style={{ marginBottom: 16 }}>
         <table className="data">

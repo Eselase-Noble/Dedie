@@ -74,6 +74,8 @@ func New(a *app.App, opts Options) http.Handler {
 	mux.HandleFunc("POST /api/v1/connections/{id}/schemas", s.authed(s.createSchema))
 	mux.HandleFunc("POST /api/v1/connections/{id}/tables", s.authed(s.createTable))
 	mux.HandleFunc("POST /api/v1/connections/{id}/rows", s.authed(s.changeRow))
+	mux.HandleFunc("GET /api/v1/connections/{id}/server-objects", s.authed(s.serverObjects))
+	mux.HandleFunc("POST /api/v1/connections/{id}/owner", s.authed(s.setOwner))
 
 	mux.HandleFunc("GET /api/v1/queries", s.authed(s.listSavedQueries))
 	mux.HandleFunc("POST /api/v1/queries", s.authed(s.saveQuery))

@@ -48,10 +48,44 @@ type Session interface {
 	CreateDatabase(ctx context.Context, name string) error
 	CreateSchema(ctx context.Context, name string) error
 	CreateTable(ctx context.Context, def TableDef) error
+	// ServerObjects lists the server's databases and roles.
+	ServerObjects(ctx context.Context) (*ServerObjects, error)
+	// SetOwner hands a database, schema or table to another role.
+	SetOwner(ctx context.Context, change OwnerChange) error
 	// ChangeRow inserts, updates or deletes exactly one row. Values are
 	// bound as parameters, never spliced into the statement.
 	ChangeRow(ctx context.Context, change RowChange) error
 	Close(ctx context.Context) error
+}
+
+// ServerObjects is what exists on a server beyond the connected database.
+type ServerObjects struct {
+	Databases []Database `json:"databases"`
+	// Roles lists the roles an object can be given to. It is empty for
+	// databases that have no notion of object ownership.
+	Roles []string `json:"roles"`
+	// Ownership reports whether objects have owners on this kind of server.
+	Ownership bool `json:"ownership"`
+}
+
+type Database struct {
+	Name  string `json:"name"`
+	Owner string `json:"owner,omitempty"`
+}
+
+// Object kinds whose owner can be changed.
+const (
+	OwnDatabase = "database"
+	OwnSchema   = "schema"
+	OwnTable    = "table"
+)
+
+// OwnerChange names an object and the role that should own it.
+type OwnerChange struct {
+	Kind   string `json:"kind"`
+	Schema string `json:"schema"`
+	Name   string `json:"name"`
+	Owner  string `json:"owner"`
 }
 
 // Row actions.
@@ -238,6 +272,7 @@ type Catalog struct {
 
 type Schema struct {
 	Name      string   `json:"name"`
+	Owner     string   `json:"owner,omitempty"`
 	Tables    []Table  `json:"tables"`
 	Views     []Table  `json:"views"`
 	Functions []string `json:"functions"`
@@ -246,6 +281,7 @@ type Schema struct {
 
 type Table struct {
 	Name    string        `json:"name"`
+	Owner   string        `json:"owner,omitempty"`
 	EstRows int64         `json:"est_rows"`
 	Size    int64         `json:"size_bytes"`
 	Columns []TableColumn `json:"columns"`

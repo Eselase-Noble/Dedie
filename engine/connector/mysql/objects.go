@@ -50,3 +50,27 @@ func (s *session) CreateTable(ctx context.Context, def connector.TableDef) error
 	_, err := s.conn.ExecContext(ctx, "CREATE TABLE "+name+" (\n  "+strings.Join(cols, ",\n  ")+"\n) ENGINE=InnoDB")
 	return Friendly(err)
 }
+
+// ServerObjects lists the databases on the server. MySQL objects have no
+// owner: access is decided by privileges alone, so no roles are offered.
+func (s *session) ServerObjects(ctx context.Context) (*connector.ServerObjects, error) {
+	out := &connector.ServerObjects{Databases: []connector.Database{}, Roles: []string{}}
+	rows, err := s.conn.QueryContext(ctx, `SELECT schema_name FROM information_schema.schemata
+		WHERE schema_name NOT IN ('mysql','sys','information_schema','performance_schema') ORDER BY 1`)
+	if err != nil {
+		return nil, Friendly(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var d connector.Database
+		if err := rows.Scan(&d.Name); err != nil {
+			return nil, err
+		}
+		out.Databases = append(out.Databases, d)
+	}
+	return out, Friendly(rows.Err())
+}
+
+func (s *session) SetOwner(ctx context.Context, c connector.OwnerChange) error {
+	return errors.New("MySQL objects have no owner; access is controlled with GRANT and REVOKE")
+}
