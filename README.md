@@ -16,6 +16,7 @@ Dedie moves a production database to a newer server version, or to a different d
 - [Programs](#programs)
 - [Quick start](#quick-start)
 - [The web interface](#the-web-interface)
+- [Notifications](#notifications)
 - [The command line](#the-command-line)
 - [The desktop application](#the-desktop-application)
 - [Migrating a database](#migrating-a-database)
@@ -141,16 +142,37 @@ bin/dedie-server --addr 127.0.0.1:8080 --behind-tls-proxy
 | Overview | See connections, migrations and recent backups at a glance. |
 | Connections | Add, edit, test and delete connections, see which servers are online, and restrict a connection to chosen people. Passwords are write-only; weak SSL modes are flagged. |
 | Query browser | Browse schemas; open tables and edit their rows; write, format, explain and save SQL in tabs; sort, filter and export results; create databases, schemas and tables; change owners. |
-| Migrations | Create a migration or a continuous sync at database, schema or table level; run the preflight check; watch phase, lag and per-table progress; pause, resume, cut over or abort. |
+| Migrations | Create an online or offline migration or a continuous sync at database, schema or table level; see every supported path; run the preflight check and keep its report; preview the schema that will be created; decide what happens to objects the target already has; watch phase, progress, lag and time remaining; pause, resume, cut over, abort or duplicate. |
 | Backups | Take a backup of any type, schedule backups with retention, verify, download, restore into an existing or a new database, and review restore history. |
 | Monitoring | Uptime and response time of every database, migrations in progress, alert channels and recent alerts. |
 | Server activity | Inspect sessions, sizes, replication slots and settings; cancel or terminate a session. |
 | Database users | Create and change users on a database server, set connection limits, and see and disconnect who is connected. |
 | Dedie users | Create users, change roles, disable accounts, reset passwords and two-factor sign-in, and set the security policy. |
 | Audit log | Read the log and verify that it has not been altered. |
-| Account | Change your password, turn on two-factor sign-in, review your sessions and create API tokens. |
+| Notifications | Everything that happened while you were not looking: migrations started, finished, failed or waiting for a decision, backups and restores, and monitoring alerts. |
+| Account | Change your password, turn on two-factor sign-in, review your sessions, create API tokens and switch on desktop notifications. |
 
 Navigation and actions a role may not use are hidden; the server enforces the same rules regardless.
+
+**Ctrl+K** (Cmd+K on macOS) opens a palette that jumps to any page, connection or migration and starts the common actions.
+
+### Notifications
+
+The bell beside the organization name counts what you have not read. Its panel lists recent notifications, each linking to the page where you can act, and new ones appear as a brief message in the corner while Dedie is open. The browser tab's title carries the count.
+
+| About | You are told when |
+|---|---|
+| Migrations | one is started, resumed, paused, aborted, completed or fails; a cutover is cancelled because validation found a difference; preflight found objects on the target and is waiting for your decision; a sync falls far behind |
+| Backups | a scheduled backup finishes; any backup, verification or restore fails; a schedule could not run; the write-ahead log archiver for point-in-time recovery stops |
+| Monitoring | a database stops answering, and when it answers again |
+| Your account | an API token is created for it, or it is signed in to from a new address while signed in elsewhere |
+
+You see a notification only if your role could see what it is about, and a connection restricted to chosen people is announced to those people alone. Reading one does not mark it read for anyone else. They are kept for 30 days.
+
+- **In the browser**, Account → *Desktop notifications in this browser* asks for permission to show them as system notifications when the tab is in the background.
+- **In the desktop application** they appear through the system tray when the window is not in front, and the window title carries the count.
+- **On the command line**, `dedie notifications` lists them (`--unread`, `--read-all`).
+- For people who are not looking at Dedie at all, [alert channels](#monitoring-and-alerts) send the monitoring events to Slack, a webhook or email.
 
 ### The query browser
 
@@ -211,7 +233,7 @@ java -jar bin/desktop/dedie-desktop.jar
 
 The application looks for `dedie-server` beside its own jar, then in a `bin` directory above the working directory, then on the `PATH`. Set `DEDIE_SERVER` to point at it explicitly. During development, `cd apps/desktop && mvn javafx:run` starts it from the source tree.
 
-The window has a native menu bar: **Go** jumps to any page (Ctrl/Cmd+1 to 8), **View** zooms and switches to full screen, and **Help** opens the engine's log and the data folder. Exports and backup downloads open a save dialog, and the window remembers its size, position and zoom.
+The window has a native menu bar: **File** starts a new connection, migration, offline migration or continuous sync; **Go** jumps to any page (Ctrl/Cmd+1 to 8), to the notifications, or to anything by name (Ctrl/Cmd+K); **View** zooms and switches to full screen; and **Help** opens the two guides, the engine's log and the data folder. Notifications are shown through the system tray where the desktop has one. Exports and backup downloads open a save dialog, and the window remembers its size, position and zoom.
 
 The engine's log is written to `desktop.log` in the data directory. If the engine stops, the window says so and offers to start it again.
 
