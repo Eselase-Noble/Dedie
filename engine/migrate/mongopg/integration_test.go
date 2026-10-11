@@ -780,3 +780,197 @@ func (e *eventReporter) Event(level, msg string) {
 	e.on(msg)
 	e.memReporter.Event(level, msg)
 }
+
+// previewLine writes one statement of a preview for comparison.
+func previewLine(s migrate.Statement) string { return s.Phase + " | " + s.Kind + " | " + s.Name }
+
+// findStatement returns the previewed statement of that kind and name.
+func findStatement(t *testing.T, list []migrate.Statement, kind, name string) migrate.Statement {
+	t.Helper()
+	for _, s := range list {
+		if s.Kind == kind && s.Name == name {
+			return s
+		}
+	}
+	t.Fatalf("the preview has no %s %s", kind, name)
+	return migrate.Statement{}
+}
+
+// checkPhaseOrder fails unless the statements come phase by phase, in the
+// order a job moves through the phases, each complete and unterminated.
+func checkPhaseOrder(t *testing.T, list []migrate.Statement) {
+	t.Helper()
+	order := map[string]int{migrate.PhaseSchema: 1, migrate.PhaseIndexing: 2, migrate.PhaseCutover: 3}
+	last := 0
+	for _, s := range list {
+		n := order[s.Phase]
+		if n == 0 || n < last {
+			t.Errorf("%s: out of phase order", previewLine(s))
+		}
+		last = n
+		if s.Kind == "" || s.Name == "" || strings.TrimSpace(s.SQL) == "" || strings.HasSuffix(strings.TrimSpace(s.SQL), ";") {
+			t.Errorf("%s: incomplete or terminated statement %q", previewLine(s), s.SQL)
+		}
+	}
+}
+
+// TestMigrationPreview reads the statements of a migration before it is
+// started. A preview must be the real script, so the test runs it, as it
+// is, against the target; and it must be only a preview, so both databases
+// are compared with what they were before.
+func TestMigrationPreview(t *testing.T) {
+	var _ migrate.Previewer = pipeline{}
+	srcCfg := testConfig(t, "DEDIE_TEST_MONGO_SOURCE")
+	dstCfg := testConfig(t, "DEDIE_TEST_TARGET")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	client, err := mongodb.Connect(ctx, srcCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Disconnect(context.Background())
+	name := fmt.Sprintf("dedie_mongo_%d", time.Now().UnixNano()%1e9)
+	srcCfg.Database = name
+	db := client.Database(name)
+	defer db.Drop(context.Background())
+	if _, err := db.Collection("users").InsertOne(ctx, bson.D{{Key: "_id", Value: int64(1)}, {Key: "name", Value: "user 1"},
+		{Key: "address", Value: bson.D{{Key: "city", Value: "Accra"}, {Key: "zip", Value: 1}}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, coll := range []string{"notes", "scratch"} {
+		if _, err := db.Collection(coll).InsertOne(ctx, bson.D{{Key: "_id", Value: "only"}, {Key: "body", Value: "one document"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	admin, err := postgres.Connect(ctx, dstCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close(context.Background())
+	if _, err := admin.Exec(ctx, `CREATE DATABASE `+name); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Exec(context.Background(), `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`)
+	dstCfg.Database = name
+	dst, err := postgres.Connect(ctx, dstCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close(context.Background())
+
+	// Everything a job leaves behind: the collections of the source, and
+	// on the target the relations of every schema that is not the server's
+	// own, the checkpoint schema among them.
+	state := func() (source, target string) {
+		t.Helper()
+		names, err := db.ListCollectionNames(ctx, bson.D{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sort.Strings(names)
+		if err := dst.QueryRow(ctx, `SELECT concat_ws(' | ',
+			(SELECT string_agg(nspname, ',' ORDER BY nspname) FROM pg_namespace WHERE nspname NOT LIKE 'pg\_%' AND nspname <> 'information_schema'),
+			coalesce((SELECT string_agg(c.relname || ':' || c.relkind::text, ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+				WHERE n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'), ''),
+			coalesce((SELECT string_agg(a.attrelid::regclass::text || '.' || a.attname || ' ' || format_type(a.atttypid, a.atttypmod), ',' ORDER BY a.attrelid::regclass::text, a.attnum)
+				FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+				WHERE n.nspname = 'public' AND c.relkind = 'r' AND a.attnum > 0), ''))`).Scan(&target); err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(names, ","), target
+	}
+	srcBefore, dstBefore := state()
+	if dstBefore != "public |  | " {
+		t.Fatalf("the target is not empty: %s", dstBefore)
+	}
+	unchanged := func(when string) {
+		t.Helper()
+		source, target := state()
+		if source != srcBefore {
+			t.Errorf("%s changed the source:\nbefore %s\nafter  %s", when, srcBefore, source)
+		}
+		if target != dstBefore {
+			t.Errorf("%s changed the target:\nbefore %s\nafter  %s", when, dstBefore, target)
+		}
+	}
+
+	// A table for each collection in scope, with the columns its fields are
+	// lifted into. Tables are all a collection becomes, so there is nothing
+	// for the later phases.
+	cfg := migrate.Config{ExcludeTables: []string{name + ".scratch"},
+		Columns: map[string][]migrate.ColumnSpec{"users": {{Field: "address.zip", Name: "zip", Type: "bigint"}, {Field: "name", Type: "text"}}}}
+	list, err := pipeline{}.Preview(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged("the preview")
+	want := []migrate.Statement{
+		{Phase: migrate.PhaseSchema, Kind: "table", Name: "notes", SQL: `CREATE TABLE IF NOT EXISTS "public"."notes" (_id text PRIMARY KEY, doc jsonb NOT NULL)`},
+		{Phase: migrate.PhaseSchema, Kind: "table", Name: "users", SQL: `CREATE TABLE IF NOT EXISTS "public"."users" (_id text PRIMARY KEY, doc jsonb NOT NULL, "zip" bigint, "name" text)`},
+	}
+	if fmt.Sprint(list) != fmt.Sprint(want) {
+		t.Errorf("preview:\n got %v\nwant %v", list, want)
+	}
+	checkPhaseOrder(t, list)
+
+	// A job for named collections previews those only.
+	scoped, err := Preview(ctx, srcCfg, dstCfg, migrate.Config{Mode: migrate.ModeOffline, Tables: []string{"notes"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(scoped) != fmt.Sprint(want[:1]) {
+		t.Errorf("collection scope previews %v", scoped)
+	}
+
+	// What the target already has. From here on the previews depend on it.
+	if _, err := dst.Exec(ctx, `CREATE TABLE notes (other int); INSERT INTO notes VALUES (42)`); err != nil {
+		t.Fatal(err)
+	}
+	_, dstBefore = state()
+
+	// Under the default policy the job would refuse to start; its preview
+	// still shows every table as it would be created.
+	again, err := Preview(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(again) != fmt.Sprint(want) {
+		t.Errorf("the default policy previews %v", again)
+	}
+
+	// Kept: the collection whose table is there is left out.
+	cfg.OnExisting = migrate.ExistingSkip
+	skip, err := Preview(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(skip) != fmt.Sprint(want[1:]) {
+		t.Errorf("skip previews %v", skip)
+	}
+
+	// Replaced: the drop comes first, then the whole migration.
+	cfg.OnExisting = migrate.ExistingReplace
+	replace, err := Preview(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkPhaseOrder(t, replace)
+	drop := migrate.Statement{Phase: migrate.PhaseSchema, Kind: "drop", Name: "public.notes", SQL: `DROP TABLE IF EXISTS public.notes CASCADE`}
+	if fmt.Sprint(replace) != fmt.Sprint(append([]migrate.Statement{drop}, want...)) {
+		t.Errorf("replace previews %v", replace)
+	}
+	unchanged("the previews")
+
+	// The preview is the script: every statement runs, in order, as it is.
+	for _, s := range replace {
+		if _, err := dst.PgConn().Exec(ctx, s.SQL).ReadAll(); err != nil {
+			t.Fatalf("%s: %v\n%s", previewLine(s), err, s.SQL)
+		}
+	}
+	const built = "public | notes:r,notes_pkey:i,users:r,users_pkey:i | notes._id text,notes.doc jsonb,users._id text,users.doc jsonb,users.zip bigint,users.name text"
+	if _, got := state(); got != built {
+		t.Errorf("the script built:\n got %s\nwant %s", got, built)
+	}
+}

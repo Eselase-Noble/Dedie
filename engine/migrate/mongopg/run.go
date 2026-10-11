@@ -72,6 +72,10 @@ func Run(ctx context.Context, jobID string, cfg migrate.Config, st State, srcCfg
 	return r.run(ctx)
 }
 
+// errNothingLeft stops a job, and its preview, when the target is to keep
+// the table of every collection in scope.
+var errNothingLeft = errors.New("every collection to be migrated already has a table on the target, which is kept; nothing is left to migrate")
+
 func (r *runner) save() { r.rep.SaveState(*r.st) }
 
 // collections lists the collections the job covers: those in scope, less
@@ -270,7 +274,7 @@ func (r *runner) schemaPhase(ctx context.Context) error {
 			}
 			r.rep.Event("warn", fmt.Sprintf("kept %d existing table(s) on the target as they are, as chosen; their collections are left out of the migration", n))
 			if len(r.list) == 0 {
-				return errors.New("every collection to be migrated already has a table on the target, which is kept; nothing is left to migrate")
+				return errNothingLeft
 			}
 		}
 	}

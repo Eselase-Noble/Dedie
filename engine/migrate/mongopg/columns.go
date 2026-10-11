@@ -143,15 +143,20 @@ func (c column) cast() string {
 
 func quoteColumn(name string) string { return pgx.Identifier{name}.Sanitize() }
 
-// tableDDL creates a collection's table: the key, the whole document, and
-// a column for each lifted field. Columns added to the configuration after
-// the table exists are added to it.
-func tableDDL(table string, cols []column) string {
+// createTable is the statement that creates a collection's table: the key,
+// the whole document, and a column for each lifted field.
+func createTable(table string, cols []column) string {
 	ddl := `CREATE TABLE IF NOT EXISTS ` + qname(table) + ` (_id text PRIMARY KEY, doc jsonb NOT NULL`
 	for _, c := range cols {
 		ddl += ", " + quoteColumn(c.name) + " " + c.typ
 	}
-	ddl += ")"
+	return ddl + ")"
+}
+
+// tableDDL creates a collection's table. Columns added to the configuration
+// after the table exists are added to it.
+func tableDDL(table string, cols []column) string {
+	ddl := createTable(table, cols)
 	for _, c := range cols {
 		ddl += `; ALTER TABLE ` + qname(table) + ` ADD COLUMN IF NOT EXISTS ` + quoteColumn(c.name) + " " + c.typ
 	}
