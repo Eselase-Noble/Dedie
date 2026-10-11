@@ -4,8 +4,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { formatBytes, formatDuration, formatTime } from "@/lib/format";
+import { formatBytes, formatDuration, formatNumber, formatTime } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
+import { phaseSummary } from "@/lib/progress";
 import MigrationForm from "@/components/MigrationForm";
 import MigrationPaths from "@/components/migrations/MigrationPaths";
 import { useSession } from "@/components/session";
@@ -65,8 +66,10 @@ export default function MigrationsPage() {
                     <td>{nameOf(m.source_id)}</td>
                     <td>{nameOf(m.target_id)}</td>
                     <td><StatusBadge status={m.status} /></td>
-                    <td>{m.phase || <span className="faint">—</span>}</td>
-                    <td className="num">{m.phase !== "streaming" && m.phase !== "cutover" ? "—"
+                    <td title={m.copy ? `${formatNumber(m.copy.rows_copied)} of about ${formatNumber(m.copy.rows_expected)} rows copied` : undefined}>
+                      {phaseSummary(m) || <span className="faint">—</span>}
+                    </td>
+                    <td className="num">{m.config.mode === "offline" || (m.phase !== "streaming" && m.phase !== "cutover") ? "—"
                       : m.state.lag_seconds !== undefined ? formatDuration(m.state.lag_seconds) : formatBytes(m.state.lag_bytes ?? 0)}</td>
                     <td className="nowrap muted">{formatTime(m.updated_at)}</td>
                   </tr>

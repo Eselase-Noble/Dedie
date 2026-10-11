@@ -7,6 +7,8 @@ import { api, errorMessage } from "@/lib/api";
 import { formatBytes, formatDuration, formatNumber, formatTime } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 import type { MigrationAction, MigrationDetail, OnExisting, PreflightReport } from "@/lib/types";
+import ApplyRate from "@/components/migrations/ApplyRate";
+import CopyProgress from "@/components/migrations/CopyProgress";
 import ExistingObjectsDialog from "@/components/migrations/ExistingObjects";
 import SchemaPreview from "@/components/migrations/SchemaPreview";
 import { download } from "@/lib/csv";
@@ -292,6 +294,7 @@ function Detail({ id }: { id: string }) {
 
       <div className="card">
         <Stepper job={job} />
+        {job.phase === "snapshot" && job.tables.length > 0 && status !== "aborted" && <CopyProgress job={job} />}
         <div className="figures">
           {/* An offline copy follows no changes, so it has no stream to report on. */}
           {!offline && (
@@ -304,6 +307,7 @@ function Detail({ id }: { id: string }) {
               <Figure label="Source position"><span className="mono">{st.source_lsn || "—"}</span></Figure>
               <Figure label="Transactions applied">{formatNumber(st.tx_applied ?? 0)}</Figure>
               <Figure label="Row changes applied">{formatNumber(st.rows_applied ?? 0)}</Figure>
+              <Figure label="Apply rate"><ApplyRate job={job} /></Figure>
               <Figure label="Apply anomalies">
                 <span style={{ color: (st.anomalies ?? 0) > 0 ? "var(--danger)" : undefined }}>{formatNumber(st.anomalies ?? 0)}</span>
               </Figure>

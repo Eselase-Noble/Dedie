@@ -273,6 +273,17 @@ export interface PreflightReport {
   existing?: ExistingObject[];
 }
 
+/** A job's initial copy summed over its tables. Listed jobs carry it while they copy. */
+export interface CopyProgress {
+  tables: number;
+  tables_copied: number;
+  rows_copied: number;
+  /** The source's own estimate, which can be zero or out of date. */
+  est_rows: number;
+  /** Actual counts for the tables already copied, estimates for the rest. */
+  rows_expected: number;
+}
+
 export interface Migration {
   id: string;
   name: string;
@@ -282,6 +293,7 @@ export interface Migration {
   config: Partial<MigrationConfig>;
   state: MigrationState;
   preflight?: PreflightReport;
+  copy?: CopyProgress;
   phase: string;
   status: JobStatus;
   desired: string;

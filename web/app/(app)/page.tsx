@@ -4,6 +4,7 @@ import Link from "next/link";
 import { api } from "@/lib/api";
 import { formatBytes, formatTime } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
+import { phaseSummary } from "@/lib/progress";
 import type { Backup, Connection, Migration } from "@/lib/types";
 import { useSession } from "@/components/session";
 import { Banner, PageHeader, StatusBadge } from "@/components/ui";
@@ -86,7 +87,7 @@ export default function DashboardPage() {
                     <tr key={m.id}>
                       <td><Link href={`/migrations/detail/?id=${encodeURIComponent(m.id)}`}>{m.name}</Link></td>
                       <td><StatusBadge status={m.status} /></td>
-                      <td>{m.phase || <span className="faint">—</span>}</td>
+                      <td>{phaseSummary(m) || <span className="faint">—</span>}</td>
                       <td className="nowrap muted">{formatTime(m.updated_at)}</td>
                     </tr>
                   ))}

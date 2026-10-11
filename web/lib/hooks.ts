@@ -62,3 +62,32 @@ export function useLoad<T>(
 
   return { data, error, loading, reload };
 }
+
+/**
+ * The rate at which a counter is rising, per second, over roughly the last
+ * `windowMs`. Give it the counter and something that changes with every
+ * reading (the polled object will do); it answers null until readings a
+ * few seconds apart exist. Passing undefined, or a counter that went
+ * backwards, starts the measurement afresh.
+ */
+export function useRate(value: number | undefined, reading: unknown, windowMs = 10_000): number | null {
+  const samples = useRef<{ at: number; value: number }[]>([]);
+  const [rate, setRate] = useState<number | null>(null);
+
+  useEffect(() => {
+    const list = samples.current;
+    if (value === undefined || (list.length > 0 && value < list[list.length - 1].value)) {
+      samples.current = value === undefined ? [] : [{ at: Date.now(), value }];
+      setRate(null);
+      return;
+    }
+    const now = Date.now();
+    list.push({ at: now, value });
+    // Keep one reading from before the window so that it is always spanned.
+    while (list.length > 2 && now - list[1].at >= windowMs) list.shift();
+    const seconds = (now - list[0].at) / 1000;
+    setRate(seconds >= 3 ? (value - list[0].value) / seconds : null);
+  }, [value, reading, windowMs]);
+
+  return rate;
+}
