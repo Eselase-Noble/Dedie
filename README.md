@@ -244,6 +244,16 @@ Against a Dedie server, `dedie migrate run` starts the job on the server and fol
 
 `--exclude` removes tables at any level. PostgreSQL and Oracle tables are named `schema.table`; MySQL tables by name alone. For Oracle the database level means the connecting user's own schema, and names are matched without regard to case, as Oracle does. Preflight fails if a listed table does not exist.
 
+### Reading the schema before you run
+
+**Preview schema** on a migration's page, or `dedie migrate preview <id>`, shows every statement the migration would run on the target, in the order it would run them, with the source's tables already translated for the target engine. Nothing is run and neither database is changed.
+
+```sh
+dedie migrate preview <id> > target-schema.sql      # attach it to the change request
+```
+
+The statements are grouped by when they run: before the copy (schemas, sequences, tables), after it (indexes, constraints, views, routines) and at the very end (foreign keys on the Oracle paths, triggers on the same-engine ones). The preview follows the choice made for [objects that already exist](#when-the-target-already-has-some-of-the-objects): skipped objects are left out, and replaced ones are preceded by their `DROP`. What the job does for its own bookkeeping (its checkpoint table, emptying its own tables before a recopy, moving sequences to the source's position at the end) is not part of it.
+
 ### When the target already has some of the objects
 
 Preflight looks on the target for everything the migration would create: tables, and also views, functions, procedures, packages, triggers, sequences, types, events and indexes, whichever of them the path carries. Whatever it finds is listed by kind, and the migration does nothing about it without a decision from you. The web interface asks as soon as preflight finds any; so does `dedie migrate preflight` on a terminal.
