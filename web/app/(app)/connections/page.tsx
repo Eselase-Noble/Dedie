@@ -5,6 +5,7 @@ import { api, errorMessage } from "@/lib/api";
 import { formatTime } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 import type { Connection, ConnectionStatus, ServerInfo } from "@/lib/types";
+import ConnectionAccessDialog from "@/components/ConnectionAccessDialog";
 import ConnectionForm, { ServerInfoSummary } from "@/components/ConnectionForm";
 import { useSession } from "@/components/session";
 import { Badge, Banner, ConfirmDialog, Loading, PageHeader } from "@/components/ui";
@@ -32,6 +33,8 @@ function StatusCell({ status }: { status?: ConnectionStatus }) {
 export default function ConnectionsPage() {
   const { session, can } = useSession();
   const manage = can("connections.manage");
+  const manageAccess = can("users.manage");
+  const [sharing, setSharing] = useState<Connection | null>(null);
   const { data, error, loading, reload } = useLoad(() => api.connections(), []);
   // Each server is contacted to see whether it answers; refreshed every 30 seconds.
   const { data: statuses, loading: checking, reload: recheck } = useLoad(() => api.connectionStatuses(), [data?.length ?? 0], 30000);
@@ -77,7 +80,8 @@ export default function ConnectionsPage() {
                   <tr key={c.id}>
                     <td>
                       <strong>{c.name}</strong>{" "}
-                      {c.read_only && <Badge>read-only</Badge>}
+                      {c.read_only && <Badge>read-only</Badge>}{" "}
+                      {c.restricted && <Badge tone="warn">restricted</Badge>}
                     </td>
                     <td className="nowrap"><StatusCell status={statuses?.[c.id]} /></td>
                     <td>{c.kind}</td>
@@ -91,6 +95,7 @@ export default function ConnectionsPage() {
                         <button className="btn small" onClick={() => test(c)} disabled={testing === c.id}>
                           {testing === c.id ? "Testing…" : "Test"}
                         </button>
+                        {manageAccess && <button className="btn small" onClick={() => setSharing(c)}>Access</button>}
                         {manage && <button className="btn small" onClick={() => setEditing(c)}>Edit</button>}
                         {manage && <button className="btn small" onClick={() => setDeleting(c)}>Delete</button>}
                       </div>
@@ -106,6 +111,7 @@ export default function ConnectionsPage() {
       {editing !== undefined && (
         <ConnectionForm existing={editing} kinds={session.kinds} onClose={() => setEditing(undefined)} onSaved={reload} />
       )}
+      {sharing && <ConnectionAccessDialog connection={sharing} onClose={() => setSharing(null)} onSaved={reload} />}
       {deleting && (
         <ConfirmDialog
           title={`Delete ${deleting.name}?`}

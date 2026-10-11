@@ -43,6 +43,7 @@ export interface User {
   name: string;
   role: Role;
   disabled: boolean;
+  totp_enabled: boolean;
   created_at: string;
 }
 
@@ -51,6 +52,42 @@ export interface Session {
   organization: string;
   permissions: Permission[];
   kinds: string[];
+  must_enroll_totp: boolean;
+}
+
+export interface SecurityPolicy {
+  password_min_length: number;
+  password_require_mixed: boolean;
+  session_hours: number;
+  require_totp: boolean;
+}
+
+export interface SessionInfo {
+  id: string;
+  ip: string;
+  user_agent: string;
+  created_at: string;
+  last_seen_at: string;
+  expires_at: string;
+  current: boolean;
+}
+
+export interface ApiToken {
+  id: string;
+  user_id: string;
+  user_email: string;
+  name: string;
+  role: Role;
+  expires_at: string;
+  last_used_at: string;
+  created_at: string;
+  /** Present only in the response that creates the token. */
+  token?: string;
+}
+
+export interface ConnectionAccess {
+  restricted: boolean;
+  user_ids: string[];
 }
 
 export interface Connection {
@@ -64,6 +101,7 @@ export interface Connection {
   sslmode: string;
   ssl_root_cert: string;
   read_only: boolean;
+  restricted: boolean;
   created_by: string;
   created_at: string;
 }
@@ -355,4 +393,5 @@ export interface UserUpdate {
   role?: Role;
   disabled?: boolean;
   password?: string;
+  reset_totp?: boolean;
 }

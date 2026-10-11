@@ -70,6 +70,13 @@ export default function Shell({ children }: { children: ReactNode }) {
 
   useEffect(() => setMenuOpen(false), [pathname]);
 
+  // Until two-factor sign-in is set up, an organization that requires it
+  // offers the account page and nothing else.
+  const confined = !!session?.must_enroll_totp;
+  useEffect(() => {
+    if (confined && !pathname.startsWith("/account")) window.location.href = "/account/";
+  }, [confined, pathname]);
+
   const value = useMemo(
     () => (session ? { session, can: (p: Permission) => session.permissions.includes(p) } : null),
     [session],
@@ -87,7 +94,7 @@ export default function Shell({ children }: { children: ReactNode }) {
     }
   };
 
-  const items = NAV.filter((item) => !item.needs || value.can(item.needs));
+  const items = confined ? [] : NAV.filter((item) => !item.needs || value.can(item.needs));
   const sections = Array.from(new Set(items.map((i) => i.section)));
 
   return (
@@ -122,7 +129,10 @@ export default function Shell({ children }: { children: ReactNode }) {
           <div className="sidebar-user">
             <div className="name" title={session.user.name}>{session.user.name}</div>
             <div className="meta" title={session.user.email}>{session.user.email} · {session.user.role}</div>
-            <button className="btn small" onClick={signOut}>Sign out</button>
+            <div className="row-actions" style={{ justifyContent: "flex-start" }}>
+              <Link className={`btn small ${isActive(pathname, "/account/") ? "primary" : ""}`} href="/account/">Account</Link>
+              <button className="btn small" onClick={signOut}>Sign out</button>
+            </div>
           </div>
         </aside>
         <main className="main">{children}</main>

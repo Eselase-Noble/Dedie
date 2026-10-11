@@ -6,9 +6,11 @@ import { formatTime } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 import { ROLES, type Role, type User } from "@/lib/types";
 import { useSession } from "@/components/session";
+import SecurityPolicyCard from "@/components/SecurityPolicyCard";
 import { Badge, Banner, Field, Loading, Modal, PageHeader } from "@/components/ui";
 
-const MIN_PASSWORD = 12;
+// The organization's policy may ask for more; the server has the final say.
+const MIN_PASSWORD = 8;
 
 const ROLE_HELP: Record<Role, string> = {
   owner: "Everything, including managing other owners.",
@@ -51,7 +53,7 @@ function CreateUser({ roles, onClose, onDone }: { roles: Role[]; onClose: () => 
         {error && <Banner tone="error">{error}</Banner>}
         <Field label="Name"><input className="input" value={name} onChange={(e) => setName(e.target.value)} required autoFocus /></Field>
         <Field label="Email"><input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="off" /></Field>
-        <Field label="Initial password" hint={`At least ${MIN_PASSWORD} characters. Share it over a secure channel.`}>
+        <Field label="Initial password" hint="Must meet the security policy below. Share it over a secure channel; the user can change it on their Account page.">
           <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={MIN_PASSWORD} autoComplete="new-password" />
         </Field>
         <Field label="Role" hint={ROLE_HELP[role]}>
@@ -91,8 +93,8 @@ function ResetPassword({ user, onClose }: { user: User; onClose: () => void }) {
     }>
       <form id="reset-form" onSubmit={submit}>
         {error && <Banner tone="error">{error}</Banner>}
-        <p className="hint" style={{ marginBottom: 12 }}>Setting a new password signs the user out of all their sessions.</p>
-        <Field label="New password" hint={`At least ${MIN_PASSWORD} characters.`}>
+        <p className="hint" style={{ marginBottom: 12 }}>Setting a new password signs the user out of all their sessions and revokes their API tokens.</p>
+        <Field label="New password" hint="Must meet the organization's security policy.">
           <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={MIN_PASSWORD} autoComplete="new-password" autoFocus />
         </Field>
       </form>
@@ -110,7 +112,7 @@ export default function UsersPage() {
   // Only owners may grant the owner role or change an owner.
   const assignable = ROLES.filter((r) => isOwner || r !== "owner");
 
-  const update = async (user: User, change: { role?: Role; disabled?: boolean }) => {
+  const update = async (user: User, change: { role?: Role; disabled?: boolean; reset_totp?: boolean }) => {
     setActionError("");
     try {
       await api.updateUser(user.id, change);
@@ -133,7 +135,7 @@ export default function UsersPage() {
           {loading ? <Loading /> : (
             <table className="data">
               <thead>
-                <tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Created</th><th /></tr>
+                <tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Two-factor</th><th>Created</th><th /></tr>
               </thead>
               <tbody>
                 {data?.map((u) => {
@@ -150,9 +152,16 @@ export default function UsersPage() {
                         </select>
                       </td>
                       <td><Badge tone={u.disabled ? "danger" : "ok"}>{u.disabled ? "disabled" : "active"}</Badge></td>
+                      <td><Badge tone={u.totp_enabled ? "ok" : ""}>{u.totp_enabled ? "on" : "off"}</Badge></td>
                       <td className="nowrap muted">{formatTime(u.created_at)}</td>
                       <td>
                         <div className="row-actions">
+                          {u.totp_enabled && !self && (
+                            <button className="btn small" disabled={locked} onClick={() => update(u, { reset_totp: true })}
+                              title="For a user who has lost their authenticator and recovery codes. They sign in with their password and set it up again.">
+                              Reset two-factor
+                            </button>
+                          )}
                           <button className="btn small" disabled={locked} onClick={() => setResetting(u)}>Reset password</button>
                           <button className="btn small" disabled={locked || self} onClick={() => update(u, { disabled: !u.disabled })}>
                             {u.disabled ? "Enable" : "Disable"}
@@ -167,6 +176,8 @@ export default function UsersPage() {
           )}
         </div>
       </div>
+
+      <SecurityPolicyCard />
 
       <div className="card">
         <div className="card-head"><h2>Roles</h2></div>
