@@ -90,10 +90,65 @@ jobs:
           path: dedie-*.tar.gz
           if-no-files-found: error
 
+  # The desktop application bundles JavaFX libraries built for one operating
+  # system, so it is assembled on a runner of each.
+  desktop:
+    name: Desktop
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-24.04, name: linux-amd64 }
+          - { os: macos-latest, name: darwin-arm64 }
+          - { os: windows-latest, name: windows-amd64 }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Build web interface
+        run: cd web && npm ci && npm run build
+
+      - name: Build server
+        run: |
+          mkdir -p dist/dedie-desktop
+          ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "dist/dedie-desktop/dedie-server$ext" ./apps/server
+
+      - name: Build desktop application
+        run: |
+          cd apps/desktop && mvn -B -q package
+          cp -r target/dedie-desktop.jar target/lib ../../dist/dedie-desktop/
+          cd ../../dist && tar -czf "../dedie-desktop-${{ matrix.name }}.tar.gz" dedie-desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dedie-desktop-${{ matrix.name }}
+          path: dedie-desktop-*.tar.gz
+          if-no-files-found: error
+
   release:
     name: Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, desktop]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
