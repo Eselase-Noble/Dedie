@@ -48,6 +48,7 @@ func New(a *app.App, opts Options) http.Handler {
 	mux.HandleFunc("GET /api/v1/connections", s.authed(s.listConnections))
 	mux.HandleFunc("POST /api/v1/connections", s.authed(s.createConnection))
 	mux.HandleFunc("POST /api/v1/connections/test", s.authed(s.testConnectionInput))
+	mux.HandleFunc("GET /api/v1/connections/status", s.authed(s.connectionStatuses))
 	mux.HandleFunc("GET /api/v1/connections/{id}", s.authed(s.getConnection))
 	mux.HandleFunc("PUT /api/v1/connections/{id}", s.authed(s.updateConnection))
 	mux.HandleFunc("DELETE /api/v1/connections/{id}", s.authed(s.deleteConnection))
@@ -56,6 +57,9 @@ func New(a *app.App, opts Options) http.Handler {
 	mux.HandleFunc("POST /api/v1/connections/{id}/query", s.authed(s.query))
 	mux.HandleFunc("GET /api/v1/connections/{id}/overview", s.authed(s.overview))
 	mux.HandleFunc("POST /api/v1/connections/{id}/backends/{pid}/cancel", s.authed(s.cancelBackend))
+	mux.HandleFunc("POST /api/v1/connections/{id}/databases", s.authed(s.createDatabase))
+	mux.HandleFunc("POST /api/v1/connections/{id}/schemas", s.authed(s.createSchema))
+	mux.HandleFunc("POST /api/v1/connections/{id}/tables", s.authed(s.createTable))
 
 	mux.HandleFunc("GET /api/v1/migrations", s.authed(s.listMigrations))
 	mux.HandleFunc("POST /api/v1/migrations", s.authed(s.createMigration))

@@ -1,7 +1,25 @@
 import type {
-  AuditEntry, AuditVerification, Backup, Catalog, Connection, ConnectionInput, Migration, MigrationAction,
-  MigrationDetail, MigrationInput, Overview, PreflightReport, QueryResponse, Restore, RestoreInput, ServerInfo,
-  Session, User, UserUpdate,
+  AuditEntry,
+  AuditVerification,
+  Backup,
+  Catalog,
+  ColumnDef,
+  Connection,
+  ConnectionInput,
+  ConnectionStatus,
+  Migration,
+  MigrationAction,
+  MigrationDetail,
+  MigrationInput,
+  Overview,
+  PreflightReport,
+  QueryResponse,
+  Restore,
+  RestoreInput,
+  ServerInfo,
+  Session,
+  User,
+  UserUpdate,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -84,6 +102,12 @@ export const api = {
   deleteConnection: (connId: string) => request<{ ok: boolean }>("DELETE", `/connections/${id(connId)}`),
   testConnection: (connId: string) => post<ServerInfo>(`/connections/${id(connId)}/test`),
   testConnectionInput: (body: ConnectionInput) => post<ServerInfo>("/connections/test", body),
+  connectionStatuses: () => get<Record<string, ConnectionStatus>>("/connections/status"),
+  createDatabase: (connId: string, name: string, addConnection: boolean) =>
+    post<{ ok: boolean; connection: Connection | null }>(`/connections/${id(connId)}/databases`, { name, add_connection: addConnection }),
+  createSchema: (connId: string, name: string) => post<{ ok: boolean }>(`/connections/${id(connId)}/schemas`, { name }),
+  createTable: (connId: string, body: { schema: string; name: string; columns: ColumnDef[] }) =>
+    post<{ ok: boolean }>(`/connections/${id(connId)}/tables`, body),
   catalog: (connId: string) => get<Catalog>(`/connections/${id(connId)}/catalog`),
   query: (connId: string, body: { sql: string; write: boolean; max_rows: number }) =>
     post<QueryResponse>(`/connections/${id(connId)}/query`, body),

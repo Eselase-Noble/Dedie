@@ -4,17 +4,37 @@ import { useState } from "react";
 import { api, errorMessage } from "@/lib/api";
 import { formatTime } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
-import type { Connection, ServerInfo } from "@/lib/types";
+import type { Connection, ConnectionStatus, ServerInfo } from "@/lib/types";
 import ConnectionForm, { ServerInfoSummary } from "@/components/ConnectionForm";
 import { useSession } from "@/components/session";
 import { Badge, Banner, ConfirmDialog, Loading, PageHeader } from "@/components/ui";
 
 const WEAK_SSL = ["disable", "allow", "prefer"];
 
+/** Shows whether a connection's server answered the last check. */
+function StatusCell({ status }: { status?: ConnectionStatus }) {
+  if (!status) return <span className="status"><span className="dot pending" />Checking…</span>;
+  if (status.online) {
+    return (
+      <span className="status" title={`${status.version ?? ""} · checked ${formatTime(status.checked_at)}`}>
+        <span className="dot online" />Online <span className="faint">· {status.latency_ms} ms</span>
+      </span>
+    );
+  }
+  return (
+    <span className="status" title={status.error}>
+      <span className="dot offline" />Offline
+      <span className="status-error">{status.error}</span>
+    </span>
+  );
+}
+
 export default function ConnectionsPage() {
   const { session, can } = useSession();
   const manage = can("connections.manage");
   const { data, error, loading, reload } = useLoad(() => api.connections(), []);
+  // Each server is contacted to see whether it answers; refreshed every 30 seconds.
+  const { data: statuses, loading: checking, reload: recheck } = useLoad(() => api.connectionStatuses(), [data?.length ?? 0], 30000);
   // undefined: form closed; null: creating; a connection: editing it.
   const [editing, setEditing] = useState<Connection | null | undefined>(undefined);
   const [deleting, setDeleting] = useState<Connection | null>(null);
@@ -36,6 +56,7 @@ export default function ConnectionsPage() {
   return (
     <div className="content">
       <PageHeader title="Connections" subtitle="Saved databases. Passwords are encrypted at rest and never returned by the API.">
+        <button className="btn" onClick={() => void recheck()} disabled={checking}>{checking ? "Checking…" : "Check status"}</button>
         {manage && <button className="btn primary" onClick={() => setEditing(null)}>New connection</button>}
       </PageHeader>
       {error && <Banner tone="error">{error}</Banner>}
@@ -49,7 +70,7 @@ export default function ConnectionsPage() {
           ) : (
             <table className="data">
               <thead>
-                <tr><th>Name</th><th>Type</th><th>Server</th><th>Database</th><th>User</th><th>SSL</th><th>Created</th><th /></tr>
+                <tr><th>Name</th><th>Status</th><th>Type</th><th>Server</th><th>Database</th><th>User</th><th>SSL</th><th>Created</th><th /></tr>
               </thead>
               <tbody>
                 {data.map((c) => (
@@ -58,6 +79,7 @@ export default function ConnectionsPage() {
                       <strong>{c.name}</strong>{" "}
                       {c.read_only && <Badge>read-only</Badge>}
                     </td>
+                    <td className="nowrap"><StatusCell status={statuses?.[c.id]} /></td>
                     <td>{c.kind}</td>
                     <td className="mono">{c.host}:{c.port}</td>
                     <td>{c.database}</td>

@@ -6,8 +6,11 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -39,7 +42,87 @@ type Session interface {
 	// CancelBackend cancels the running statement of another backend, or
 	// terminates the backend entirely when terminate is set.
 	CancelBackend(ctx context.Context, pid int64, terminate bool) error
+	// CreateDatabase, CreateSchema and CreateTable create objects on the
+	// server. Whether the account may do so is the server's decision; its
+	// refusal comes back as the error.
+	CreateDatabase(ctx context.Context, name string) error
+	CreateSchema(ctx context.Context, name string) error
+	CreateTable(ctx context.Context, def TableDef) error
 	Close(ctx context.Context) error
+}
+
+// TableDef describes a table to create.
+type TableDef struct {
+	Schema  string      `json:"schema"`
+	Name    string      `json:"name"`
+	Columns []ColumnDef `json:"columns"`
+}
+
+type ColumnDef struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Nullable   bool   `json:"nullable"`
+	PrimaryKey bool   `json:"primary_key"`
+	// Default is a number, a keyword such as CURRENT_TIMESTAMP, or text
+	// that is stored as a string literal. Empty means no default.
+	Default string `json:"default"`
+}
+
+var (
+	typeRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_ ]*(\([0-9]+(, ?[0-9]+)?\))?( [A-Za-z ]+)?(\[\])?$`)
+	// rawDefaultRe matches defaults that are written as they are; anything
+	// else becomes a quoted string.
+	rawDefaultRe = regexp.MustCompile(`(?i)^(-?[0-9]+(\.[0-9]+)?|true|false|null|current_timestamp|current_date|now\(\)|gen_random_uuid\(\)|uuid\(\))$`)
+)
+
+// CheckName validates the name of an object to create. Quoting makes any
+// name safe; this only rejects what no database accepts.
+func CheckName(kind, name string) error {
+	switch {
+	case strings.TrimSpace(name) == "":
+		return fmt.Errorf("enter a %s name", kind)
+	case len(name) > 63:
+		return fmt.Errorf("the %s name is longer than 63 characters", kind)
+	case strings.ContainsAny(name, "\x00\n\r"):
+		return fmt.Errorf("the %s name contains characters that are not allowed", kind)
+	}
+	return nil
+}
+
+// Validate checks a table definition before any SQL is built from it.
+// Column types are the one part that cannot be quoted, so they must look
+// like a type name with an optional size.
+func (d TableDef) Validate() error {
+	if err := CheckName("table", d.Name); err != nil {
+		return err
+	}
+	if len(d.Columns) == 0 {
+		return errors.New("a table needs at least one column")
+	}
+	seen := map[string]bool{}
+	for _, c := range d.Columns {
+		if err := CheckName("column", c.Name); err != nil {
+			return err
+		}
+		if seen[strings.ToLower(c.Name)] {
+			return fmt.Errorf("column %s is listed twice", c.Name)
+		}
+		seen[strings.ToLower(c.Name)] = true
+		if !typeRe.MatchString(strings.TrimSpace(c.Type)) {
+			return fmt.Errorf("column %s: %q is not a valid type", c.Name, c.Type)
+		}
+	}
+	return nil
+}
+
+// DefaultSQL renders a column default: numbers and known keywords as
+// written, anything else as a string literal.
+func DefaultSQL(def string) string {
+	def = strings.TrimSpace(def)
+	if rawDefaultRe.MatchString(def) {
+		return def
+	}
+	return "'" + strings.ReplaceAll(def, "'", "''") + "'"
 }
 
 type ServerInfo struct {
