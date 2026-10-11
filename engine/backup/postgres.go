@@ -8,15 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"strings"
 
 	"dedie/engine/connector"
 )
 
-// command prepares a client program with connection settings passed through
+// pgCommand prepares a client program with connection settings passed through
 // the environment. The password never appears in the argument list, where
 // other local users could read it from the process table.
-func command(ctx context.Context, path string, cfg connector.Config, args ...string) (*exec.Cmd, func(), error) {
+func pgCommand(ctx context.Context, path string, cfg connector.Config, args ...string) (*exec.Cmd, func(), error) {
 	cmd := exec.CommandContext(ctx, path, args...)
 	sslmode := cfg.SSLMode
 	if sslmode == "" {
@@ -51,23 +50,14 @@ func command(ctx context.Context, path string, cfg connector.Config, args ...str
 	return cmd, cleanup, nil
 }
 
-// tail keeps the end of a tool's stderr for the operator.
-func tail(b *bytes.Buffer) string {
-	s := strings.TrimSpace(b.String())
-	if len(s) > 4000 {
-		s = "..." + s[len(s)-4000:]
-	}
-	return s
-}
-
-// Dump writes a custom-format pg_dump archive of the database to w.
+// dumpPostgres writes a custom-format pg_dump archive of the database to w.
 // serverMajor is the server's major version.
-func Dump(ctx context.Context, cfg connector.Config, serverMajor int, w io.Writer) error {
+func dumpPostgres(ctx context.Context, cfg connector.Config, serverMajor int, w io.Writer) error {
 	path, err := findTool("pg_dump", serverMajor)
 	if err != nil {
 		return err
 	}
-	cmd, cleanup, err := command(ctx, path, cfg, "--format=custom", "--no-password", "--compress=6")
+	cmd, cleanup, err := pgCommand(ctx, path, cfg, "--format=custom", "--no-password", "--compress=6")
 	if err != nil {
 		return err
 	}
@@ -83,20 +73,10 @@ func Dump(ctx context.Context, cfg connector.Config, serverMajor int, w io.Write
 	return nil
 }
 
-// RestoreOptions control how an archive is applied.
-type RestoreOptions struct {
-	// Clean drops each object before recreating it, replacing what is in
-	// the target database.
-	Clean bool
-	// KeepOwners restores ownership and privileges as recorded. Leave it
-	// off when the target server does not have the same roles.
-	KeepOwners bool
-}
-
-// Restore applies an archive read from r to the database. It runs in a single
-// transaction: a restore that fails changes nothing. The returned text is
-// pg_restore's own output.
-func Restore(ctx context.Context, cfg connector.Config, r io.Reader, opts RestoreOptions) (string, error) {
+// restorePostgres applies an archive read from r to the database. It runs in
+// a single transaction: a restore that fails changes nothing. The returned
+// text is pg_restore's own output.
+func restorePostgres(ctx context.Context, cfg connector.Config, r io.Reader, opts RestoreOptions) (string, error) {
 	path, err := findTool("pg_restore", 0)
 	if err != nil {
 		return "", err
@@ -108,7 +88,7 @@ func Restore(ctx context.Context, cfg connector.Config, r io.Reader, opts Restor
 	if !opts.KeepOwners {
 		args = append(args, "--no-owner", "--no-privileges")
 	}
-	cmd, cleanup, err := command(ctx, path, cfg, args...)
+	cmd, cleanup, err := pgCommand(ctx, path, cfg, args...)
 	if err != nil {
 		return "", err
 	}

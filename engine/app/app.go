@@ -15,7 +15,9 @@ import (
 	"dedie/engine/store"
 
 	// Database drivers and migration pipelines register themselves on import.
+	_ "dedie/engine/connector/mysql"
 	_ "dedie/engine/connector/postgres"
+	_ "dedie/engine/migrate/mymy"
 	_ "dedie/engine/migrate/pgpg"
 )
 

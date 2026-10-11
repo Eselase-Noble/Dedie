@@ -1,0 +1,291 @@
+package mymy
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"dedie/engine/connector"
+	"dedie/engine/connector/mysql"
+	"dedie/engine/migrate"
+)
+
+// maxStreamRetries is how many times in a row the stream is restarted after
+// an error (a dropped connection, a failover) before the job is failed.
+const maxStreamRetries = 5
+
+type runner struct {
+	jobID  string
+	cfg    migrate.Config
+	st     *State
+	srcCfg connector.Config
+	dstCfg connector.Config
+	rep    migrate.Reporter
+	plan   *Plan
+	src    *sql.DB
+	dst    *sql.DB
+}
+
+// Run drives a job from wherever its saved state left it to completion, or
+// until the operator pauses or aborts it. It is safe to call again after a
+// crash: finished phases are skipped and the stream resumes from the
+// checkpoint stored on the target.
+func Run(ctx context.Context, jobID string, cfg migrate.Config, st State, srcCfg, dstCfg connector.Config, rep migrate.Reporter) (migrate.Outcome, error) {
+	cfg.Defaults()
+	r := &runner{jobID: jobID, cfg: cfg, st: &st, srcCfg: srcCfg, dstCfg: dstCfg, rep: rep}
+	out, err := r.run(ctx)
+	// Never leave the source read-only behind a job that did not finish.
+	if err != nil && st.Fenced {
+		if uerr := unfence(ctx, srcCfg); uerr != nil {
+			rep.Event("error", "the source database is still read-only and could not be reset: "+message(uerr))
+		} else {
+			st.Fenced = false
+			rep.Event("warn", "the job stopped during cutover; the source database is writable again")
+		}
+		rep.SaveState(st)
+	}
+	return out, err
+}
+
+func (r *runner) save() { r.rep.SaveState(*r.st) }
+
+func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
+	if r.rep.Desired() == "abort" {
+		return r.abort(ctx), nil
+	}
+	var err error
+	if r.src, err = mysql.Open(ctx, r.srcCfg, nil); err != nil {
+		return "", fmt.Errorf("source: %w", err)
+	}
+	defer r.src.Close()
+	// Tables reference each other in any order, so they are created with
+	// foreign-key checks off on these control connections.
+	if r.dst, err = mysql.Open(ctx, r.dstCfg, targetParams(map[string]string{"foreign_key_checks": "0"})); err != nil {
+		return "", fmt.Errorf("target: %w", err)
+	}
+	defer r.dst.Close()
+	if r.plan, err = BuildPlan(ctx, r.src, r.srcCfg.Database, r.cfg); err != nil {
+		return "", err
+	}
+
+	if !r.st.SchemaDone {
+		if err := r.schemaPhase(ctx); err != nil {
+			return "", err
+		}
+	}
+	if !r.st.SnapshotDone {
+		if err := r.snapshotPhase(ctx); err != nil {
+			if errors.Is(err, errInterrupted) {
+				if r.rep.Desired() == "abort" {
+					return r.abort(ctx), nil
+				}
+				r.rep.Event("warn", "paused during the initial copy; the copy starts over when the job resumes")
+				return migrate.Paused, nil
+			}
+			return "", err
+		}
+	}
+	if !r.st.IndexingDone {
+		r.rep.SetPhase(migrate.PhaseIndexing)
+		r.rep.Event("info", "creating views and stored routines")
+		failed, err := applyStmts(ctx, r.dst, r.plan.Post)
+		if err != nil {
+			return "", err
+		}
+		reportFailed(r.rep, failed)
+		r.st.IndexingDone = true
+		r.save()
+	}
+
+	retries := 0
+	for {
+		r.rep.SetPhase(migrate.PhaseStreaming)
+		started := time.Now()
+		reason, err := stream(ctx, r.jobID, r.cfg, r.st, r.plan, r.srcCfg, r.dstCfg, r.rep)
+		if err != nil {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			if time.Since(started) > time.Minute {
+				retries = 0
+			}
+			retries++
+			if retries > maxStreamRetries {
+				return "", err
+			}
+			r.rep.Event("warn", fmt.Sprintf("stream interrupted (%s); reconnecting, attempt %d of %d", err, retries, maxStreamRetries))
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(5 * time.Second):
+			}
+			continue
+		}
+		switch reason {
+		case stopPause:
+			r.rep.Event("info", "paused; the job can resume for as long as the source still has its binary logs from "+r.st.Applied.File+" onwards")
+			return migrate.Paused, nil
+		case stopAbort:
+			return r.abort(ctx), nil
+		case stopCutover:
+			done, err := r.finalize(ctx)
+			if err != nil {
+				return "", err
+			}
+			if done {
+				return migrate.Completed, nil
+			}
+		}
+	}
+}
+
+func (r *runner) schemaPhase(ctx context.Context) error {
+	r.rep.SetPhase(migrate.PhaseSchema)
+	report, err := preflight(ctx, r.src, r.dst, r.plan, r.cfg)
+	if err != nil {
+		return err
+	}
+	// A retry after an interrupted schema phase finds its own tables on the
+	// target; that is the one failed check it may ignore.
+	var ours bool
+	_ = r.dst.QueryRowContext(ctx, "SELECT COUNT(*) > 0 FROM `"+checkpointTable+"` WHERE job_id = ?", r.jobID).Scan(&ours)
+	var blocking []string
+	for _, c := range report.Checks {
+		if c.Status == "fail" && !(ours && c.Name == "Target is empty") {
+			blocking = append(blocking, c.Name+": "+c.Detail)
+		}
+	}
+	if len(blocking) > 0 {
+		return fmt.Errorf("preflight failed: %s", strings.Join(blocking, "; "))
+	}
+	_ = r.src.QueryRowContext(ctx, "SELECT VERSION()").Scan(&r.st.SourceVersion)
+	_ = r.dst.QueryRowContext(ctx, "SELECT VERSION()").Scan(&r.st.TargetVersion)
+
+	// Mark the target as ours before creating anything, so that a retry can
+	// tell its own leftovers from somebody else's tables.
+	if _, err := r.dst.ExecContext(ctx, checkpointDDL); err != nil {
+		return fmt.Errorf("prepare target: %s", message(err))
+	}
+	if _, err := r.dst.ExecContext(ctx, "INSERT IGNORE INTO `"+checkpointTable+"` (job_id, binlog_file, binlog_pos) VALUES (?, '', 0)", r.jobID); err != nil {
+		return err
+	}
+
+	r.rep.Event("info", fmt.Sprintf("creating %d tables on the target", len(r.plan.Tables)))
+	if _, err := applyStmts(ctx, r.dst, r.plan.Pre); err != nil {
+		return err
+	}
+	progress := make([]migrate.TableProgress, len(r.plan.Tables))
+	for i, t := range r.plan.Tables {
+		progress[i] = migrate.TableProgress{Schema: r.plan.Database, Table: t.Name, EstRows: t.EstRows}
+	}
+	r.rep.ResetTables(progress)
+	r.st.SchemaDone = true
+	r.save()
+	return nil
+}
+
+func (r *runner) snapshotPhase(ctx context.Context) error {
+	r.rep.SetPhase(migrate.PhaseSnapshot)
+	// Start clean: rows left by an interrupted attempt belong to a snapshot
+	// that no longer exists.
+	if err := truncateTargets(ctx, r.dstCfg, r.plan); err != nil {
+		return fmt.Errorf("empty target tables: %w", err)
+	}
+	if _, err := r.dst.ExecContext(ctx, "UPDATE `"+checkpointTable+"` SET binlog_file = '', binlog_pos = 0 WHERE job_id = ?", r.jobID); err != nil {
+		return err
+	}
+	conns, pos, err := openSnapshot(ctx, r.src, r.cfg.SnapshotWorkers)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		// End the snapshot transactions before the connections go back to
+		// the pool. Left open, they would hold metadata locks on every
+		// table and block the read-only switch at cutover.
+		for _, c := range conns {
+			c.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
+			c.Close()
+		}
+	}()
+	r.st.Start, r.st.ConsistentLSN = pos, pos.String()
+	r.save()
+	r.rep.Event("info", fmt.Sprintf("copying %d tables from a snapshot at %s with %d workers", len(r.plan.Tables), pos, len(conns)))
+	if err := snapshot(ctx, conns, r.dstCfg, r.plan, r.rep); err != nil {
+		return err
+	}
+	r.st.SnapshotDone = true
+	r.save()
+	r.rep.Event("info", "initial copy finished")
+	return nil
+}
+
+// finalize runs once the stream has drained at cutover. It returns false
+// when validation fails, in which case the job goes back to streaming.
+func (r *runner) finalize(ctx context.Context) (bool, error) {
+	r.rep.SetPhase(migrate.PhaseCutover)
+	n, err := syncAutoIncrement(ctx, r.src, r.dst, r.plan)
+	if err != nil {
+		r.rep.Event("warn", "AUTO_INCREMENT sync incomplete: "+err.Error())
+	}
+	r.rep.Event("info", fmt.Sprintf("synchronized %d AUTO_INCREMENT counters; validating tables (%s)", n, r.cfg.Validation))
+
+	mismatches, err := validate(ctx, r.src, r.dst, r.plan, r.cfg.Validation, r.rep)
+	if err != nil || mismatches > 0 {
+		why := fmt.Sprintf("%d table(s) differ between source and target", mismatches)
+		if err != nil {
+			why = err.Error()
+		}
+		if r.st.Fenced {
+			if uerr := unfence(ctx, r.srcCfg); uerr != nil {
+				r.rep.Event("error", "could not make the source writable again: "+message(uerr))
+			} else {
+				r.st.Fenced = false
+			}
+		}
+		r.rep.SetDesired("run")
+		r.rep.Event("error", "cutover cancelled: "+why+". If the source is still receiving writes, stop them and try again; streaming continues")
+		r.save()
+		return false, nil
+	}
+
+	failed, err := applyStmts(ctx, r.dst, r.plan.Final)
+	if err != nil {
+		return false, err
+	}
+	reportFailed(r.rep, failed)
+	// Index statistics are not copied; refresh them so the first queries
+	// after cutover are planned sensibly.
+	for _, t := range r.plan.Tables {
+		if rows, err := r.dst.QueryContext(ctx, "ANALYZE TABLE "+t.QName()); err == nil {
+			rows.Close()
+		}
+	}
+	cleanup(ctx, r.dstCfg, r.rep)
+	r.rep.SetPhase(migrate.PhaseDone)
+	msg := "cutover complete: the target is ready for application traffic"
+	if r.st.Fenced {
+		msg += ". The source database was left read-only"
+	}
+	r.rep.Event("info", msg)
+	r.save()
+	return true, nil
+}
+
+// abort stops the job. Data already copied to the target is left for the
+// operator to inspect or drop.
+func (r *runner) abort(ctx context.Context) migrate.Outcome {
+	if r.st.Fenced {
+		if err := unfence(ctx, r.srcCfg); err != nil {
+			r.rep.Event("error", "could not make the source writable again: "+message(err))
+		} else {
+			r.st.Fenced = false
+		}
+	}
+	cleanup(ctx, r.dstCfg, r.rep)
+	r.rep.Event("info", "aborted. Tables already copied to the target were left in place")
+	r.save()
+	return migrate.Aborted
+}

@@ -151,6 +151,30 @@ func TestMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Table-level scope: only the named tables, no views, and a clear
+	// report of names that do not exist.
+	scoped, err := BuildPlan(ctx, src, Config{Tables: []string{"billing.invoices", "customers", "public.nope"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scoped.Tables) != 2 || len(scoped.Missing) != 1 || scoped.Missing[0] != "public.nope" {
+		t.Fatalf("table scope: %d tables, missing %v", len(scoped.Tables), scoped.Missing)
+	}
+	for _, s := range scoped.Post {
+		if s.Kind == "view" {
+			t.Errorf("table scope should not include view %s", s.Name)
+		}
+	}
+	if schemaScoped, err := BuildPlan(ctx, src, Config{Schemas: []string{"billing"}}); err != nil || len(schemaScoped.Tables) != 1 {
+		t.Fatalf("schema scope: %v, %d tables", err, len(schemaScoped.Tables))
+	}
+	// BuildPlan narrows the session's search_path; use a fresh session below.
+	src.Close(ctx)
+	if src, err = postgres.Connect(ctx, srcCfg); err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close(ctx)
+
 	cfg := Config{ExcludeTables: []string{"public.scratch"}, FenceSource: true, CutoverTimeoutSeconds: 60}
 	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
 	if err != nil {
