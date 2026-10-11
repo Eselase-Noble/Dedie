@@ -44,7 +44,8 @@ type monitorState struct {
 
 // RunMonitor checks every connection once a minute, records the result
 // and raises alerts when a database goes down or comes back, or when a
-// migration falls behind. It runs until ctx is cancelled.
+// migration falls behind. In the same pass it applies the rules for
+// closing idle connections. It runs until ctx is cancelled.
 func (a *App) RunMonitor(ctx context.Context) {
 	st := &monitorState{failures: map[string]int{}, down: map[string]bool{}, lagging: map[string]bool{}}
 	tick := time.NewTicker(monitorInterval)
@@ -58,6 +59,7 @@ func (a *App) RunMonitor(ctx context.Context) {
 			a.checkConnections(ctx, st, org)
 			a.checkLag(ctx, st, org)
 		}
+		a.enforceIdlePolicies(ctx)
 		a.Store.PruneHealth(ctx, time.Now().Add(-healthRetention))
 		select {
 		case <-ctx.Done():

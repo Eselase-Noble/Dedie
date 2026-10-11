@@ -67,6 +67,13 @@ export default function RestoreDialog({ backup, connections, onClose, onDone }: 
             ? " The restore runs in a single transaction: if it fails, the target is left unchanged."
             : " A MySQL restore cannot be rolled back: if it fails part-way, the tables already replaced stay replaced."}
         </p>
+        {backup.level !== "full" && (
+          <Banner tone="info">
+            This is {backup.level === "incremental" ? "an incremental" : "a differential"} backup. The full backup it
+            builds on{backup.level === "incremental" ? ", and every backup between," : ""} is restored first, then this
+            one, in order. The target database must be named <strong>{backup.database}</strong>, as the source was.
+          </Banner>
+        )}
         {backup.type === "data" && (
           <Banner tone="warn">This backup holds rows only. The target must already have the tables, and they should be empty.</Banner>
         )}
@@ -76,7 +83,7 @@ export default function RestoreDialog({ backup, connections, onClose, onDone }: 
             {candidates.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.database} on {c.host})</option>)}
           </select>
         </Field>
-        <Field label="Restore into">
+        {backup.level === "full" && <Field label="Restore into">
           <div className="segmented">
             <button type="button" className={where === "existing" ? "active" : ""} onClick={() => setWhere("existing")}>
               The connection&apos;s database
@@ -85,13 +92,13 @@ export default function RestoreDialog({ backup, connections, onClose, onDone }: 
               A new database
             </button>
           </div>
-        </Field>
+        </Field>}
         {where === "new" && (
           <Field label="New database name" hint="Created on the target server, then restored into. Nothing existing is touched, which makes this the safe way to inspect a backup or recover a single table.">
             <input className="input" value={newDatabase} onChange={(e) => setNewDatabase(e.target.value)} placeholder={`${backup.database}_restored`} autoComplete="off" spellCheck={false} required />
           </Field>
         )}
-        {postgres && backup.type !== "tables" && (
+        {postgres && backup.type !== "tables" && backup.level === "full" && (
           <Field label="Only these tables (optional)" hint="Comma-separated, as schema.table. Leave empty to restore everything in the backup.">
             <input className="input" value={onlyTables} onChange={(e) => setOnlyTables(e.target.value)} placeholder="public.orders, public.customers" spellCheck={false} />
           </Field>

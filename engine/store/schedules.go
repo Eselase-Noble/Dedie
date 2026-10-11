@@ -16,6 +16,10 @@ type Schedule struct {
 	ConnectionID string   `json:"connection_id"`
 	Type         string   `json:"type"`
 	Tables       []string `json:"tables"`
+	// Level, LocationID and Encrypted are passed to each backup taken.
+	Level      string `json:"level"`
+	LocationID string `json:"location_id"`
+	Encrypted  bool   `json:"encrypted"`
 	// Cron is a five-field expression evaluated in the server's time zone.
 	Cron string `json:"cron"`
 	// KeepLast and KeepDays bound how many of the schedule's backups are
@@ -32,7 +36,7 @@ type Schedule struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-const scheduleCols = `id,org_id,name,connection_id,type,tables,cron,keep_last,keep_days,verify,enabled,last_run_at,last_status,last_error,next_run_at,created_by,created_at`
+const scheduleCols = `id,org_id,name,connection_id,type,tables,cron,keep_last,keep_days,verify,enabled,last_run_at,last_status,last_error,next_run_at,created_by,created_at,level,location_id,encrypted`
 
 func stamp(t time.Time) string {
 	if t.IsZero() {
@@ -45,7 +49,7 @@ func scanSchedule(row interface{ Scan(...any) error }) (Schedule, error) {
 	var sc Schedule
 	var tables, last, next, created string
 	err := row.Scan(&sc.ID, &sc.OrgID, &sc.Name, &sc.ConnectionID, &sc.Type, &tables, &sc.Cron, &sc.KeepLast, &sc.KeepDays,
-		&sc.Verify, &sc.Enabled, &last, &sc.LastStatus, &sc.LastError, &next, &sc.CreatedBy, &created)
+		&sc.Verify, &sc.Enabled, &last, &sc.LastStatus, &sc.LastError, &next, &sc.CreatedBy, &created, &sc.Level, &sc.LocationID, &sc.Encrypted)
 	sc.LastRunAt, sc.NextRunAt, sc.CreatedAt = parseTime(last), parseTime(next), parseTime(created)
 	sc.Tables = []string{}
 	_ = json.Unmarshal([]byte(tables), &sc.Tables)
@@ -56,11 +60,12 @@ func scanSchedule(row interface{ Scan(...any) error }) (Schedule, error) {
 // is kept on update.
 func (s *Store) SaveSchedule(ctx context.Context, sc Schedule) error {
 	tables, _ := json.Marshal(append([]string{}, sc.Tables...))
-	_, err := s.db.ExecContext(ctx, `INSERT INTO backup_schedules(id,org_id,name,connection_id,type,tables,cron,keep_last,keep_days,verify,enabled,next_run_at,created_by,created_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO backup_schedules(id,org_id,name,connection_id,type,tables,cron,keep_last,keep_days,verify,enabled,next_run_at,created_by,created_at,level,location_id,encrypted)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET name=excluded.name,connection_id=excluded.connection_id,type=excluded.type,tables=excluded.tables,
-		cron=excluded.cron,keep_last=excluded.keep_last,keep_days=excluded.keep_days,verify=excluded.verify,enabled=excluded.enabled,next_run_at=excluded.next_run_at`,
-		sc.ID, sc.OrgID, sc.Name, sc.ConnectionID, sc.Type, string(tables), sc.Cron, sc.KeepLast, sc.KeepDays, sc.Verify, sc.Enabled, stamp(sc.NextRunAt), sc.CreatedBy, now())
+		cron=excluded.cron,keep_last=excluded.keep_last,keep_days=excluded.keep_days,verify=excluded.verify,enabled=excluded.enabled,next_run_at=excluded.next_run_at,
+		level=excluded.level,location_id=excluded.location_id,encrypted=excluded.encrypted`,
+		sc.ID, sc.OrgID, sc.Name, sc.ConnectionID, sc.Type, string(tables), sc.Cron, sc.KeepLast, sc.KeepDays, sc.Verify, sc.Enabled, stamp(sc.NextRunAt), sc.CreatedBy, now(), sc.Level, sc.LocationID, sc.Encrypted)
 	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
 		return errors.New("a schedule with that name already exists")
 	}

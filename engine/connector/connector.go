@@ -240,6 +240,10 @@ type SessionFilter struct {
 	// IdleSeconds, with State, matches only sessions that have been in
 	// that state at least this long.
 	IdleSeconds int64 `json:"idle_seconds"`
+	// ExcludeUsers and ExcludeApplications are never matched, whatever
+	// the rest of the filter says.
+	ExcludeUsers        []string `json:"exclude_users"`
+	ExcludeApplications []string `json:"exclude_applications"`
 }
 
 // Session states a filter can select.

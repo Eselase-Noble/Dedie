@@ -314,7 +314,9 @@ func (s *session) TerminateSessions(ctx context.Context, f connector.SessionFilt
 			  AND ($1 = '' OR usename = $1) AND ($2 = '' OR application_name = $2)
 			  AND ($3 = '' OR datname = $3) AND ($4 = '' OR coalesce(host(client_addr), 'local') = $4)
 			  AND ($5 = '' OR state = $5 OR ($5 = 'idle in transaction' AND state LIKE 'idle in transaction%'))
-			  AND ($6 = 0 OR now() - state_change >= make_interval(secs => $6))) t`,
-		f.User, f.Application, f.Database, f.Client, f.State, f.IdleSeconds).Scan(&n)
+			  AND ($6 = 0 OR now() - state_change >= make_interval(secs => $6))
+			  AND NOT (coalesce(usename, '') = ANY($7::text[])) AND NOT (coalesce(application_name, '') = ANY($8::text[]))) t`,
+		f.User, f.Application, f.Database, f.Client, f.State, f.IdleSeconds,
+		append([]string{}, f.ExcludeUsers...), append([]string{}, f.ExcludeApplications...)).Scan(&n)
 	return n, friendly(err)
 }

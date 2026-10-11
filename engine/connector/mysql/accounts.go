@@ -230,7 +230,7 @@ func (s *session) TerminateSessions(ctx context.Context, f connector.SessionFilt
 	// An idle MySQL session is one whose command is Sleep; its time is
 	// how long it has been asleep. The server's own threads are never
 	// touched.
-	rows, err := s.conn.QueryContext(ctx, `SELECT id FROM information_schema.processlist
+	rows, err := s.conn.QueryContext(ctx, `SELECT id, user FROM information_schema.processlist
 		WHERE id <> CONNECTION_ID() AND user NOT IN ('event_scheduler', 'system user')
 		  AND (? = '' OR user = ?) AND (? = '' OR db = ?) AND (? = '' OR SUBSTRING_INDEX(host, ':', 1) = ?)
 		  AND (? = '' OR (command = 'Sleep' AND time >= ?))`,
@@ -238,14 +238,21 @@ func (s *session) TerminateSessions(ctx context.Context, f connector.SessionFilt
 	if err != nil {
 		return 0, Friendly(err)
 	}
+	excluded := map[string]bool{}
+	for _, u := range f.ExcludeUsers {
+		excluded[u] = true
+	}
 	var ids []int64
 	for rows.Next() {
 		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var user string
+		if err := rows.Scan(&id, &user); err != nil {
 			rows.Close()
 			return 0, err
 		}
-		ids = append(ids, id)
+		if !excluded[user] {
+			ids = append(ids, id)
+		}
 	}
 	rows.Close()
 	n := 0

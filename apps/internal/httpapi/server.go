@@ -82,6 +82,8 @@ func New(a *app.App, opts Options) http.Handler {
 	mux.HandleFunc("DELETE /api/v1/connections/{id}/accounts/{user}", s.authed(s.dropDatabaseAccount))
 	mux.HandleFunc("POST /api/v1/connections/{id}/connection-limit", s.authed(s.setConnectionLimit))
 	mux.HandleFunc("POST /api/v1/connections/{id}/sessions/terminate", s.authed(s.terminateSessions))
+	mux.HandleFunc("GET /api/v1/connections/{id}/idle-policy", s.authed(s.getIdlePolicy))
+	mux.HandleFunc("PUT /api/v1/connections/{id}/idle-policy", s.authed(s.setIdlePolicy))
 
 	mux.HandleFunc("GET /api/v1/queries", s.authed(s.listSavedQueries))
 	mux.HandleFunc("POST /api/v1/queries", s.authed(s.saveQuery))
@@ -101,6 +103,9 @@ func New(a *app.App, opts Options) http.Handler {
 	mux.HandleFunc("POST /api/v1/backups/{id}/restore", s.authed(s.restoreBackup))
 	mux.HandleFunc("GET /api/v1/backups/{id}/download", s.authed(s.downloadBackup))
 	mux.HandleFunc("GET /api/v1/restores", s.authed(s.listRestores))
+	mux.HandleFunc("GET /api/v1/backup-locations", s.authed(s.listLocations))
+	mux.HandleFunc("POST /api/v1/backup-locations", s.authed(s.createLocation))
+	mux.HandleFunc("DELETE /api/v1/backup-locations/{id}", s.authed(s.deleteLocation))
 	mux.HandleFunc("GET /api/v1/schedules", s.authed(s.listSchedules))
 	mux.HandleFunc("POST /api/v1/schedules", s.authed(s.saveSchedule))
 	mux.HandleFunc("PUT /api/v1/schedules/{id}", s.authed(s.saveSchedule))

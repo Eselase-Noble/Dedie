@@ -323,6 +323,24 @@ func (r *remote) ExtractBackup(id, dir string) (int, error) {
 	return extractDownloaded(src, dir)
 }
 
+func (r *remote) ListLocations() (string, []store.Location, error) {
+	var out struct {
+		Default   string           `json:"default_path"`
+		Locations []store.Location `json:"locations"`
+	}
+	err := r.send("GET", "/backup-locations", nil, &out)
+	return out.Default, out.Locations, err
+}
+
+func (r *remote) CreateLocation(name, path string) (l store.Location, err error) {
+	err = r.send("POST", "/backup-locations", map[string]string{"name": name, "path": path}, &l)
+	return
+}
+
+func (r *remote) DeleteLocation(name string) error {
+	return r.send("DELETE", "/backup-locations/"+seg(name), nil, nil)
+}
+
 func (r *remote) SaveSchedule(id string, in app.ScheduleInput) (sc store.Schedule, err error) {
 	if id == "" {
 		err = r.send("POST", "/schedules", in, &sc)

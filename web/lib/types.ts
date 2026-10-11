@@ -310,6 +310,10 @@ export interface BackupInput {
   note: string;
   type: BackupType;
   tables: string[];
+  level: BackupLevel;
+  location_id: string;
+  /** Write the database's own format without encryption. */
+  plain: boolean;
 }
 
 export interface Schedule {
@@ -318,6 +322,9 @@ export interface Schedule {
   connection_id: string;
   type: BackupType;
   tables: string[];
+  level: BackupLevel;
+  location_id: string;
+  encrypted: boolean;
   cron: string;
   keep_last: number;
   keep_days: number;
@@ -331,7 +338,7 @@ export interface Schedule {
   created_at: string;
 }
 
-export type ScheduleInput = Pick<Schedule, "name" | "connection_id" | "type" | "tables" | "cron" | "keep_last" | "keep_days" | "verify" | "enabled">;
+export type ScheduleInput = Pick<Schedule, "name" | "connection_id" | "type" | "tables" | "level" | "location_id" | "cron" | "keep_last" | "keep_days" | "verify" | "enabled"> & { plain: boolean };
 
 export interface Backup {
   id: string;
@@ -342,6 +349,12 @@ export interface Backup {
   type: BackupType;
   format: string;
   tables: string[];
+  level: BackupLevel;
+  parent_id: string;
+  encrypted: boolean;
+  location_id: string;
+  /** The file on the machine that runs Dedie. */
+  path: string;
   schedule_id: string;
   verified_at: string;
   server_version: string;
@@ -577,4 +590,35 @@ export interface SessionFilter {
   application?: string;
   database?: string;
   client?: string;
+}
+
+export interface IdlePolicy {
+  connection_id: string;
+  enabled: boolean;
+  idle_minutes: number;
+  tx_minutes: number;
+  min_usage_percent: number;
+  exclude_users: string[];
+  last_run_at: string;
+  last_closed: number;
+  total_closed: number;
+  last_error: string;
+  updated_by: string;
+  updated_at: string;
+}
+
+export type BackupLevel = "full" | "differential" | "incremental";
+
+export interface BackupLocation {
+  id: string;
+  name: string;
+  path: string;
+  created_by: string;
+  created_at: string;
+  backups: number;
+}
+
+export interface BackupLocations {
+  default_path: string;
+  locations: BackupLocation[];
 }

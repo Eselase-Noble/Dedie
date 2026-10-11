@@ -2,32 +2,25 @@
 
 import { useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
-import type { BackupType, Connection } from "@/lib/types";
+import type { BackupLocations, Connection } from "@/lib/types";
 import { Banner, Field, Modal } from "@/components/ui";
-import TablePicker from "./TablePicker";
-import { typeOptions } from "./options";
+import BackupOptions, { DEFAULT_CHOICE, type BackupChoice } from "./BackupOptions";
 
-export default function CreateBackup({ connections, onClose, onDone }: {
-  connections: Connection[]; onClose: () => void; onDone: () => void;
+export default function CreateBackup({ connections, locations, onClose, onDone }: {
+  connections: Connection[]; locations: BackupLocations | null; onClose: () => void; onDone: () => void;
 }) {
   const candidates = connections.filter((c) => c.kind === "postgres" || c.kind === "mysql");
   const [connId, setConnId] = useState(candidates[0]?.id ?? "");
-  const [type, setType] = useState<BackupType>("full");
-  const [tables, setTables] = useState<string[]>([]);
+  const [choice, setChoice] = useState<BackupChoice>(DEFAULT_CHOICE);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-
   const connection = candidates.find((c) => c.id === connId) ?? null;
-  const options = typeOptions(connection?.kind ?? "");
-  const current = options.find((o) => o.value === type) ?? options[0];
 
   const chooseConnection = (next: string) => {
     setConnId(next);
-    setTables([]);
-    // Physical backups exist for PostgreSQL only.
-    const kind = candidates.find((c) => c.id === next)?.kind ?? "";
-    if (!typeOptions(kind).some((o) => o.value === type)) setType("full");
+    // What is possible depends on the kind of database; start again.
+    setChoice({ ...DEFAULT_CHOICE, locationId: choice.locationId, plain: choice.plain });
   };
 
   const submit = async (e: FormEvent) => {
@@ -35,7 +28,10 @@ export default function CreateBackup({ connections, onClose, onDone }: {
     setBusy(true);
     setError("");
     try {
-      await api.createBackup({ connection_id: connId, note, type: current.value, tables: current.value === "tables" ? tables : [] });
+      await api.createBackup({
+        connection_id: connId, note, type: choice.type, level: choice.level,
+        tables: choice.type === "tables" ? choice.tables : [], location_id: choice.locationId, plain: choice.plain,
+      });
       onDone();
       onClose();
     } catch (err) {
@@ -44,7 +40,7 @@ export default function CreateBackup({ connections, onClose, onDone }: {
     }
   };
 
-  const incomplete = !connId || (current.value === "tables" && tables.length === 0);
+  const incomplete = !connId || (choice.type === "tables" && choice.tables.length === 0);
 
   return (
     <Modal title="Create backup" onClose={onClose} footer={
@@ -63,23 +59,11 @@ export default function CreateBackup({ connections, onClose, onDone }: {
             {candidates.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.database})</option>)}
           </select>
         </Field>
-        <Field label="What to back up" hint={current.description}>
-          <select className="select" value={current.value} onChange={(e) => setType(e.target.value as BackupType)}>
-            {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </Field>
-        {current.value === "tables" && connection && (
-          <Field label="Tables">
-            <TablePicker connection={connection} selected={tables} onChange={setTables} />
-          </Field>
-        )}
+        <BackupOptions connection={connection} locations={locations} value={choice} onChange={setChoice} />
         <Field label="Note (optional)">
           <input className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Before the 4.2 release" maxLength={200} />
         </Field>
-        <p className="hint">
-          The database stays online while the backup is taken from a consistent snapshot. The archive is compressed
-          and encrypted before it is written to the server&apos;s data directory.
-        </p>
+        <p className="hint">The database stays online while the backup is taken from a consistent point.</p>
       </form>
     </Modal>
   );

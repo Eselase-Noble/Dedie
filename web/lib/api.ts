@@ -6,6 +6,8 @@ import type {
   AuditVerification,
   Backup,
   BackupInput,
+  BackupLocation,
+  BackupLocations,
   Catalog,
   ChannelInput,
   ColumnDef,
@@ -14,6 +16,7 @@ import type {
   ConnectionInput,
   ConnectionStatus,
   DbAccounts,
+  IdlePolicy,
   Migration,
   MigrationAction,
   MigrationDetail,
@@ -177,6 +180,10 @@ export const api = {
   terminateSessions: (connId: string, filter: SessionFilter) =>
     post<{ sessions: number }>(`/connections/${id(connId)}/sessions/terminate`, filter),
 
+  idlePolicy: (connId: string) => get<IdlePolicy>(`/connections/${id(connId)}/idle-policy`),
+  setIdlePolicy: (connId: string, body: Pick<IdlePolicy, "enabled" | "idle_minutes" | "tx_minutes" | "min_usage_percent" | "exclude_users">) =>
+    request<IdlePolicy>("PUT", `/connections/${id(connId)}/idle-policy`, { body }),
+
   // Saved queries
   savedQueries: () => get<SavedQuery[]>("/queries"),
   saveQuery: (queryId: string, body: { name: string; sql: string; kind: string; shared: boolean }) =>
@@ -199,6 +206,9 @@ export const api = {
   createBackup: (body: BackupInput) => post<Backup>("/backups", body),
   // A plain link: the browser downloads the decrypted archive as a file.
   backupDownloadUrl: (backupId: string) => `${BASE}/backups/${id(backupId)}/download`,
+  backupLocations: () => get<BackupLocations>("/backup-locations"),
+  createBackupLocation: (name: string, path: string) => post<BackupLocation>("/backup-locations", { name, path }),
+  deleteBackupLocation: (locationId: string) => request<{ ok: boolean }>("DELETE", `/backup-locations/${id(locationId)}`),
   schedules: () => get<Schedule[]>("/schedules"),
   saveSchedule: (scheduleId: string, body: ScheduleInput) =>
     scheduleId ? request<Schedule>("PUT", `/schedules/${id(scheduleId)}`, { body }) : post<Schedule>("/schedules", body),

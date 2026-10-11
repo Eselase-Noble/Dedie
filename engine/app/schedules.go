@@ -19,6 +19,9 @@ type ScheduleInput struct {
 	ConnectionID string   `json:"connection_id"`
 	Type         string   `json:"type"`
 	Tables       []string `json:"tables"`
+	Level        string   `json:"level"`
+	LocationID   string   `json:"location_id"`
+	Plain        bool     `json:"plain"`
 	Cron         string   `json:"cron"`
 	KeepLast     int      `json:"keep_last"`
 	KeepDays     int      `json:"keep_days"`
@@ -69,6 +72,24 @@ func (a *App) SaveSchedule(ctx context.Context, actor Actor, id string, in Sched
 	if err := backup.CheckOptions(c.Kind, opts); err != nil {
 		return store.Schedule{}, invalid("%s", err.Error())
 	}
+	switch in.Level {
+	case "":
+		in.Level = backup.LevelFull
+	case backup.LevelFull:
+	case backup.LevelDifferential, backup.LevelIncremental:
+		if !backup.LevelsSupported(c.Kind, in.Type) {
+			return store.Schedule{}, invalid("%s backups are available for physical PostgreSQL backups and full logical MySQL backups", in.Level)
+		}
+	default:
+		return store.Schedule{}, invalid("level must be full, differential or incremental")
+	}
+	if in.LocationID != "" {
+		loc, err := a.Store.GetLocation(ctx, actor.User.OrgID, in.LocationID)
+		if err != nil {
+			return store.Schedule{}, invalid("backup location not found")
+		}
+		in.LocationID = loc.ID
+	}
 	sc := store.Schedule{ID: secure.NewID("sch"), OrgID: actor.User.OrgID, CreatedBy: actor.User.Email}
 	action := "schedule.create"
 	if id != "" {
@@ -79,10 +100,11 @@ func (a *App) SaveSchedule(ctx context.Context, actor Actor, id string, in Sched
 	}
 	sc.Name, sc.ConnectionID, sc.Type, sc.Tables, sc.Cron = in.Name, c.ID, in.Type, opts.Tables, in.Cron
 	sc.KeepLast, sc.KeepDays, sc.Verify, sc.Enabled, sc.NextRunAt = in.KeepLast, in.KeepDays, in.Verify, in.Enabled, next
+	sc.Level, sc.LocationID, sc.Encrypted = in.Level, in.LocationID, !in.Plain
 	if err := a.Store.SaveSchedule(ctx, sc); err != nil {
 		return sc, invalid("%s", err.Error())
 	}
-	a.audit(ctx, actor, action, sc.ID, map[string]any{"name": sc.Name, "connection": c.Name, "cron": sc.Cron, "type": sc.Type,
+	a.audit(ctx, actor, action, sc.ID, map[string]any{"name": sc.Name, "connection": c.Name, "cron": sc.Cron, "type": sc.Type, "level": sc.Level,
 		"keep_last": sc.KeepLast, "keep_days": sc.KeepDays, "enabled": sc.Enabled})
 	return sc, nil
 }
@@ -162,7 +184,8 @@ func (a *App) runSchedule(ctx context.Context, sc store.Schedule) {
 		}
 		a.Store.FinishSchedule(ctx, sc.ID, "completed", "")
 	}
-	b, err := a.startBackup(ctx, actor, BackupInput{ConnectionID: sc.ConnectionID, Type: sc.Type, Tables: sc.Tables, Note: "Scheduled: " + sc.Name}, sc.ID, true)
+	b, err := a.startBackup(ctx, actor, BackupInput{ConnectionID: sc.ConnectionID, Type: sc.Type, Tables: sc.Tables, Level: sc.Level,
+		LocationID: sc.LocationID, Plain: !sc.Encrypted, Note: "Scheduled: " + sc.Name}, sc.ID, true)
 	if err != nil {
 		finish(err)
 		return
@@ -201,6 +224,11 @@ func (a *App) applyRetention(ctx context.Context, actor Actor, sc store.Schedule
 	for i, b := range list {
 		expired := sc.KeepLast > 0 && i >= sc.KeepLast || sc.KeepDays > 0 && b.CreatedAt.Before(cutoff)
 		if i == 0 || !expired {
+			continue
+		}
+		// A backup that later ones build on stays until they have gone;
+		// deleting it would make them unrestorable.
+		if n, err := a.Store.BackupDependents(ctx, b.ID); err != nil || n > 0 {
 			continue
 		}
 		if err := os.Remove(b.Path); err != nil && !os.IsNotExist(err) {

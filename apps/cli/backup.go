@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"dedie/engine/app"
+	"dedie/engine/backup"
 )
 
 func (c *cli) backupCreate(args []string) error {
@@ -15,19 +16,23 @@ func (c *cli) backupCreate(args []string) error {
 	note := fs.String("note", "", "a note stored with the backup")
 	typ := fs.String("type", "full", "what to back up: full, schema, data, tables or physical")
 	tables := fs.String("tables", "", "comma-separated tables for --type tables (schema.table on PostgreSQL)")
+	level := fs.String("level", "full", "full, differential (changes since the last full backup) or incremental (changes since the last backup)")
+	location := fs.String("location", "", "name of the backup location to write to (default: the data directory)")
+	plain := fs.Bool("plain", false, "write the database's own format without encryption, readable directly from its path")
 	conn, err := oneArg(parse(fs, args), "connection name")
 	if err != nil {
 		return err
 	}
 	fmt.Println("Backing up", conn, "...")
-	b, err := c.be.CreateBackup(app.BackupInput{ConnectionID: conn, Note: *note, Type: *typ, Tables: splitList(*tables)}, true)
+	b, err := c.be.CreateBackup(app.BackupInput{ConnectionID: conn, Note: *note, Type: *typ, Tables: splitList(*tables),
+		Level: *level, LocationID: *location, Plain: *plain}, true)
 	if err != nil {
 		return err
 	}
 	if b.Status != "completed" {
 		return fmt.Errorf("backup failed: %s", b.Error)
 	}
-	fmt.Printf("Backup %s completed: %s, sha256 %s\n", b.ID, humanBytes(b.SizeBytes), b.SHA256)
+	fmt.Printf("Backup %s completed: %s %s, %s, sha256 %s\n  %s\n", b.ID, backup.Method(b.Type), b.Level, humanBytes(b.SizeBytes), b.SHA256, b.Path)
 	return nil
 }
 
@@ -38,9 +43,9 @@ func (c *cli) backupList() error {
 	}
 	var rows [][]string
 	for _, b := range list {
-		rows = append(rows, []string{b.ID, b.ConnectionName, b.Database, b.Type, b.Status, humanBytes(b.SizeBytes), b.CreatedAt.Local().Format("2006-01-02 15:04"), b.Note})
+		rows = append(rows, []string{b.ID, b.ConnectionName, b.Database, backup.Method(b.Type), b.Level, b.Type, b.Status, humanBytes(b.SizeBytes), b.CreatedAt.Local().Format("2006-01-02 15:04"), b.Note})
 	}
-	table("ID\tCONNECTION\tDATABASE\tTYPE\tSTATUS\tSIZE\tCREATED\tNOTE", rows)
+	table("ID\tCONNECTION\tDATABASE\tMETHOD\tLEVEL\tCONTENTS\tSTATUS\tSIZE\tCREATED\tNOTE", rows)
 	return nil
 }
 
@@ -52,7 +57,7 @@ func (c *cli) backupVerify(args []string) error {
 	if err := c.be.VerifyBackup(id); err != nil {
 		return err
 	}
-	fmt.Println("Backup is intact and decrypts correctly.")
+	fmt.Println("Backup is intact: the file matches its checksum and reads back completely.")
 	return nil
 }
 
@@ -137,6 +142,9 @@ func (c *cli) scheduleAdd(args []string) error {
 	fs.StringVar(&in.Cron, "cron", "@daily", "when to run: minute hour day month weekday, or @hourly, @daily, @weekly, @monthly")
 	fs.StringVar(&in.Type, "type", "full", "full, schema, data, tables or physical")
 	tables := fs.String("tables", "", "comma-separated tables for --type tables")
+	fs.StringVar(&in.Level, "level", "full", "full, differential or incremental")
+	fs.StringVar(&in.LocationID, "location", "", "name of the backup location to write to")
+	fs.BoolVar(&in.Plain, "plain", false, "write unencrypted files in the database's own format")
 	fs.IntVar(&in.KeepLast, "keep-last", 7, "keep this many backups (0 keeps all)")
 	fs.IntVar(&in.KeepDays, "keep-days", 0, "delete backups older than this many days (0 keeps all)")
 	fs.BoolVar(&in.Verify, "verify", true, "verify each backup after it is written")
@@ -176,5 +184,43 @@ func (c *cli) scheduleRemove(args []string) error {
 		return err
 	}
 	fmt.Println("Deleted", id)
+	return nil
+}
+
+func (c *cli) locationAdd(args []string) error {
+	fs := flag.NewFlagSet("backup location add", flag.ExitOnError)
+	name := fs.String("name", "", "name of the location")
+	path := fs.String("path", "", "full path of a directory on the machine that runs Dedie")
+	parse(fs, args)
+	l, err := c.be.CreateLocation(*name, *path)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Location %s added: %s\n", l.Name, l.Path)
+	return nil
+}
+
+func (c *cli) locationList() error {
+	def, list, err := c.be.ListLocations()
+	if err != nil {
+		return err
+	}
+	rows := [][]string{{"(default)", def, "-"}}
+	for _, l := range list {
+		rows = append(rows, []string{l.Name, l.Path, fmt.Sprint(l.Backups)})
+	}
+	table("NAME\tPATH\tBACKUPS", rows)
+	return nil
+}
+
+func (c *cli) locationRemove(args []string) error {
+	name, err := oneArg(args, "location name")
+	if err != nil {
+		return err
+	}
+	if err := c.be.DeleteLocation(name); err != nil {
+		return err
+	}
+	fmt.Println("Removed", name, "(its directory and files were left as they are)")
 	return nil
 }
