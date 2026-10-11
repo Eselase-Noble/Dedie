@@ -46,8 +46,8 @@ func preflight(ctx context.Context, src *sql.DB, dst *pgx.Conn, plan *Plan, cfg 
 		return nil, err
 	}
 	r.Add("Versions", "ok", "Oracle "+srcVer+" → PostgreSQL "+dstVer)
-	if oracle.VersionNum(srcVer) < 120200 {
-		r.Add("Source version", "fail", "Oracle 12.2 or newer is required")
+	if oracle.VersionNum(srcVer) < 120100 {
+		r.Add("Source version", "fail", "Oracle 12c (12.1) or newer is required")
 	}
 	r.Add("Scope", "ok", fmt.Sprintf("%d table(s) from %s", len(plan.Tables), strings.Join(plan.Owners, ", ")))
 
@@ -217,7 +217,17 @@ func checkMining(ctx context.Context, src *sql.DB, plan *Plan, cfg migrate.Confi
 	if err := src.QueryRowContext(ctx, `SELECT COUNT(*) FROM v$transaction`).Scan(&n); err != nil {
 		missing = append(missing, "SELECT on V_$TRANSACTION")
 	}
-	if len(missing) > 0 {
+	if len(missing) == 0 {
+		// Nothing shows that LogMiner works here like using it: read
+		// the last few changes and stop.
+		if err := trialMine(ctx, src); err != nil {
+			r.Add("LogMiner access", "fail", err.Error())
+			missing = nil
+		}
+	}
+	if r.Checks[len(r.Checks)-1].Name == "LogMiner access" {
+		// Reported above.
+	} else if len(missing) > 0 {
 		r.Add("LogMiner access", "fail", "to follow changes the source account needs "+strings.Join(missing, ", ")+
 			". LOGMINING, SELECT ANY TRANSACTION, EXECUTE_CATALOG_ROLE and SELECT ANY DICTIONARY together cover it")
 	} else {
@@ -256,4 +266,24 @@ func checkMining(ctx context.Context, src *sql.DB, plan *Plan, cfg migrate.Confi
 	if cfg.FenceSource {
 		r.Add("Cutover", "warn", "making the source read-only at cutover is not available for Oracle; stop application writes yourself before requesting cutover")
 	}
+}
+
+// trialMine opens and closes a LogMiner session over the most recent
+// changes, to find out whether the account, the release and the place
+// the connection leads to allow it.
+func trialMine(ctx context.Context, src *sql.DB) error {
+	conn, err := src.Conn(ctx)
+	if err != nil {
+		return oracle.Friendly(err)
+	}
+	defer conn.Close()
+	scn, err := currentSCN(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if err := startMiner(ctx, conn, max(scn-10, 1), scn); err != nil {
+		return err
+	}
+	_, err = conn.ExecContext(ctx, `BEGIN DBMS_LOGMNR.END_LOGMNR; END;`)
+	return oracle.Friendly(err)
 }

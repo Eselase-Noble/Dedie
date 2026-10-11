@@ -309,10 +309,11 @@ func BuildPlan(ctx context.Context, src oracle.Queryer, cfg migrate.Config) (*Pl
 	}
 
 	// Tables that only exist to serve another object are left out: nested
-	// and overflow tables, materialized view containers, the recycle bin.
+	// and overflow tables, materialized view containers, external tables, the recycle bin.
 	rows, err := query(ctx, src, `SELECT t.owner, t.table_name, NVL(t.num_rows, 0) FROM all_tables t
 		WHERE t.owner `+in+` AND t.nested = 'NO' AND t.secondary = 'N' AND t.dropped = 'NO' AND t.temporary = 'N'
-		  AND (t.iot_type IS NULL OR t.iot_type = 'IOT') AND NVL(t.external, 'NO') = 'NO'
+		  AND (t.iot_type IS NULL OR t.iot_type = 'IOT')
+		  AND NOT EXISTS (SELECT 1 FROM all_external_tables e WHERE e.owner = t.owner AND e.table_name = t.table_name)
 		  AND NOT EXISTS (SELECT 1 FROM all_mviews m WHERE m.owner = t.owner AND m.container_name = t.table_name)
 		ORDER BY 1, 2`)
 	if err != nil {

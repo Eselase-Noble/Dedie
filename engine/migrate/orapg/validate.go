@@ -37,6 +37,13 @@ func keyExprs(t *Table, utf8 bool) (source, target []string, ok bool) {
 			source = append(source, "RTRIM(TO_CHAR("+col+", "+plainNumber+"), '.')")
 		case c.Kind == kText && c.DataType == "VARCHAR2" && utf8:
 			source = append(source, col)
+		case c.Kind == kText && c.DataType == "CHAR" && utf8:
+			// PostgreSQL drops the padding when it prints a char(n).
+			source = append(source, "RTRIM("+col+")")
+		case c.Kind == kDate:
+			source = append(source, "TO_CHAR("+col+", 'YYYY-MM-DD HH24:MI:SS')")
+			target = append(target, "to_char("+qident(c.Target)+", 'YYYY-MM-DD HH24:MI:SS')")
+			continue
 		default:
 			return nil, nil, false
 		}

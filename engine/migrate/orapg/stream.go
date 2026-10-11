@@ -149,12 +149,8 @@ func (r *runner) stream(ctx context.Context) (string, error) {
 // transactions it belongs to. Transactions that committed in the range
 // are returned; those still running stay in open for the next pass.
 func (r *runner) mine(ctx context.Context, miner *sql.Conn, from, to int64, open map[string]*openTx) (*mined, error) {
-	// The online catalog is used as the dictionary, so table and column
-	// names are those the source has now.
-	_, err := miner.ExecContext(ctx, fmt.Sprintf(
-		`BEGIN DBMS_LOGMNR.START_LOGMNR(STARTSCN => %d, ENDSCN => %d, OPTIONS => DBMS_LOGMNR.DICT_FROM_ONLINE_CATALOG); END;`, from, to))
-	if err != nil {
-		return nil, redoError(err)
+	if err := startMiner(ctx, miner, from, to); err != nil {
+		return nil, err
 	}
 	defer miner.ExecContext(context.WithoutCancel(ctx), `BEGIN DBMS_LOGMNR.END_LOGMNR; END;`)
 
@@ -264,6 +260,68 @@ func (r *runner) mine(ctx context.Context, miner *sql.Conn, from, to int64, open
 	return out, nil
 }
 
+// startMiner opens a LogMiner session over a range of SCNs. The online
+// catalog is used as the dictionary, so table and column names are those
+// the source has now.
+//
+// Inside a pluggable database of a current release LogMiner finds the
+// redo logs for the range by itself. Everywhere else (a database that is
+// not a container, the container root, Oracle 12c) it has to be told
+// which files to read, so when it reports that none were given, the
+// online and archived logs that cover the range are registered and the
+// session is started again.
+func startMiner(ctx context.Context, miner *sql.Conn, from, to int64) error {
+	start := fmt.Sprintf(`BEGIN DBMS_LOGMNR.START_LOGMNR(STARTSCN => %d, ENDSCN => %d, OPTIONS => DBMS_LOGMNR.DICT_FROM_ONLINE_CATALOG); END;`, from, to)
+	_, err := miner.ExecContext(ctx, start)
+	if err == nil || !hasCode(err, "ORA-01291", "ORA-01292") {
+		return redoError(err)
+	}
+	files, ferr := logFiles(ctx, miner, from, to)
+	if ferr != nil || len(files) == 0 {
+		return redoError(err)
+	}
+	for i, name := range files {
+		option := "DBMS_LOGMNR.ADDFILE"
+		if i == 0 {
+			option = "DBMS_LOGMNR.NEW"
+		}
+		if _, aerr := miner.ExecContext(ctx, `BEGIN DBMS_LOGMNR.ADD_LOGFILE(LOGFILENAME => :1, OPTIONS => `+option+`); END;`, name); aerr != nil {
+			if hasCode(aerr, "ORA-65040") {
+				return errors.New("this Oracle release cannot run LogMiner from inside a pluggable database, so changes cannot be followed through this connection. Use an offline migration for it")
+			}
+			return fmt.Errorf("register redo log %s with LogMiner: %w", name, oracle.Friendly(aerr))
+		}
+	}
+	_, err = miner.ExecContext(ctx, start)
+	return redoError(err)
+}
+
+// logFiles lists the redo logs that hold the changes between two SCNs:
+// the archived copy of each log where there is one, the online log
+// otherwise.
+func logFiles(ctx context.Context, src oracle.Queryer, from, to int64) ([]string, error) {
+	rows, err := query(ctx, src, fmt.Sprintf(`SELECT name FROM (
+			SELECT MIN(a.name) name, a.thread#, a.sequence# FROM v$archived_log a
+			 WHERE a.name IS NOT NULL AND a.deleted = 'NO' AND a.standby_dest = 'NO'
+			   AND a.next_change# > %[1]d AND a.first_change# <= %[2]d
+			 GROUP BY a.thread#, a.sequence#
+			UNION ALL
+			SELECT MIN(f.member), l.thread#, l.sequence# FROM v$log l JOIN v$logfile f ON f.group# = l.group#
+			 WHERE l.status <> 'UNUSED' AND l.next_change# > %[1]d AND l.first_change# <= %[2]d
+			   AND NOT EXISTS (SELECT 1 FROM v$archived_log a WHERE a.thread# = l.thread# AND a.sequence# = l.sequence#
+			                   AND a.name IS NOT NULL AND a.deleted = 'NO' AND a.standby_dest = 'NO')
+			 GROUP BY l.thread#, l.sequence#
+		) ORDER BY thread#, sequence#`, from, to))
+	if err != nil {
+		return nil, err
+	}
+	files := make([]string, len(rows))
+	for i, r := range rows {
+		files[i] = r[0]
+	}
+	return files, nil
+}
+
 // brief shortens a statement for a message.
 func brief(stmt string) string {
 	stmt = strings.Join(strings.Fields(stmt), " ")
@@ -276,13 +334,13 @@ func brief(stmt string) string {
 // redoError explains the failure that ends a job for good: the redo it
 // still had to read is no longer on the source.
 func redoError(err error) error {
-	msg := err.Error()
-	for _, code := range []string{"ORA-01291", "ORA-01292", "ORA-01284", "ORA-01289", "ORA-01281"} {
-		if strings.Contains(msg, code) {
-			return fmt.Errorf("the source no longer has the redo log this job must read next (%s). "+
-				"A database in NOARCHIVELOG mode keeps only its online logs, which are reused once full; "+
-				"run the source in ARCHIVELOG mode to follow changes dependably. This job has to start again with a new copy", oracle.Friendly(err))
-		}
+	if err == nil {
+		return nil
+	}
+	if hasCode(err, "ORA-01291", "ORA-01292", "ORA-01284", "ORA-01289", "ORA-01281") {
+		return fmt.Errorf("the source no longer has the redo log this job must read next (%s). "+
+			"A database in NOARCHIVELOG mode keeps only its online logs, which are reused once full; "+
+			"run the source in ARCHIVELOG mode to follow changes dependably. This job has to start again with a new copy", oracle.Friendly(err))
 	}
 	return oracle.Friendly(err)
 }
