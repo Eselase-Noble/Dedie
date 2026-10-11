@@ -26,7 +26,7 @@ func main() {
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file (PEM)")
 	tlsKey := flag.String("tls-key", "", "TLS private key file (PEM)")
 	behindProxy := flag.Bool("behind-tls-proxy", false, "a reverse proxy terminates TLS in front of this server; trust X-Forwarded-For and mark cookies Secure")
-	noWorker := flag.Bool("no-worker", false, "serve the API only; do not execute migration jobs or scheduled backups in this process")
+	noWorker := flag.Bool("no-worker", false, "serve the API only; do not execute migration jobs, scheduled backups or health checks in this process")
 	flag.Parse()
 
 	useTLS := *tlsCert != "" && *tlsKey != ""
@@ -49,6 +49,7 @@ func main() {
 		defer close(workerDone)
 		if !*noWorker {
 			go a.RunScheduler(ctx)
+			go a.RunMonitor(ctx)
 			a.RunWorker(ctx)
 		}
 	}()

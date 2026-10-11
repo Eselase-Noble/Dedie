@@ -93,6 +93,16 @@ func New(a *app.App, opts Options) http.Handler {
 	mux.HandleFunc("DELETE /api/v1/schedules/{id}", s.authed(s.deleteSchedule))
 	mux.HandleFunc("POST /api/v1/schedules/{id}/run", s.authed(s.runSchedule))
 
+	mux.HandleFunc("GET /healthz", s.healthz)
+	mux.HandleFunc("GET /metrics", s.authed(s.metrics))
+	mux.HandleFunc("GET /api/v1/monitoring", s.authed(s.monitoring))
+	mux.HandleFunc("GET /api/v1/alerts/events", s.authed(s.listAlertEvents))
+	mux.HandleFunc("GET /api/v1/alerts/channels", s.authed(s.listAlertChannels))
+	mux.HandleFunc("POST /api/v1/alerts/channels", s.authed(s.saveAlertChannel))
+	mux.HandleFunc("PUT /api/v1/alerts/channels/{id}", s.authed(s.saveAlertChannel))
+	mux.HandleFunc("DELETE /api/v1/alerts/channels/{id}", s.authed(s.deleteAlertChannel))
+	mux.HandleFunc("POST /api/v1/alerts/channels/{id}/test", s.authed(s.testAlertChannel))
+
 	mux.HandleFunc("GET /api/v1/audit", s.authed(s.listAudit))
 	mux.HandleFunc("GET /api/v1/audit/verify", s.authed(s.verifyAudit))
 

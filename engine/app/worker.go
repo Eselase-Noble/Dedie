@@ -105,13 +105,14 @@ func (r reporter) SetDesired(d string) {
 func (a *App) runJob(ctx context.Context, id string) {
 	bg := context.Background()
 	rep := reporter{store: a.Store, jobID: id}
-	fail := func(err error) {
-		a.Store.SetJob(bg, id, map[string]any{"status": StatusFailed, "error": err.Error()})
-		rep.Event("error", err.Error())
-	}
 	j, err := a.Store.JobByID(ctx, id)
 	if err != nil {
 		return
+	}
+	fail := func(err error) {
+		a.Store.SetJob(bg, id, map[string]any{"status": StatusFailed, "error": err.Error()})
+		rep.Event("error", err.Error())
+		a.emit(j.OrgID, Event{Type: EventMigrationFailed, Subject: "Migration " + j.Name + " failed", Message: err.Error()})
 	}
 	src, dst, kind, err := a.endpoints(ctx, j.OrgID, j.SourceID, j.TargetID)
 	if err != nil {
@@ -162,5 +163,9 @@ func (a *App) runJob(ctx context.Context, id string) {
 		status := map[migrate.Outcome]string{migrate.Completed: StatusCompleted, migrate.Paused: StatusPaused, migrate.Aborted: StatusAborted}[outcome]
 		a.Store.SetJob(bg, id, map[string]any{"status": status, "desired": "", "error": ""})
 		a.Store.Audit(bg, j.OrgID, "system", "migration."+status, id, fmt.Sprintf(`{"name":%q}`, j.Name), "")
+		if outcome == migrate.Completed {
+			a.emit(j.OrgID, Event{Type: EventMigrationCompleted, Subject: "Migration " + j.Name + " completed",
+				Message: "The target has every change from the source and passed validation. Applications can use it now."})
+		}
 	}
 }
