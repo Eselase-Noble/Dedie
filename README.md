@@ -20,6 +20,7 @@ Dedie moves a production database to a newer server version, or to a different d
 - [Migrating a database](#migrating-a-database)
 - [Continuous sync](#continuous-sync)
 - [Backups](#backups)
+- [Point-in-time recovery](#point-in-time-recovery)
 - [Monitoring and alerts](#monitoring-and-alerts)
 - [Database users and connections](#database-users-and-connections)
 - [Security model](#security-model)
@@ -39,7 +40,7 @@ Dedie moves a production database to a newer server version, or to a different d
 
 **Creating and owning objects.** Create a database, a schema or a table in any database on the server, and hand databases, schemas and tables to another role.
 
-**Backup and recovery.** Logical and physical backups at full, differential and incremental levels, compressed, encrypted by default, and stored in the directory you choose. Schedules with retention take them automatically and verify each one. Restore into an existing database, into a new one, or one table at a time.
+**Backup and recovery.** Logical and physical backups at full, differential and incremental levels, compressed, encrypted by default, and stored in a directory you choose or in S3-compatible object storage. PostgreSQL servers can be recovered to any moment in time. Schedules with retention take them automatically and verify each one. Restore into an existing database, into a new one, or one table at a time.
 
 **Monitoring and alerts.** Every database is checked once a minute. Uptime, response time and migration lag are shown on one page and exported for Prometheus, and alerts go to Slack, a webhook or email.
 
@@ -57,7 +58,9 @@ Dedie moves a production database to a newer server version, or to a different d
 | Query browser and schema explorer | Working | Working | Working (commands as JSON) |
 | Edit rows in the grid | Working | Working | — |
 | Logical backups: whole database, structure, data, selected tables | Working | Working | — |
-| Physical backup of the whole server | Working | — | — |
+| Physical backup of the whole server | Working | Working (Dedie on the database host) | — |
+| Point-in-time recovery | Working (12+) | — | — |
+| Backups in S3-compatible object storage | Working | Working | — |
 | Differential and incremental backups | Working (physical, 17+) | Working (logical, from the binary log) | — |
 | Backup storage locations, plain or encrypted files | Working | Working | — |
 | Connection pool view, manual and automatic closing of idle connections | Working | Working | — |
@@ -73,11 +76,11 @@ Dedie moves a production database to a newer server version, or to a different d
 | MySQL → MySQL | Working |
 | MySQL → PostgreSQL | Working: tables, keys, indexes and foreign keys are translated; views, routines and triggers are not |
 | PostgreSQL → MySQL | Working: tables, keys, indexes and foreign keys are translated; views, functions and triggers are not |
-| MongoDB → PostgreSQL | Working: each collection becomes a table holding every document as `jsonb`; indexes and validators are not translated |
+| MongoDB → PostgreSQL | Working: each collection becomes a table holding every document as `jsonb`, with chosen fields lifted into typed columns; indexes and validators are not translated |
 
 All five pipelines are covered by end-to-end tests that migrate a database under write load, pause and resume mid-stream, cut over and compare the result. The PostgreSQL test runs 16 → 18; the cross-engine tests run MySQL 8.0 → PostgreSQL 18, PostgreSQL 16 → MySQL 8.0 and MongoDB 8.0 → PostgreSQL 18. MySQL versions other than 8.0 and MongoDB versions other than 8.0 have not been exercised yet.
 
-Not built yet: two-way sync with conflict handling, point-in-time recovery, physical backups for MySQL, backups of MongoDB, single sign-on, and external key management. See the [roadmap](#roadmap).
+Not built yet: Oracle as a source, two-way sync with conflict handling, backups of MongoDB, single sign-on, and external key management. See the [roadmap](#roadmap).
 
 ## Programs
 
@@ -373,6 +376,14 @@ How it stays correct: the cluster time is recorded before the copy begins and th
 
 What to know:
 
+- **Typed columns.** Fields can be lifted out of the document into columns of their own, for joins, indexes and tools that do not speak JSON:
+
+  ```sh
+  dedie migrate create --name "shop docs" --source events --target warehouse \
+    --columns "users:email:text,users:address.city:text,users:joined:timestamptz,orders:total:numeric"
+  ```
+
+  The table for `users` then has `_id`, `doc`, `email`, `address_city` and `joined`. Types are `text`, `bigint`, `double precision`, `numeric`, `boolean`, `timestamptz` and `jsonb`. Columns are filled during the copy and kept current by the stream. A value whose type does not fit its column exactly (a string in a `bigint` column) is stored as `NULL` there and counted; nothing is guessed, and `doc` always holds the original. In the web interface, **Suggest from a sample** reads a few hundred documents of each collection and proposes the fields whose values share one simple type; review the proposal before using it.
 - A level is the whole database or selected collections (`--tables orders,customers`).
 - Collections created while the job runs are picked up and get their own table.
 - Indexes, validators and views are not translated. Dropping or renaming a collection on the source is reported and leaves the target table as it is.
@@ -439,7 +450,7 @@ Backups are compressed and stored with a SHA-256 of the file.
 | `schema` | logical | structure only: tables, indexes, views, routines | yes | yes |
 | `data` | logical | rows only, for a database that already has the structure | yes | yes |
 | `tables` | logical | structure and data of the tables you choose | yes | yes |
-| `physical` | physical | a copy of the server's data files, covering every database | `pg_basebackup`, needs the `REPLICATION` attribute | not available |
+| `physical` | physical | a copy of the server's data files, covering every database | `pg_basebackup`, needs the `REPLICATION` attribute | the server's clone plugin; see below |
 
 ```sh
 dedie backup create prod-18 --note "before release"
@@ -459,7 +470,7 @@ dedie backup extract <id> /var/lib/pg-recovered   # a physical backup, into an e
 
 ### Where backups are stored
 
-By default backups are written to `backups/` in Dedie's data directory. An owner or admin can add **storage locations**: other directories on the machine that runs Dedie, such as a second disk or a mounted network share. Each backup, and each schedule, chooses its location, and the page shows the full path of every backup file with a button to copy it.
+By default backups are written to `backups/` in Dedie's data directory. An owner or admin can add **storage locations**: other directories on the machine that runs Dedie, such as a second disk or a mounted network share, or buckets in **S3-compatible object storage**. Each backup, and each schedule, chooses its location, and the page shows the full path of every backup file with a button to copy it.
 
 ```sh
 dedie backup location add --name nas --path /mnt/backups/dedie
@@ -472,7 +483,20 @@ dedie backup create prod-18 --location nas --plain      # an unencrypted file in
 - Files are named for what they are: `shop-20261011-020000-logical-full-1a2b3c4d.dediebak`.
 - **Encrypted (the default).** The file can only be read through Dedie: restore, download or `dedie backup export`.
 - **Plain.** With `--plain`, or the checkbox in the dialog, the file is written in the database's own format (`.dump`, `.sql.gz`, `.tar.gz`) and can be used straight from its path with `pg_restore`, `mysql` or `tar`. It is not encrypted; whoever can read the directory can read the data.
-- Removing a location leaves its directory and files as they are. A location that still holds backups cannot be removed.
+- Removing a location leaves what is stored there as it is. A location that still holds backups cannot be removed.
+
+**Object storage.** A location can be a bucket in Amazon S3 or anything that speaks its protocol (Ceph, Cloudflare R2, Backblaze B2, Wasabi, a MinIO server). Backups are streamed to the bucket as they are taken, so no local copy is needed, and are read back from it for verification, restore and download. A backup kept away from the database server and from Dedie is the one that survives losing both.
+
+```sh
+dedie backup location add --name offsite --s3-bucket acme-db-backups --s3-endpoint s3.eu-west-1.amazonaws.com \
+  --s3-region eu-west-1 --s3-prefix dedie/prod --s3-access-key AKIA...      # prompts for the secret key
+dedie backup create prod-18 --location offsite
+```
+
+- The bucket must exist. Adding the location writes and removes a small test object to prove the key works.
+- The secret key is stored encrypted and never shown again. Give the key only what it needs: to put, get and delete objects under the prefix.
+- Backups in a bucket are encrypted by Dedie before they leave, unless you choose a plain file. Turn on the bucket's own encryption and versioning as well.
+- One backup can be up to about 640 GB.
 
 ### Schedules and retention
 
@@ -498,12 +522,36 @@ A restore verifies the file first and requires the name of the database being wr
 - **Into a new database.** The safest way to look inside a backup or recover one table: the database is created on the target server and restored into, and nothing existing is touched.
 - **Selected tables** can be restored from a PostgreSQL backup.
 - **Differential and incremental backups.** For MySQL, restoring one applies the full backup and then each later backup in order; the target database must have the same name as the source. Schema changes are captured when they were made while connected to that database, which is how applications and tools work; a statement that changed it from a session using a different default database is not in the binary log's view of it.
+- **Physical MySQL backups.** MySQL makes the copy itself with its clone plugin (8.0.17 or newer), into a directory on its own disk that Dedie then archives. That means Dedie must run on the same machine as MySQL, as a user that can read what the server writes; the account needs `BACKUP_ADMIN`, and the plugin must be installed (`INSTALL PLUGIN clone SONAME 'mysql_clone.so'`). `DEDIE_MYSQL_CLONE_DIR` names the directory the copy is staged in. To recover, `dedie backup extract <id> <dir>` and start `mysqld --datadir=<dir>` of the same version. There are no differential or incremental physical backups for MySQL; use the logical ones.
 - **Physical backups** are not restored into a running database. For a differential or incremental one, `dedie backup extract` unpacks the whole chain and combines it with `pg_combinebackup` into one complete data directory. `dedie backup extract` unpacks one into an empty directory; start PostgreSQL of the same major version on that directory and the server comes back as it was when the backup was taken, with every database.
 
 - **PostgreSQL** restores run in a single transaction, so a failure changes nothing. Ownership and privileges are left out unless `--keep-owners` is given, since the target server often has different roles.
 - **MySQL** restores replace tables of the same name and cannot be rolled back: MySQL commits at every schema statement, so a restore that fails part-way leaves the tables it had already replaced.
 
-Point-in-time recovery, which replays the write-ahead log on top of a physical backup to reach a chosen moment, is on the roadmap.
+## Point-in-time recovery
+
+For PostgreSQL 12 and newer, Dedie can rebuild a server as it was at any chosen moment: a minute before a bad deployment, or a second before a table was dropped.
+
+It takes two things. A **physical backup** is the starting point. The **write-ahead log** is the record of every change since; Dedie receives it from the server continuously, as it is written, and keeps it. Recovery starts from the backup and replays the log up to the moment you name.
+
+1. On the Backups page, turn on point-in-time recovery for the connection (the account needs the `REPLICATION` attribute).
+2. Take a physical backup. Recovery reaches moments *after* a physical backup taken while archiving was on. Schedule one regularly: the newer the backup, the less log there is to replay.
+3. To recover, on the machine that runs Dedie:
+
+```sh
+dedie --local backup recover prod-18 --to "2026-10-11 15:04:05" --dir /var/lib/postgresql/recovered
+pg_ctl -D /var/lib/postgresql/recovered -o "-p 5433" start
+```
+
+The first command picks the newest physical backup that finished before that moment, unpacks it (with its differential or incremental chain), and sets it up to replay the archived log to that moment. The second starts a **new** server on it, which replays, stops at the moment and opens for use. The original server is never touched. Leave out `--to` to recover to the latest change received. The moment is given in the time zone of the machine that runs Dedie.
+
+What to know:
+
+- The log is received by a running `dedie-server` through a replication slot, so the source never discards log Dedie has not got yet. The other side of that: if Dedie is stopped while archiving is on, the source keeps that log on its own disk until Dedie returns. Do not leave Dedie stopped for long, or turn archiving off first; the server console flags slots that are holding log.
+- The archive is kept under `wal/` in the data directory and is **not encrypted by Dedie**. It contains your data. Keep that disk protected.
+- Set a retention in days to delete old log. Keep it at least as long as the oldest physical backup you would recover from.
+- Turning archiving off drops the slot and keeps the log already received. Turning it on again starts a new recovery window, which needs a new physical backup.
+- Recovery runs on the Dedie server host, which is where the archive is; the recovered server needs PostgreSQL of the same major version installed there.
 
 ## Monitoring and alerts
 
@@ -610,8 +658,8 @@ Everything the interface and the remote CLI do goes through a JSON API under `/a
 | Query | `GET /connections/{id}/catalog`, `POST /connections/{id}/query`, `POST /connections/{id}/rows`, `GET/POST /queries`, `PUT/DELETE /queries/{id}` |
 | Server console | `GET /connections/{id}/overview`, `POST /connections/{id}/backends/{pid}/cancel` |
 | Database users | `GET/POST /connections/{id}/accounts`, `DELETE /connections/{id}/accounts/{user}`, `POST /connections/{id}/connection-limit`, `POST /connections/{id}/sessions/terminate`, `GET/PUT /connections/{id}/idle-policy` |
-| Migrations | `GET/POST /migrations`, `GET /migrations/{id}`, `POST /migrations/{id}/preflight`, `POST /migrations/{id}/actions/{start,pause,resume,cutover,abort,delete}` |
-| Backups | `GET/POST /backups`, `DELETE /backups/{id}`, `POST /backups/{id}/verify`, `POST /backups/{id}/restore`, `GET /backups/{id}/download`, `GET /restores`, `GET/POST /schedules`, `PUT/DELETE /schedules/{id}`, `POST /schedules/{id}/run`, `GET/POST /backup-locations`, `DELETE /backup-locations/{id}` |
+| Migrations | `POST /connections/{id}/suggest-columns`, `GET/POST /migrations`, `GET /migrations/{id}`, `POST /migrations/{id}/preflight`, `POST /migrations/{id}/actions/{start,pause,resume,cutover,abort,delete}` |
+| Backups | `GET/POST /backups`, `DELETE /backups/{id}`, `POST /backups/{id}/verify`, `POST /backups/{id}/restore`, `GET /backups/{id}/download`, `GET /restores`, `GET/POST /schedules`, `PUT/DELETE /schedules/{id}`, `POST /schedules/{id}/run`, `GET/POST /backup-locations`, `DELETE /backup-locations/{id}`, `GET /wal-archives`, `PUT /connections/{id}/wal-archive` |
 | Monitoring | `GET /monitoring`, `GET /alerts/events`, `GET/POST /alerts/channels`, `PUT/DELETE /alerts/channels/{id}`, `POST /alerts/channels/{id}/test` |
 | Audit | `GET /audit`, `GET /audit/verify` |
 
@@ -638,6 +686,7 @@ engine/
     pgmy/            PostgreSQL → MySQL: the same in the other direction
     mongopg/         MongoDB → PostgreSQL: collection copy and change-stream applier
   backup/            pg_dump / pg_restore / pg_basebackup and mysqldump / mysql drivers
+  storage/           where backup files are kept: a directory, or S3-compatible object storage
   schedule/          cron expressions
   notify/            alert delivery: webhook, chat hook, email
   secure/            envelope and stream encryption, password hashing, tokens
@@ -651,7 +700,7 @@ Two registries keep the engine open to new databases. A driver implements `conne
 
 Migration jobs are leased in the metadata database with a heartbeat. Several processes can share a data directory without running a job twice, and a job whose worker dies is picked up by the next one. Scheduled backups are claimed the same way.
 
-Besides the HTTP listener, `dedie-server` runs three background loops: the worker that executes migrations, the scheduler that takes backups, and the monitor that checks connections and raises alerts. `--no-worker` turns all three off, for a process that should only serve the API.
+Besides the HTTP listener, `dedie-server` runs four background loops: the worker that executes migrations, the scheduler that takes backups, the monitor that checks connections, raises alerts and closes idle connections, and the archiver that keeps a write-ahead log receiver running for each server with point-in-time recovery on. `--no-worker` turns all four off, for a process that should only serve the API.
 
 How each pipeline gets exactly-once delivery:
 
@@ -710,7 +759,8 @@ To check a desktop build without watching the window, run it with `-Ddedie.smoke
 | `DEDIE_DATA_DIR`, `--data` | metadata database, master key, backups | `~/.dedie` |
 | `DEDIE_MASTER_KEY` | master key, base64 of 32 bytes | `master.key` in the data directory |
 | `DEDIE_PG_BIN` | directory containing `pg_dump`, `pg_restore` and `pg_basebackup` | newest version found on the system |
-| `DEDIE_MYSQL_BIN` | directory containing `mysqldump` and `mysql` | the `PATH` |
+| `DEDIE_MYSQL_BIN` | directory containing `mysqldump`, `mysql` and `mysqlbinlog` | the `PATH` |
+| `DEDIE_MYSQL_CLONE_DIR` | directory a physical MySQL backup is staged in; the MySQL server must be able to create a directory there | the system's temporary directory |
 | `DEDIE_PASSWORD` | password for CLI commands that would prompt | prompt |
 | `DEDIE_SERVER` | for the CLI: address of the Dedie server to run commands on, with `DEDIE_TOKEN`. For the desktop application: location of the `dedie-server` program | saved sign-in; beside the jar, then `PATH` |
 | `DEDIE_TOKEN` | API token for the CLI | saved by `dedie login` |
@@ -728,16 +778,16 @@ What the data directory holds:
 | `dedie.db` | organizations, users, sessions, API token hashes, connections (passwords encrypted), jobs, schedules, saved queries, alert channels (settings encrypted), health checks, audit log |
 | `master.key` | the master key, unless `DEDIE_MASTER_KEY` is set |
 | `backups/` | backup files, unless another storage location is chosen |
+| `wal/` | the write-ahead log archive of each server with point-in-time recovery on |
 | `desktop/` | the desktop window's local preferences |
 | `desktop.log` | the engine's log when run by the desktop application |
 
 ## Roadmap
 
-1. **Point-in-time recovery** for PostgreSQL: continuous WAL archiving on top of physical backups, and recovery to a chosen moment.
-1. **Physical backups for MySQL**, and incremental backups that do not depend on the binary log being retained.
+1. **Oracle → PostgreSQL**: schema translation and an online migration through LogMiner.
 2. **Two-way sync** between two databases, with conflict handling.
-3. **Typed columns for MongoDB**: a reviewed mapping that lifts chosen document fields into columns beside `doc`.
-4. **Backup storage outside the server**: S3-compatible object storage, and backups of MongoDB.
+3. **Encrypted and off-host log archives**: the write-ahead log archive sealed like backups are, and kept in object storage.
+4. **Backups of MongoDB**, and incremental MySQL backups that do not depend on the binary log being retained.
 5. **Partitioned tables** for PostgreSQL, and tested upgrade paths across more MySQL versions.
 6. **Single sign-on** (OIDC, SAML) and **external key management** (cloud KMS, Vault) behind the existing key interface.
 7. **Privileges in detail**: per-table and per-column grants on the Database users page.

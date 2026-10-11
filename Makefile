@@ -37,6 +37,7 @@ test:
 # each pipeline under engine/migrate.
 test-integration:
 	go test -tags noui -count=1 -v -run TestMigration ./engine/migrate/...
+	go test -tags noui -count=1 -v -run TestBackupToObjectStorage ./engine/app
 
 lint:
 	gofmt -l apps engine web/*.go | (! grep .)
