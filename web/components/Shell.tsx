@@ -27,6 +27,8 @@ const NAV: NavItem[] = [
   { href: "/audit/", label: "Audit log", needs: "audit.view", section: "Administration" },
 ];
 
+const SIDEBAR_KEY = "dedie.sidebar.collapsed";
+
 function isActive(pathname: string, href: string): boolean {
   const path = pathname.endsWith("/") ? pathname : pathname + "/";
   return href === "/" ? path === "/" : path.startsWith(href);
@@ -37,6 +39,28 @@ export default function Shell({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [error, setError] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
+  // The sidebar can be folded away to give wide tables and the query
+  // browser the whole window.
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    try {
+      setCollapsed(window.localStorage.getItem(SIDEBAR_KEY) === "1");
+    } catch {
+      // Storage unavailable: start expanded.
+    }
+  }, []);
+
+  const toggleSidebar = () => {
+    setCollapsed((was) => {
+      try {
+        window.localStorage.setItem(SIDEBAR_KEY, was ? "0" : "1");
+      } catch {
+        // Remembering the choice is optional.
+      }
+      return !was;
+    });
+  };
 
   useEffect(() => {
     // An expired or missing session redirects to the sign-in page from
@@ -69,9 +93,13 @@ export default function Shell({ children }: { children: ReactNode }) {
   return (
     <SessionContext.Provider value={value}>
       <div className="shell">
-        <aside className={`sidebar ${menuOpen ? "" : "closed"}`}>
+        <aside className={`sidebar ${menuOpen ? "" : "closed"} ${collapsed ? "collapsed" : ""}`}>
           <div className="brand">
-            <div style={{ minWidth: 0 }}>
+            <button className="btn small ghost collapse-toggle" onClick={toggleSidebar}
+              aria-label={collapsed ? "Show navigation" : "Hide navigation"} title={collapsed ? "Show navigation" : "Hide navigation"}>
+              {collapsed ? "»" : "«"}
+            </button>
+            <div className="brand-text" style={{ minWidth: 0 }}>
               <div className="brand-name">Dedie</div>
               <div className="brand-org" title={session.organization}>{session.organization}</div>
             </div>
