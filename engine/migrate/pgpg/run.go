@@ -40,7 +40,7 @@ func Run(ctx context.Context, jobID string, cfg Config, st State, srcCfg, dstCfg
 	out, err := r.run(ctx)
 	// Never leave the source read-only behind a job that did not finish.
 	if err != nil && st.Fenced {
-		if uerr := unfence(ctx, srcCfg); uerr != nil {
+		if uerr := Unfence(ctx, srcCfg); uerr != nil {
 			rep.Event("error", "the source database is still read-only and could not be reset: "+pgMessage(uerr))
 		} else {
 			st.Fenced = false
@@ -106,7 +106,7 @@ func (r *runner) run(ctx context.Context) (Outcome, error) {
 	for {
 		rep.SetPhase(PhaseStreaming)
 		started := time.Now()
-		reason, err := stream(ctx, jobID, cfg, r.st, srcCfg, dstCfg, rep)
+		reason, err := r.stream(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
@@ -127,12 +127,12 @@ func (r *runner) run(ctx context.Context) (Outcome, error) {
 			continue
 		}
 		switch reason {
-		case stopPause:
+		case StopPause:
 			rep.Event("info", "paused; the source keeps WAL for this job until it resumes or is aborted")
 			return Paused, nil
-		case stopAbort:
+		case StopAbort:
 			return r.abort(ctx), nil
-		case stopCutover:
+		case StopCutover:
 			done, err := r.finalize(ctx)
 			if err != nil {
 				return "", err
@@ -145,6 +145,22 @@ func (r *runner) run(ctx context.Context) (Outcome, error) {
 }
 
 func (r *runner) save() { r.rep.SaveState(*r.st) }
+
+// stream opens the apply connection to the target and replays the
+// replication stream into it.
+func (r *runner) stream(ctx context.Context) (string, error) {
+	target, err := newApplier(ctx, r.dstCfg, r.jobID, r.st.ReplicaRole, func(msg string) {
+		r.st.Anomalies++
+		if r.st.Anomalies <= 20 {
+			r.rep.Event("warn", msg)
+		}
+	})
+	if err != nil {
+		return "", err
+	}
+	defer target.Close()
+	return Stream(ctx, r.jobID, r.cfg, r.st, r.srcCfg, target, r.rep)
+}
 
 // reconnect replaces control connections that went stale during a long phase.
 func (r *runner) reconnect(ctx context.Context) error {
@@ -231,7 +247,7 @@ func (r *runner) snapshotPhase(ctx context.Context) error {
 	r.rep.SetPhase(PhaseSnapshot)
 	// Start clean: a slot or rows left by an interrupted attempt belong to a
 	// snapshot that no longer exists.
-	if err := dropSlot(ctx, r.src, r.st.Slot); err != nil {
+	if err := DropSlot(ctx, r.src, r.st.Slot); err != nil {
 		return err
 	}
 	if err := truncateTargets(ctx, r.dst, r.plan); err != nil {
@@ -326,7 +342,7 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 			why = err.Error()
 		}
 		if r.st.Fenced {
-			if uerr := unfence(ctx, r.srcCfg); uerr != nil {
+			if uerr := Unfence(ctx, r.srcCfg); uerr != nil {
 				r.rep.Event("error", "could not make the source writable again: "+pgMessage(uerr))
 			} else {
 				r.st.Fenced = false
@@ -375,7 +391,7 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 // copied to the target is left for the operator to inspect or drop.
 func (r *runner) abort(ctx context.Context) Outcome {
 	if r.st.Fenced {
-		if err := unfence(ctx, r.srcCfg); err != nil {
+		if err := Unfence(ctx, r.srcCfg); err != nil {
 			r.rep.Event("error", "could not make the source writable again: "+pgMessage(err))
 		} else {
 			r.st.Fenced = false

@@ -11,11 +11,11 @@ import (
 	"dedie/engine/connector/postgres"
 )
 
-// fence makes the source database read-only for new sessions and disconnects
+// Fence makes the source database read-only for new sessions and disconnects
 // existing clients so they pick the setting up. It stops well-behaved
 // applications from writing after the final sync; it is not a security
 // boundary, since a session may still override the setting.
-func fence(ctx context.Context, src *pgx.Conn) error {
+func Fence(ctx context.Context, src *pgx.Conn) error {
 	var db string
 	if err := src.QueryRow(ctx, `SELECT current_database()`).Scan(&db); err != nil {
 		return err
@@ -29,9 +29,9 @@ func fence(ctx context.Context, src *pgx.Conn) error {
 	return err
 }
 
-// unfence undoes fence. It opens its own connection because new sessions on
+// Unfence undoes Fence. It opens its own connection because new sessions on
 // a fenced database start read-only and must opt out first.
-func unfence(ctx context.Context, srcCfg connector.Config) error {
+func Unfence(ctx context.Context, srcCfg connector.Config) error {
 	ctx = context.WithoutCancel(ctx)
 	src, err := postgres.Connect(ctx, srcCfg)
 	if err != nil {
@@ -78,10 +78,10 @@ func syncSequences(ctx context.Context, src, dst *pgx.Conn, schemas []string) (i
 	return n, nil
 }
 
-// dropSlot removes the replication slot, waiting briefly for a WAL sender
+// DropSlot removes the replication slot, waiting briefly for a WAL sender
 // that is still shutting down. A forgotten slot makes the source retain WAL
 // without bound, so callers treat failure here as worth reporting.
-func dropSlot(ctx context.Context, src *pgx.Conn, slot string) error {
+func DropSlot(ctx context.Context, src *pgx.Conn, slot string) error {
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		var exists, active bool
@@ -112,7 +112,7 @@ func cleanup(ctx context.Context, jobID string, st *State, srcCfg, dstCfg connec
 	} else {
 		defer src.Close(ctx)
 		src.Exec(ctx, "SET default_transaction_read_only = off")
-		if err := dropSlot(ctx, src, st.Slot); err != nil {
+		if err := DropSlot(ctx, src, st.Slot); err != nil {
 			rep.Event("warn", "replication slot "+st.Slot+" was not removed, drop it manually: "+pgMessage(err))
 		}
 		if _, err := src.Exec(ctx, "DROP PUBLICATION IF EXISTS "+qident(st.Publication)); err != nil {
