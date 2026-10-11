@@ -136,6 +136,10 @@ public final class DedieApp extends Application {
                 item("Back", "Alt+Left", () -> history(-1)),
                 item("Forward", "Alt+Right", () -> history(1)),
                 new SeparatorMenuItem(),
+                // The interface's own palette of pages, connections, migrations
+                // and actions. A page without it, such as sign-in, ignores this.
+                item("Go to Anything…", "Shortcut+K", () -> script("window.dedieOpenPalette && window.dedieOpenPalette()")),
+                new SeparatorMenuItem(),
                 item("Overview", "Shortcut+1", () -> page("")),
                 item("Connections", "Shortcut+2", () -> page("connections/")),
                 item("Query Browser", "Shortcut+3", () -> page("query/")),

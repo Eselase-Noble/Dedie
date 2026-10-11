@@ -373,6 +373,50 @@ body.dragging-y, body.dragging-y * { cursor: row-resize !important; }
 .toast-close:hover { background: var(--bg-muted); color: var(--text); }
 .toast-open:focus-visible, .toast-close:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
+/* ---------- command palette ---------- */
+kbd {
+  display: inline-block; min-width: 18px; padding: 0 5px; border: 1px solid var(--border-strong); border-bottom-width: 2px;
+  border-radius: 4px; background: var(--bg); color: var(--text-muted); font-family: var(--font); font-size: 11px;
+  line-height: 16px; text-align: center; white-space: nowrap;
+}
+.sidebar-search {
+  display: flex; align-items: center; gap: 8px; margin: 10px 8px 0; height: 30px; padding: 0 8px 0 10px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--bg); color: var(--text-muted);
+  cursor: pointer; text-align: left;
+}
+.sidebar-search:hover { border-color: var(--text-faint); color: var(--text); }
+.sidebar-search:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sidebar-search span { flex: 1; }
+.sidebar-search svg { flex: none; }
+/* The words fit only in the open sidebar. Folded, or as the bar across a
+   narrow screen, the same thing is a button beside the bell. */
+.btn.search-icon { display: none; flex: none; width: 28px; padding: 0; color: var(--text-muted); }
+.btn.search-icon:hover { color: var(--text); }
+.sidebar.collapsed .sidebar-search { display: none; }
+.sidebar.collapsed .btn.search-icon { display: inline-flex; }
+.palette-backdrop {
+  position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 70; background: rgba(20, 26, 36, 0.4);
+  display: flex; align-items: flex-start; justify-content: center; padding: 12vh 16px 16px;
+}
+.palette {
+  width: 100%; max-width: 600px; max-height: min(520px, 76vh); display: flex; flex-direction: column;
+  background: var(--bg); border-radius: 8px; box-shadow: var(--shadow-lg); overflow: hidden;
+}
+.palette-input { flex: none; display: flex; align-items: center; gap: 10px; padding: 0 14px; border-bottom: 1px solid var(--border); color: var(--text-muted); }
+.palette-input svg { flex: none; }
+.palette-input input { flex: 1; min-width: 0; height: 46px; border: none; outline: none; background: none; font-size: 15px; color: var(--text); }
+.palette-input input::placeholder { color: var(--text-faint); }
+.palette-list { flex: 1; min-height: 0; overflow-y: auto; list-style: none; margin: 0; padding: 6px; scrollbar-width: thin; }
+.palette-list li[role="option"] { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: var(--radius); cursor: pointer; }
+.palette-list li.active { background: var(--accent-soft); }
+.palette-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.palette-detail { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 12.5px; }
+.palette-group { flex: none; margin-left: auto; padding-left: 8px; color: var(--text-faint); font-size: 12px; }
+.palette-list li.active .palette-group { color: var(--text-muted); }
+.palette-empty { padding: 18px 10px; text-align: center; color: var(--text-muted); }
+.palette-foot { flex: none; display: flex; gap: 16px; padding: 8px 14px; border-top: 1px solid var(--border); background: var(--bg-subtle); color: var(--text-muted); font-size: 12px; }
+.palette-foot kbd { margin-right: 4px; }
+
 /* ---------- copy progress ---------- */
 .copy-progress { padding: 4px 14px 14px; display: grid; gap: 6px; }
 .copy-progress-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
@@ -392,6 +436,10 @@ body.dragging-y, body.dragging-y * { cursor: row-resize !important; }
   .sidebar.collapsed { width: 100%; }
   .sidebar.collapsed .brand-text { display: block; }
   .sidebar.collapsed .brand { padding: 14px 12px 12px 16px; justify-content: space-between; flex-direction: row; gap: 8px; }
+  .sidebar-search, .sidebar.collapsed .sidebar-search { display: none; }
+  .btn.search-icon { display: inline-flex; }
+  .palette-backdrop { padding-top: 16px; }
+  .palette-detail { display: none; }
   .content { padding: 16px 16px 40px; }
   .grid.cols-3, .grid.cols-2, .form-grid { grid-template-columns: minmax(0, 1fr); }
   /* On narrow screens the workspace stacks and scrolls with the page. */

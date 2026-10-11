@@ -4,10 +4,12 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { api, errorMessage } from "@/lib/api";
+import { isMac, isPaletteShortcut, OPEN_PALETTE, type PaletteEntry } from "@/lib/palette";
 import type { Permission, Session } from "@/lib/types";
 import Bell from "./notifications/Bell";
 import { NotificationsProvider } from "./notifications/NotificationsProvider";
 import Toasts from "./notifications/Toasts";
+import CommandPalette, { SearchIcon } from "./palette/CommandPalette";
 import { SessionContext } from "./session";
 
 interface NavItem {
@@ -75,6 +77,32 @@ export default function Shell({ children }: { children: ReactNode }) {
 
   useEffect(() => setMenuOpen(false), [pathname]);
 
+  // The command palette opens from anywhere with Ctrl+K, or Cmd+K on macOS.
+  const [searching, setSearching] = useState(false);
+  const [mac, setMac] = useState(false);
+  useEffect(() => {
+    const onMac = isMac();
+    setMac(onMac);
+    const open = () => setSearching(true);
+    // Listening after everything else lets a control that uses the same
+    // keys itself, such as the SQL editor, keep them.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || !isPaletteShortcut(e, onMac)) return;
+      // Otherwise the browser moves to its own search box.
+      e.preventDefault();
+      open();
+    };
+    window.addEventListener("keydown", onKey);
+    // The desktop application's menu opens it through this.
+    const exposed = window as unknown as Record<string, unknown>;
+    exposed[OPEN_PALETTE] = open;
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      delete exposed[OPEN_PALETTE];
+    };
+  }, []);
+  useEffect(() => setSearching(false), [pathname]);
+
   // Until two-factor sign-in is set up, an organization that requires it
   // offers the account page and nothing else.
   const confined = !!session?.must_enroll_totp;
@@ -101,6 +129,14 @@ export default function Shell({ children }: { children: ReactNode }) {
 
   const items = confined ? [] : NAV.filter((item) => !item.needs || value.can(item.needs));
   const sections = Array.from(new Set(items.map((i) => i.section)));
+  const shortcut = mac ? "⌘K" : "Ctrl K";
+  // The palette offers the pages of the sidebar and the two that are
+  // reached from elsewhere in it.
+  const pages: PaletteEntry[] = [
+    ...items,
+    { href: "/notifications/", label: "Notifications" },
+    { href: "/account/", label: "Account" },
+  ].map((p) => ({ id: `page-${p.href}`, group: "Page", label: p.label, href: p.href }));
 
   return (
     <SessionContext.Provider value={value}>
@@ -117,10 +153,24 @@ export default function Shell({ children }: { children: ReactNode }) {
                 <div className="brand-org" title={session.organization}>{session.organization}</div>
               </div>
               {!confined && <Bell />}
+              {!confined && (
+                <button className="btn small ghost search-icon" onClick={() => setSearching(true)}
+                  aria-label={`Go to anything (${shortcut})`} title={`Go to anything (${shortcut})`}>
+                  <SearchIcon />
+                </button>
+              )}
               <button className="btn small menu-toggle" onClick={() => setMenuOpen((v) => !v)} aria-expanded={menuOpen}>
                 Menu
               </button>
             </div>
+            {!confined && (
+              <button className="sidebar-search" onClick={() => setSearching(true)} aria-haspopup="dialog"
+                title="Go to a page, connection or migration, or start something new">
+                <SearchIcon />
+                <span>Search…</span>
+                <kbd>{shortcut}</kbd>
+              </button>
+            )}
             <nav className="nav" aria-label="Main">
               {sections.map((section) => (
                 <div key={section}>
@@ -144,6 +194,7 @@ export default function Shell({ children }: { children: ReactNode }) {
           </aside>
           <main className="main">{children}</main>
         </div>
+        {searching && !confined && <CommandPalette pages={pages} onClose={() => setSearching(false)} />}
         <Toasts />
       </NotificationsProvider>
     </SessionContext.Provider>

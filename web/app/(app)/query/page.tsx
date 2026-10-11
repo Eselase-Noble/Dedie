@@ -59,7 +59,11 @@ export default function QueryPage() {
     } catch {
       // Storage unavailable: fall back to the first connection.
     }
-    const pick = connections.find((c) => c.id === remembered) ?? connections[0];
+    // "?connection=<id>" opens a particular one; the command palette
+    // links here that way.
+    const asked = new URLSearchParams(window.location.search).get("connection");
+    if (asked !== null) window.history.replaceState(null, "", window.location.pathname);
+    const pick = connections.find((c) => c.id === asked) ?? connections.find((c) => c.id === remembered) ?? connections[0];
     if (pick) setConnId(pick.id);
   }, [connections, connId]);
 
