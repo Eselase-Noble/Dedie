@@ -9,6 +9,7 @@ import (
 
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/mymy"
+	"dedie/engine/migrate/pgpg"
 )
 
 // Stmt is one DDL statement to run on the target.
@@ -320,4 +321,41 @@ func (p *Plan) loadForeignKeys(ctx context.Context, src *sql.DB) error {
 				qname(table), qident(clip(name)), quoteList(r[3]), qname(parent), quoteList(r[4]), r[5], r[6])})
 	}
 	return nil
+}
+
+// claims lists every name the plan takes in the target schema, for the
+// preflight to look up there. Apart from the tables these are the indexes,
+// read off the statements that create them, so what is checked and what is
+// created cannot drift apart. Foreign keys are named within their table,
+// and a primary key's index gets a free name from PostgreSQL.
+func (p *Plan) claims() []pgpg.Claim {
+	var out []pgpg.Claim
+	for _, t := range p.Tables {
+		out = append(out, pgpg.Claim{Kind: "table", Name: t.Name, Ident: qname(t.Name)})
+	}
+	for _, s := range p.Post {
+		if s.Kind == "index" {
+			out = append(out, pgpg.Claim{Kind: s.Kind, Name: s.Name, Ident: qname(s.Name)})
+		}
+	}
+	return out
+}
+
+// keep removes from the plan every statement that would create an object
+// the job was told to leave as it is on the target.
+func (p *Plan) keep(kept []string) {
+	if len(kept) == 0 {
+		return
+	}
+	is := map[string]bool{}
+	for _, k := range kept {
+		is[k] = true
+	}
+	out := p.Post[:0:0]
+	for _, s := range p.Post {
+		if s.Kind != "index" || !is[pgpg.KeptKey(s.Kind, s.Name)] {
+			out = append(out, s)
+		}
+	}
+	p.Post = out
 }
