@@ -3,6 +3,7 @@ package mongopg
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"dedie/engine/connector"
@@ -93,6 +94,26 @@ func Preflight(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate
 		rep.Add("Target tables", "ok", "no table names are taken")
 	}
 	rep.Add("Mapping", "ok", "each collection becomes a table with _id (text, primary key) and doc (jsonb). Indexes, validators and views are not translated")
+	if cols, err := allColumns(cfg); err != nil {
+		rep.Add("Columns", "fail", err.Error())
+	} else if len(cols) > 0 {
+		var parts []string
+		names := map[string]bool{}
+		for _, c := range list {
+			names[c.Name] = true
+		}
+		for coll, list := range cols {
+			if !names[coll] {
+				rep.Add("Columns", "warn", "columns are configured for "+coll+", which is not a collection being migrated")
+				continue
+			}
+			for _, c := range list {
+				parts = append(parts, coll+"."+strings.Join(c.path, ".")+" → "+c.name+" "+c.typ)
+			}
+		}
+		sort.Strings(parts)
+		rep.Add("Columns", "ok", "lifted into columns beside the document: "+strings.Join(parts, "; ")+". A value of another type is stored as NULL in its column and counted")
+	}
 	if cfg.FenceSource {
 		rep.Add("Cutover", "warn", "a MongoDB source cannot be made read-only by this tool; stop the applications that write to it before cutting over")
 	}

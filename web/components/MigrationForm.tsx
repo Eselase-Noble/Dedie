@@ -2,12 +2,33 @@
 
 import { useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
-import type { Connection, Migration, Validation } from "@/lib/types";
+import type { ColumnSpec, Connection, Migration, Validation } from "@/lib/types";
 import { Banner, Checkbox, Field, Modal } from "./ui";
 
 /** Splits a comma or newline separated list, dropping blanks. */
 function parseList(text: string): string[] {
   return text.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+}
+
+const COLUMN_TYPES = ["text", "bigint", "double precision", "numeric", "boolean", "timestamptz", "jsonb"];
+
+/**
+ * Reads the columns box: one "collection field type" per line. The type
+ * comes last and may be two words (double precision).
+ */
+function parseColumns(text: string): Record<string, ColumnSpec[]> {
+  const out: Record<string, ColumnSpec[]> = {};
+  for (const line of text.split("\n")) {
+    const words = line.trim().split(/\s+/);
+    if (words.length < 3 || !words[0]) continue;
+    const [collection, field, ...type] = words;
+    (out[collection] ??= []).push({ field, type: type.join(" ").toLowerCase() });
+  }
+  return out;
+}
+
+function formatColumns(columns: Record<string, ColumnSpec[]>): string {
+  return Object.entries(columns).flatMap(([collection, list]) => list.map((c) => `${collection} ${c.field} ${c.type}`)).join("\n");
 }
 
 /** Which kinds of target each kind of source can be migrated to. */
@@ -53,6 +74,20 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
   const [timeout, setTimeoutSeconds] = useState(300);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [columns, setColumns] = useState("");
+  const [suggesting, setSuggesting] = useState(false);
+
+  const suggest = async () => {
+    setSuggesting(true);
+    setError("");
+    try {
+      setColumns(formatColumns(await api.suggestColumns(sourceId, scope === "table" ? parseList(tables) : [], parseList(exclude))));
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSuggesting(false);
+    }
+  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -65,6 +100,7 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
         target_id: targetId,
         config: {
           mode,
+          columns: mongo ? parseColumns(columns) : undefined,
           schemas: scope === "schema" && !mysql && !mongo ? parseList(schemas) : [],
           tables: scope === "table" ? parseList(tables) : [],
           exclude_tables: parseList(exclude),
@@ -169,6 +205,16 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
           <Field label={mongo ? "Excluded collections" : "Excluded tables"} hint={mongo ? "Comma separated collection names." : mysql ? "Comma separated table names. The source connection's database is migrated." : "Comma separated schema.table names."}>
             <input className="input" value={exclude} onChange={(e) => setExclude(e.target.value)} placeholder={mysql || mongo ? "sessions, audit_trail" : "public.sessions"} />
           </Field>
+          {mongo && (
+            <Field label="Fields to lift into columns (optional)" className="span2"
+              hint={<>One per line: <code>collection field type</code>. Use dots for nested fields (<code>address.city</code>). Types: {COLUMN_TYPES.join(", ")}. The column is filled from the field and kept current; a value of another type is stored as NULL there, and the whole document is always kept in <code>doc</code>.</>}>
+              <textarea className="textarea mono" rows={5} value={columns} onChange={(e) => setColumns(e.target.value)} spellCheck={false}
+                placeholder={"users email text\nusers address.city text\norders total numeric\norders created timestamptz"} />
+              <div><button className="btn small" type="button" onClick={suggest} disabled={suggesting || !sourceId}>
+                {suggesting ? "Sampling…" : "Suggest from a sample"}
+              </button></div>
+            </Field>
+          )}
           <Field label="Snapshot workers" hint="Tables copied in parallel during the initial copy (1 to 16).">
             <input className="input" type="number" min={1} max={16} value={workers} onChange={(e) => setWorkers(Number(e.target.value))} />
           </Field>

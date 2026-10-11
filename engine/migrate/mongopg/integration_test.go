@@ -161,7 +161,24 @@ func TestMigration(t *testing.T) {
 	}
 	defer dst.Close(context.Background())
 
-	cfg := migrate.Config{ExcludeTables: []string{"skipped"}}
+	// Fields lifted into columns: plain and nested ones, a date, and one
+	// whose type the documents do not have, which must come out NULL.
+	cfg := migrate.Config{ExcludeTables: []string{"skipped"}, Columns: map[string][]migrate.ColumnSpec{"users": {
+		{Field: "name", Type: "text"}, {Field: "balance", Type: "double precision"}, {Field: "joined", Type: "timestamptz"},
+		{Field: "address.city", Type: "text"}, {Field: "address.zip", Name: "zip", Type: "bigint"}, {Field: "touched", Type: "bigint"},
+		{Field: "name", Name: "name_as_number", Type: "bigint"},
+	}}}
+	suggested, err := Suggest(ctx, srcCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, sp := range suggested["users"] {
+		got[sp.Field] = sp.Type
+	}
+	if got["name"] != "text" || got["balance"] != "double precision" || got["joined"] != "timestamptz" || got["address"] != "" || got["tags"] != "" {
+		t.Errorf("suggested columns for users: %v", got)
+	}
 	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -296,6 +313,26 @@ func TestMigration(t *testing.T) {
 	dst.QueryRow(ctx, `SELECT doc->>'big', doc->>'null char' FROM mixed WHERE _id='text key'`).Scan(&big, &nul)
 	if big != "9007199254740993" || nul != "ab" {
 		t.Errorf("text key document: big %q, null char %q", big, nul)
+	}
+	// Lifted columns hold typed values, kept current by the stream.
+	var userName, colCity string
+	var balance float64
+	var zip int64
+	var joinedAt time.Time
+	if err := dst.QueryRow(ctx, `SELECT name, balance, joined, address_city, zip FROM users WHERE _id='7'`).Scan(&userName, &balance, &joinedAt, &colCity, &zip); err != nil {
+		t.Fatal(err)
+	}
+	if userName != "user 7 ☃" || balance != 8.75 || colCity != "Accra" || zip != 7 || !joinedAt.Equal(time.Date(2024, 2, 29, 13, 14, 15, 0, time.UTC)) {
+		t.Errorf("columns of user 7: %q %v %q %d %s", userName, balance, colCity, zip, joinedAt)
+	}
+	var disagree, wrongType int
+	dst.QueryRow(ctx, `SELECT count(*) FROM users WHERE touched IS DISTINCT FROM (doc->>'touched')::bigint`).Scan(&disagree)
+	dst.QueryRow(ctx, `SELECT count(*) FROM users WHERE name_as_number IS NOT NULL`).Scan(&wrongType)
+	if disagree != 0 || wrongType != 0 {
+		t.Errorf("%d rows where the touched column and the document disagree; %d text values stored in a bigint column", disagree, wrongType)
+	}
+	if _, final := rep.snapshot(); final.Unconverted == 0 {
+		t.Error("values of the wrong type for their column were not counted")
 	}
 	var compound int
 	dst.QueryRow(ctx, `SELECT count(*) FROM mixed WHERE doc->>'kind'='compound key'`).Scan(&compound)

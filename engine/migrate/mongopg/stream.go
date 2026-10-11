@@ -64,7 +64,7 @@ func (r *runner) stream(ctx context.Context) (string, error) {
 	// now but has no table yet; its documents arrive through the stream.
 	known := map[string]bool{}
 	for _, c := range r.list {
-		if _, err := r.dst.Exec(ctx, tableDDL(c.Name)); err != nil {
+		if _, err := r.dst.Exec(ctx, tableDDL(c.Name, r.columns[c.Name])); err != nil {
 			return "", err
 		}
 		known[c.Name] = true
@@ -174,7 +174,7 @@ func (r *runner) apply(ctx context.Context, batch []change, token bson.Raw, know
 			}
 			// Created at once rather than queued: the statements queued
 			// after it are prepared against the table before any runs.
-			if _, err := tx.Exec(ctx, tableDDL(name)); err != nil {
+			if _, err := tx.Exec(ctx, tableDDL(name, r.columns[name])); err != nil {
 				return err
 			}
 			known[name] = true
@@ -194,15 +194,17 @@ func (r *runner) apply(ctx context.Context, batch []change, token bson.Raw, know
 			// for this update; its delete event follows.
 			continue
 		}
-		id, js, clean, err := row(ev.Full)
+		cols := r.columns[name]
+		values, clean, dropped, err := row(ev.Full, cols)
 		if err != nil {
 			r.anomaly("skipped a change in " + name + ": " + err.Error())
 			continue
 		}
 		if !clean {
-			r.anomaly("removed null characters from a document in " + name + " (key " + id + "), which jsonb cannot store")
+			r.anomaly(fmt.Sprintf("removed null characters from a document in %s (key %v), which jsonb cannot store", name, values[0]))
 		}
-		b.Queue(`INSERT INTO `+qname(name)+` (_id, doc) VALUES ($1, $2) ON CONFLICT (_id) DO UPDATE SET doc = excluded.doc`, id, js)
+		r.st.Unconverted += int64(dropped)
+		b.Queue(upsertSQL(name, cols), values...)
 		rows++
 	}
 	b.Queue(checkpointUpsert, r.jobID, []byte(token))

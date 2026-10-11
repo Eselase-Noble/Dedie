@@ -11,6 +11,7 @@ import type {
   Catalog,
   ChannelInput,
   ColumnDef,
+  ColumnSpec,
   Connection,
   ConnectionAccess,
   ConnectionInput,
@@ -194,6 +195,9 @@ export const api = {
   overview: (connId: string) => get<Overview>(`/connections/${id(connId)}/overview`),
   cancelBackend: (connId: string, pid: number, terminate: boolean) =>
     post<{ ok: boolean }>(`/connections/${id(connId)}/backends/${pid}/cancel${terminate ? "?terminate=1" : ""}`),
+
+  suggestColumns: (connId: string, tables: string[], exclude_tables: string[]) =>
+    post<Record<string, ColumnSpec[]>>(`/connections/${id(connId)}/suggest-columns`, { tables, exclude_tables }),
 
   // Migrations
   migrations: () => get<Migration[]>("/migrations"),

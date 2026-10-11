@@ -64,9 +64,23 @@ type Config struct {
 	// KeepSlot leaves the replication slot and publication on a PostgreSQL
 	// source after completion.
 	KeepSlot bool `json:"keep_slot"`
+	// Columns lifts fields of documents into typed columns when a
+	// document store is migrated into tables, keyed by collection. The
+	// whole document is still stored; these are for querying and indexing.
+	Columns map[string][]ColumnSpec `json:"columns,omitempty"`
 	// CutoverTimeoutSeconds bounds how long cutover waits for the stream to
 	// drain before giving up and resuming normal streaming.
 	CutoverTimeoutSeconds int `json:"cutover_timeout_seconds"`
+}
+
+// ColumnSpec lifts one field of a document into a column.
+type ColumnSpec struct {
+	// Field is the path of the field, with dots for nesting: "address.city".
+	Field string `json:"field"`
+	// Name is the column's name; empty derives it from the field.
+	Name string `json:"name,omitempty"`
+	// Type is the column's type on the target.
+	Type string `json:"type"`
 }
 
 // Scope names the level the migration runs at: "table", "schema" or "database".

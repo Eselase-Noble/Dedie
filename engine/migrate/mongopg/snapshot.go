@@ -27,6 +27,8 @@ type docSource struct {
 	cur     *mongo.Cursor
 	copied  *atomic.Int64
 	altered *atomic.Int64
+	dropped *atomic.Int64
+	cols    []column
 	values  []any
 	err     error
 	stop    func() bool
@@ -41,7 +43,7 @@ func (d *docSource) Next() bool {
 		d.err = d.cur.Err()
 		return false
 	}
-	id, js, clean, err := row(d.cur.Current)
+	values, clean, dropped, err := row(d.cur.Current, d.cols)
 	if err != nil {
 		d.err = err
 		return false
@@ -49,7 +51,8 @@ func (d *docSource) Next() bool {
 	if !clean {
 		d.altered.Add(1)
 	}
-	d.values = []any{id, js}
+	d.dropped.Add(int64(dropped))
+	d.values = values
 	d.copied.Add(1)
 	return true
 }
@@ -60,7 +63,7 @@ func (d *docSource) Err() error             { return d.err }
 // snapshot copies every collection into its table, several at a time. A
 // table is emptied first, so a copy that is started again does not
 // duplicate anything.
-func snapshot(ctx context.Context, db *mongo.Database, dstCfg connector.Config, list []Collection, workers int, rep migrate.Reporter) (altered int64, err error) {
+func snapshot(ctx context.Context, db *mongo.Database, dstCfg connector.Config, list []Collection, columns map[string][]column, workers int, rep migrate.Reporter) (altered, dropped int64, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	// Checking the operator's instruction costs a database read, so it is
@@ -85,7 +88,7 @@ func snapshot(ctx context.Context, db *mongo.Database, dstCfg connector.Config, 
 	var wg sync.WaitGroup
 	var firstErr error
 	var mu sync.Mutex
-	var alteredDocs atomic.Int64
+	var alteredDocs, droppedValues atomic.Int64
 	fail := func(err error) {
 		mu.Lock()
 		if firstErr == nil {
@@ -120,7 +123,7 @@ func snapshot(ctx context.Context, db *mongo.Database, dstCfg connector.Config, 
 						}
 					}
 				}()
-				err := copyCollection(ctx, db, dst, c.Name, &copied, &alteredDocs, interrupted.Load)
+				err := copyCollection(ctx, db, dst, c.Name, columns[c.Name], &copied, &alteredDocs, &droppedValues, interrupted.Load)
 				close(done)
 				if err != nil {
 					if !errors.Is(err, errInterrupted) && ctx.Err() == nil {
@@ -147,10 +150,10 @@ feed:
 	if firstErr == nil && interrupted.Load() {
 		firstErr = errInterrupted
 	}
-	return alteredDocs.Load(), firstErr
+	return alteredDocs.Load(), droppedValues.Load(), firstErr
 }
 
-func copyCollection(ctx context.Context, db *mongo.Database, dst *pgx.Conn, name string, copied, altered *atomic.Int64, stop func() bool) error {
+func copyCollection(ctx context.Context, db *mongo.Database, dst *pgx.Conn, name string, cols []column, copied, altered, dropped *atomic.Int64, stop func() bool) error {
 	if _, err := dst.Exec(ctx, "TRUNCATE "+qname(name)); err != nil {
 		return err
 	}
@@ -159,7 +162,11 @@ func copyCollection(ctx context.Context, db *mongo.Database, dst *pgx.Conn, name
 		return mongodb.Friendly(err)
 	}
 	defer cur.Close(context.WithoutCancel(ctx))
-	src := &docSource{ctx: ctx, cur: cur, copied: copied, altered: altered, stop: stop}
-	_, err = dst.CopyFrom(ctx, pgx.Identifier{targetSchema, name}, []string{"_id", "doc"}, src)
+	src := &docSource{ctx: ctx, cur: cur, copied: copied, altered: altered, dropped: dropped, cols: cols, stop: stop}
+	names := []string{"_id", "doc"}
+	for _, c := range cols {
+		names = append(names, c.name)
+	}
+	_, err = dst.CopyFrom(ctx, pgx.Identifier{targetSchema, name}, names, src)
 	return err
 }

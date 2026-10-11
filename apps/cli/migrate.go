@@ -5,9 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"dedie/engine/app"
+	"dedie/engine/migrate"
 	"dedie/engine/migrate/pgpg"
 )
 
@@ -23,12 +25,23 @@ func (c *cli) migrateCreate(args []string) error {
 	fs.IntVar(&in.Config.SnapshotWorkers, "workers", 4, "tables copied in parallel during the initial copy")
 	fs.StringVar(&in.Config.Validation, "validation", "checksum", "cutover validation: checksum, count or none")
 	fs.BoolVar(&in.Config.FenceSource, "fence", false, "at cutover, make the source read-only and disconnect its clients")
+	columns := fs.String("columns", "", "MongoDB sources: fields to lift into typed columns, as collection:field:type separated by commas, for example users:email:text,users:address.city:text,orders:total:numeric")
 	sync := fs.Bool("sync", false, "keep the target following the source continuously instead of planning a cutover")
 	fs.BoolVar(&in.Config.KeepSlot, "keep-slot", false, "keep the replication slot on the source after completion")
 	fs.Parse(args)
 	in.Config.Schemas, in.Config.Tables, in.Config.ExcludeTables = splitList(*schemas), splitList(*tables), splitList(*exclude)
 	if *sync {
 		in.Config.Mode = "sync"
+	}
+	for _, item := range splitList(*columns) {
+		parts := strings.SplitN(item, ":", 3)
+		if len(parts) != 3 {
+			return fmt.Errorf("--columns: %q is not collection:field:type", item)
+		}
+		if in.Config.Columns == nil {
+			in.Config.Columns = map[string][]migrate.ColumnSpec{}
+		}
+		in.Config.Columns[parts[0]] = append(in.Config.Columns[parts[0]], migrate.ColumnSpec{Field: parts[1], Type: parts[2]})
 	}
 	j, err := c.be.CreateMigration(in)
 	if err != nil {
