@@ -59,8 +59,10 @@ const relKindSQL = `CASE c.relkind WHEN 'r' THEN 'table' WHEN 'p' THEN 'table' W
 
 // relDropSQL writes the statement that removes a pg_class row aliased c in
 // the schema aliased n. An index that enforces a constraint cannot be
-// dropped by itself; the constraint is dropped instead.
-const relDropSQL = `coalesce((SELECT format('ALTER TABLE %I.%I DROP CONSTRAINT IF EXISTS %I CASCADE', kn.nspname, kt.relname, k.conname)
+// dropped by itself; the constraint is dropped instead. Its table is often
+// one the job replaces as well, and gone by the time this statement runs,
+// so the table is allowed to be missing too.
+const relDropSQL = `coalesce((SELECT format('ALTER TABLE IF EXISTS %I.%I DROP CONSTRAINT IF EXISTS %I CASCADE', kn.nspname, kt.relname, k.conname)
 			FROM pg_constraint k JOIN pg_class kt ON kt.oid = k.conrelid JOIN pg_namespace kn ON kn.oid = kt.relnamespace
 			WHERE k.conindid = c.oid AND k.contype IN ('p', 'u', 'x') LIMIT 1),
 		format('DROP %s IF EXISTS %I.%I CASCADE', upper(` + relKindSQL + `), n.nspname, c.relname))`
