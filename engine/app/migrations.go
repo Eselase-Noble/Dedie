@@ -80,8 +80,11 @@ func (a *App) CreateMigration(ctx context.Context, actor Actor, in MigrationInpu
 	case "sync":
 		// A sync leaves the source in service by definition.
 		in.Config.FenceSource = false
+	case "offline":
+		// A one-time copy has no cutover to fence the source for.
+		in.Config.FenceSource = false
 	default:
-		return store.Job{}, invalid("mode must be migrate or sync")
+		return store.Job{}, invalid("mode must be migrate, sync or offline")
 	}
 	_, _, kind, err := a.endpoints(ctx, actor.User.OrgID, in.SourceID, in.TargetID)
 	if err != nil {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -27,11 +28,17 @@ func (c *cli) migrateCreate(args []string) error {
 	fs.BoolVar(&in.Config.FenceSource, "fence", false, "at cutover, make the source read-only and disconnect its clients")
 	columns := fs.String("columns", "", "MongoDB sources: fields to lift into typed columns, as collection:field:type separated by commas, for example users:email:text,users:address.city:text,orders:total:numeric")
 	sync := fs.Bool("sync", false, "keep the target following the source continuously instead of planning a cutover")
+	offline := fs.Bool("offline", false, "copy once from a consistent snapshot, validate and finish, without following changes; the source needs no replication set up")
 	fs.BoolVar(&in.Config.KeepSlot, "keep-slot", false, "keep the replication slot on the source after completion")
 	fs.Parse(args)
 	in.Config.Schemas, in.Config.Tables, in.Config.ExcludeTables = splitList(*schemas), splitList(*tables), splitList(*exclude)
-	if *sync {
-		in.Config.Mode = "sync"
+	switch {
+	case *sync && *offline:
+		return errors.New("--sync and --offline cannot be combined")
+	case *sync:
+		in.Config.Mode = migrate.ModeSync
+	case *offline:
+		in.Config.Mode = migrate.ModeOffline
 	}
 	for _, item := range splitList(*columns) {
 		parts := strings.SplitN(item, ":", 3)

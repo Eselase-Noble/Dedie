@@ -41,10 +41,14 @@ const (
 //	          functions they may depend on, their indexes, constraints and
 //	          triggers; views and other standalone objects are left out
 type Config struct {
-	// Mode is "migrate" (the default) for a move that ends with a cutover,
-	// or "sync" to keep the target following the source for as long as
-	// the job runs. The pipeline does the same work either way; a sync is
-	// simply not expected to end, and never fences its source.
+	// Mode is ModeMigrate (the default) for a move that ends with a
+	// cutover, ModeSync to keep the target following the source for as
+	// long as the job runs, or ModeOffline for a one-time copy. Migrate
+	// and sync do the same work; a sync is simply not expected to end,
+	// and never fences its source. An offline migration copies from one
+	// consistent snapshot, validates and finishes by itself: it follows
+	// no changes, so the source needs no replication set up, and writes
+	// made to the source after the copy starts are not carried over.
 	Mode string `json:"mode"`
 	// Schemas limits the migration to these schemas; empty means all. In
 	// MySQL a schema is the database itself, so its pipeline ignores this.
@@ -82,6 +86,16 @@ type ColumnSpec struct {
 	// Type is the column's type on the target.
 	Type string `json:"type"`
 }
+
+// Migration modes.
+const (
+	ModeMigrate = "migrate"
+	ModeSync    = "sync"
+	ModeOffline = "offline"
+)
+
+// Offline reports whether the job is a one-time copy that follows no changes.
+func (c Config) Offline() bool { return c.Mode == ModeOffline }
 
 // Scope names the level the migration runs at: "table", "schema" or "database".
 func (c Config) Scope() string {
