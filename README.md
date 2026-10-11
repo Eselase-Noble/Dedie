@@ -4,40 +4,74 @@ A query browser, administration console and live migration engine for relational
 
 *Dedie* is Ewe for "safe": the data should arrive safely and stay that way.
 
-Dedie moves a production database to a newer major version while the old one stays online. It copies a consistent snapshot, follows the source's replication log to stay in step, and switches over in a write pause measured in seconds. The same engine powers a SQL browser, encrypted backups with verified restore, and a server activity console, behind role-based access control and a tamper-evident audit log.
+Dedie moves a production database to a newer server version while the old one stays online. It copies a consistent snapshot, follows the source's replication log to stay in step, and switches over in a write pause measured in seconds. The same engine powers a SQL browser, encrypted backups with verified restore, and a server activity console, behind role-based access control and a tamper-evident audit log.
 
-It ships as three programs that share one engine and one data directory:
+## Contents
 
-| Program | What it is |
-|---|---|
-| `dedie-server` | Web interface, HTTP API and the background worker that runs migrations. For teams. |
-| `dedie` | Command-line interface. Works directly on the data directory; needs no server. |
-| `dedie-desktop` | The same interface for one person, bound to a private loopback port. |
+- [What it does](#what-it-does)
+- [Status](#status)
+- [Programs](#programs)
+- [Quick start](#quick-start)
+- [The web interface](#the-web-interface)
+- [The command line](#the-command-line)
+- [The desktop application](#the-desktop-application)
+- [Migrating a database](#migrating-a-database)
+- [Backups](#backups)
+- [Security model](#security-model)
+- [HTTP API](#http-api)
+- [Architecture](#architecture)
+- [Development](#development)
+- [Configuration reference](#configuration-reference)
+- [Roadmap](#roadmap)
+
+## What it does
+
+**Online migration.** Upgrade PostgreSQL or MySQL to a newer version with the source in service throughout. A migration can cover a whole database, selected schemas, or selected tables. It can be paused and resumed, survives a crash without losing or repeating a change, and refuses to complete a cutover if source and target differ.
+
+**Query browser.** A schema tree, a SQL editor with syntax highlighting, and a result grid with CSV export and per-connection history. Statements run read-only unless a permitted user explicitly allows writes.
+
+**Backup and recovery.** Logical backups, encrypted before they reach disk, with integrity verification and restore into any connection of the same kind.
+
+**Server administration.** Live sessions with cancel and terminate, database sizes, replication slots and the WAL they retain, and the settings that matter for replication and security.
+
+**Organization controls.** Users with five roles, encrypted credential storage, a hash-chained audit log that records every statement and every change, and transport safeguards on by default.
 
 ## Status
 
-| Capability | State |
-|---|---|
-| PostgreSQL → PostgreSQL online version upgrade (source 10+, any newer target) | Working, covered by an end-to-end test that migrates 16 → 18 under write load |
-| Query browser, schema explorer | Working (PostgreSQL) |
-| Encrypted backup, verify, restore | Working (PostgreSQL, logical backups via `pg_dump`) |
-| Server console: sessions, replication slots, sizes, cancel/terminate | Working (PostgreSQL) |
-| Organizations, users, roles, audit log | Working |
-| MySQL → MySQL online upgrade | Planned |
-| Cross-engine sync (MySQL ↔ PostgreSQL) | Planned |
-| Document → relational (MongoDB → PostgreSQL) | Planned |
-| Scheduled backups, point-in-time recovery | Planned |
-| Single sign-on, external key management (KMS, Vault) | Planned; the key interface is already pluggable |
+| Capability | PostgreSQL | MySQL |
+|---|---|---|
+| Online version upgrade | Working (source 10+) | Working (source 5.6+) |
+| Query browser and schema explorer | Working | Working |
+| Encrypted backup, verify, restore | Working | Working |
+| Server console | Working | Working |
 
-New databases plug in behind one interface (`engine/connector`), and new migration paths sit beside the existing one (`engine/migrate`).
+Both migration pipelines are covered by end-to-end tests that migrate a database under write load, pause and resume mid-stream, cut over with a read-only fence and compare every row. The PostgreSQL test runs 16 → 18. The MySQL test runs between two 8.0 servers; other MySQL version pairs have not been exercised yet.
+
+Not built yet: migration between different engines (MySQL ↔ PostgreSQL), document stores to relational (MongoDB → PostgreSQL), continuous two-way sync, scheduled backups, point-in-time recovery, single sign-on, and external key management. See the [roadmap](#roadmap).
+
+## Programs
+
+All three share one engine and one data directory, so a migration started in one can be watched or controlled from another.
+
+| Program | What it is | Built from |
+|---|---|---|
+| `dedie-server` | Web interface, HTTP API and the worker that runs migrations. For teams. | `apps/server` (Go) |
+| `dedie` | Command-line interface. Works directly on the data directory; needs no server. | `apps/cli` (Go) |
+| Dedie Desktop | A native window for one person on their own machine. | `apps/desktop` (JavaFX) |
 
 ## Quick start
 
-Requirements: Go 1.26+, Node 22+ (to build the interface), and the PostgreSQL client tools (`pg_dump`, `pg_restore`) on the machine that runs Dedie, at a version at least as new as the servers you back up.
+Requirements:
+
+- Go 1.26 or newer and Node 22 or newer, to build
+- JDK 17 or newer and Maven, for the desktop application only
+- the database client tools on the machine that runs Dedie, for backups: `pg_dump` and `pg_restore` (at least as new as the servers you back up), `mysqldump` and `mysql`
 
 ```sh
-make            # builds the web interface and bin/dedie, bin/dedie-server, bin/dedie-desktop
-bin/dedie-server  # http://127.0.0.1:8080
+git clone https://github.com/Eselase-Noble/Dedie.git
+cd Dedie
+make                # builds the web interface, bin/dedie-server and bin/dedie
+bin/dedie-server    # http://127.0.0.1:8080
 ```
 
 Open the address, create your organization and owner account, then add connections.
@@ -50,19 +84,55 @@ bin/dedie-server --addr 0.0.0.0:8443 --tls-cert server.crt --tls-key server.key
 bin/dedie-server --addr 127.0.0.1:8080 --behind-tls-proxy
 ```
 
-### The same thing from the command line
+## The web interface
+
+| Page | What you do there |
+|---|---|
+| Overview | See connections, migrations and recent backups at a glance. |
+| Connections | Add, edit, test and delete connections. Passwords are write-only; weak SSL modes are flagged. |
+| Query browser | Browse schemas, write SQL, run with Ctrl/Cmd+Enter, export results as CSV. |
+| Migrations | Create a migration at database, schema or table level; run the preflight check; watch phase, lag and per-table progress; pause, resume, cut over or abort. |
+| Backups | Create, verify, restore and delete backups; review restore history and logs. |
+| Server activity | Inspect sessions, sizes, replication slots and settings; cancel or terminate a session. |
+| Users | Create users, change roles, disable accounts, reset passwords. |
+| Audit log | Read the log and verify that it has not been altered. |
+
+Navigation and actions a role may not use are hidden; the server enforces the same rules regardless.
+
+## The command line
 
 ```sh
 dedie init --org "Acme" --name "Ada Lovelace" --email ada@example.com
 
 dedie conn add --name prod-16 --host db-old.internal --db shop --user migrator --sslmode verify-full
-dedie conn add --name prod-18 --host db-new.internal --db shop --user migrator --sslmode verify-full
+dedie conn add --kind mysql --name orders --host mysql.internal --db orders --user migrator
+dedie conn list
+dedie conn test prod-16
 
 dedie query prod-16 "select count(*) from orders"      # read-only unless --write
 dedie backup create prod-16 --note "before upgrade"
+dedie user add --name "Kofi Mensah" --email kofi@example.com --role operator
+dedie audit verify
 ```
 
-Passwords are prompted for, or read from `DEDIE_PASSWORD`; they are never accepted as flags.
+Passwords are prompted for, or read from `DEDIE_PASSWORD`; they are never accepted as flags, where they would end up in shell history and the process list. Run `dedie help` for every command.
+
+The CLI acts with owner rights, because anyone who can read the data directory and master key already has that access. Its actions are audited under the operating-system user name.
+
+## The desktop application
+
+Dedie Desktop is a JavaFX application. It starts the same `dedie-server` engine on a free loopback port, which nothing outside the machine can reach, and shows the interface in its own window. There is no second implementation of anything: queries, migrations, backups and access control behave exactly as they do on a server.
+
+```sh
+make desktop
+java -jar bin/desktop/dedie-desktop.jar
+```
+
+`bin/desktop` is self-contained: the application, its JavaFX libraries and the server program. Closing the window stops the engine cleanly; a running migration is handed back to the queue and resumes the next time the application starts.
+
+The application looks for `dedie-server` beside its own jar, then in a `bin` directory above the working directory, then on the `PATH`. Set `DEDIE_SERVER` to point at it explicitly. During development, `cd apps/desktop && mvn javafx:run` starts it from the source tree.
+
+One limitation: the embedded browser cannot save files, so CSV export from the query browser works in the web interface but not in the desktop window.
 
 ## Migrating a database
 
@@ -74,44 +144,98 @@ dedie migrate status <id>
 dedie migrate cutover <id>       # when lag is near zero and you are ready to switch
 ```
 
-What happens, phase by phase:
+Source and target must be the same kind of database. The target must not already contain the tables being migrated.
 
-1. **Schema.** Types, sequences, functions and tables are recreated on the target from PostgreSQL's own definitions. A publication is created on the source.
-2. **Snapshot.** A replication slot is created and exports a snapshot in the same step. Every table is copied in parallel from that snapshot, so all tables reflect one instant and the change stream begins exactly where the copy ends.
-3. **Indexing.** Secondary indexes, foreign keys and views are built after the bulk load.
-4. **Streaming.** Each source transaction is applied to the target as one transaction, together with its position in a checkpoint table. If the process dies, it resumes from that checkpoint without losing or repeating a change. The job can stay in this phase for as long as you like.
-5. **Cutover.** With `--fence`, the source database is made read-only and its clients are disconnected. The stream is drained to a marker written after that point, sequences are synchronized, every table is compared between source and target (row count plus checksum), triggers are created, and the replication slot and publication are removed.
+### Levels
 
-Point your application at the target once cutover completes. Applications are unable to write only during step 5.
+| Level | How to ask for it | What moves |
+|---|---|---|
+| Database | nothing extra | Every schema and table in the source connection's database |
+| Schema | `--schemas public,billing` | Everything in the listed schemas (PostgreSQL; in MySQL a schema is the database) |
+| Table | `--tables public.orders,public.order_items` | Only the listed tables, with their indexes, constraints and triggers. Views and other standalone objects are left out |
+
+`--exclude` removes tables at any level. PostgreSQL tables are named `schema.table`; MySQL tables by name alone. Preflight fails if a listed table does not exist.
+
+### Phases
+
+1. **Schema.** Tables and the objects they depend on are recreated on the target from the source's own definitions.
+2. **Snapshot.** Every table is copied in parallel from one consistent point in time, and the replication position of that point is recorded. The change stream begins exactly there, so nothing falls between the copy and the stream.
+3. **Indexing.** Objects that are cheaper or only possible to build after the bulk load: secondary indexes, foreign keys and views on PostgreSQL; views and stored routines on MySQL.
+4. **Streaming.** Each source transaction is applied to the target as one transaction, together with its position in a checkpoint table. If the process dies, it resumes from that checkpoint without losing or repeating a change. A job can stay in this phase for as long as you like.
+5. **Cutover.** With `--fence`, the source database is made read-only. The stream is drained to the end, sequences and auto-increment counters are synchronized, every table is compared between source and target (row count plus checksum), triggers are created, and whatever the migration left on either server is removed.
+
+Point your application at the target once cutover completes. Applications are unable to write only during phase 5.
 
 If validation finds a difference, cutover is cancelled, the source is made writable again and streaming continues. Nothing is switched on a mismatch.
 
-### Requirements on the source
+Triggers are created at cutover on purpose: created earlier, they would fire for every replicated row and repeat effects the source has already produced.
+
+### PostgreSQL
+
+Requirements on the source:
 
 - `wal_level = logical` (needs a server restart if it is not already set)
 - a user with the `REPLICATION` attribute that owns the tables, or a superuser
 - a free replication slot and WAL sender
-- a primary key or replica identity on every migrated table
+- a primary key or replica identity on every migrated table. A table without one cannot be included, because publishing it would make updates and deletes fail on the source
 
-Preflight checks all of these.
-
-### What is not migrated
-
-Preflight reports these so nothing is dropped silently:
+Not migrated, and reported by preflight so nothing is dropped silently:
 
 - roles, ownership and `GRANT`s
 - row-level security policies, rewrite rules, event triggers, user-defined aggregates
 - large objects and foreign tables
 - partitioned tables, inheritance children and unlogged tables (skipped, with a warning)
-- schema changes made on the source while a migration is running; logical replication does not carry DDL, so freeze the schema until cutover
 
-### Operational notes
+Notes:
 
 - A paused or failed job keeps its replication slot, and the source keeps WAL for it. Resume or abort jobs you are not going to finish; the server console highlights slots that retain WAL.
-- Aborting removes the slot and publication from the source and leaves the copied tables on the target for inspection.
-- With `--fence` the source stays read-only after a successful cutover, which prevents stray writes to the old database. To go back: `ALTER DATABASE <name> RESET default_transaction_read_only;`
-- Fencing stops well-behaved applications. It is not a security control: a session can still override the setting.
+- Fencing sets the database read-only for new sessions and disconnects existing clients. To undo it: `ALTER DATABASE <name> RESET default_transaction_read_only;`
+
+### MySQL
+
+Requirements on the source:
+
+- binary logging on, `binlog_format = ROW`, `binlog_row_image = FULL`
+- an account with `SELECT`, `RELOAD`, `REPLICATION SLAVE` and `REPLICATION CLIENT`
+- InnoDB tables. Tables on other storage engines are skipped with a warning, since they cannot be read at one consistent point without locking
+
+The snapshot takes a global read lock only for the moment it needs to read the binary log position and open its read transactions, typically a few milliseconds.
+
+Not migrated: user accounts and privileges. Views, routines, triggers and events are created under the migrating account rather than their original `DEFINER`.
+
+Notes:
+
+- The connection's database is what gets migrated; name the same database on the target connection, or a different one to rename it on the way.
+- Tables without a primary key are supported, but each change is matched on every column, which is slow on large tables. Preflight lists them.
+- Fencing uses `ALTER DATABASE ... READ ONLY = 1` and needs MySQL 8.0.22 or newer on the source. The switch waits at most 20 seconds for transactions in its way; if it cannot get through, cutover is cancelled rather than stalling the source. To undo it: `ALTER DATABASE <name> READ ONLY = 0;`
+- A paused job can resume for as long as the source still has the binary logs it needs. Check `binlog_expire_logs_seconds` before pausing for long.
+- MariaDB is not supported by this pipeline.
+
+### For both
+
+- Schema changes made on the source while a migration is running are not replicated. Freeze the schema until cutover. `TRUNCATE` is replicated.
+- Aborting removes what the migration created on the source and leaves the copied tables on the target for inspection.
+- With `--fence` the source stays read-only after a successful cutover, which prevents stray writes to the old database.
+- Fencing stops well-behaved applications. It is not a security control.
 - Checksum validation reads every row on both sides during the write pause. For very large databases choose `--validation count`.
+
+## Backups
+
+Backups are logical (`pg_dump` custom format, or `mysqldump`), encrypted before they reach disk, and stored under `backups/` in the data directory with a SHA-256 of the encrypted file.
+
+```sh
+dedie backup create prod-18 --note "nightly"
+dedie backup list
+dedie backup verify <id>          # checksum matches and the whole archive decrypts
+dedie backup restore <id> --target staging --clean --confirm shop_staging
+```
+
+A restore verifies the file first and requires the target database name as confirmation.
+
+- **PostgreSQL** restores run in a single transaction, so a failure changes nothing. Ownership and privileges are left out unless `--keep-owners` is given, since the target server often has different roles.
+- **MySQL** restores replace tables of the same name and cannot be rolled back: MySQL commits at every schema statement, so a restore that fails part-way leaves the tables it had already replaced.
+
+Backups are taken on demand. Scheduling and point-in-time recovery are on the roadmap.
 
 ## Security model
 
@@ -131,26 +255,32 @@ Preflight reports these so nothing is dropped silently:
 | analyst | read-only queries, view connections and migrations |
 | viewer | view connections and migrations |
 
-**Queries.** The browser runs statements in a read-only transaction unless the user has write permission, the connection is not marked read-only, and they switch writes on for that run. This is a guard rail. The real boundary is the database role a connection uses: give each connection the least privilege it needs.
+An organization always keeps at least one active owner.
+
+**Queries.** The browser runs statements in a read-only session unless the user has write permission, the connection is not marked read-only, and they switch writes on for that run. The database server enforces it. This is a guard rail; the real boundary is the database account a connection uses, so give each connection the least privilege it needs.
 
 **Audit log.** Sign-ins, every executed statement, and every change to connections, users, migrations and backups are recorded. Each entry includes a hash of the previous one, so an edited or deleted entry breaks the chain; `dedie audit verify` or the Audit page reports where. Removing entries from the end of the log is not detectable from the log alone, so export it regularly if you need that guarantee.
 
 **Transport.** New connections default to `sslmode=require`; `verify-full` with your CA certificate is recommended, and preflight warns when a migration would run over an unencrypted connection. The web server sets a content security policy, forbids framing, and rejects state-changing requests that lack its custom header or come from another origin.
 
-**Local programs.** `dedie` and `dedie-desktop` act with owner rights, because anyone who can read the data directory and master key already has that access. Protect the directory with file permissions; it is created with mode 0700.
+**Client tools.** Backup tools receive credentials through the environment or a private temporary option file, never on the command line.
 
-## Backups
+**Data directory.** Created with mode 0700; the metadata database and backups with 0600.
 
-Backups are logical (`pg_dump` custom format), encrypted before they reach disk, and stored under `backups/` in the data directory with a SHA-256 of the encrypted file.
+## HTTP API
 
-```sh
-dedie backup create prod-18 --note "nightly"
-dedie backup list
-dedie backup verify <id>          # checksum matches and the whole archive decrypts
-dedie backup restore <id> --target staging --clean --confirm shop_staging
-```
+Everything the interface does goes through a JSON API under `/api/v1`. Requests are authenticated by the session cookie; every request that changes state must carry the header `X-Dedie-Request: 1`. Errors are `{"error": "..."}` with a matching status.
 
-A restore verifies the file first, runs in a single transaction so a failure changes nothing, and requires the target database name as confirmation. Ownership and privileges are left out unless `--keep-owners` is given, since the target server often has different roles.
+| Area | Endpoints |
+|---|---|
+| Setup and session | `GET/POST /setup`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` |
+| Users | `GET/POST /users`, `PATCH /users/{id}` |
+| Connections | `GET/POST /connections`, `GET/PUT/DELETE /connections/{id}`, `POST /connections/test`, `POST /connections/{id}/test` |
+| Query | `GET /connections/{id}/catalog`, `POST /connections/{id}/query` |
+| Server console | `GET /connections/{id}/overview`, `POST /connections/{id}/backends/{pid}/cancel` |
+| Migrations | `GET/POST /migrations`, `GET /migrations/{id}`, `POST /migrations/{id}/preflight`, `POST /migrations/{id}/actions/{start,pause,resume,cutover,abort,delete}` |
+| Backups | `GET/POST /backups`, `DELETE /backups/{id}`, `POST /backups/{id}/verify`, `POST /backups/{id}/restore`, `GET /restores` |
+| Audit | `GET /audit`, `GET /audit/verify` |
 
 ## Architecture
 
@@ -158,23 +288,36 @@ A restore verifies the file first, runs in a single transaction so a failure cha
 apps/
   server/            dedie-server: HTTP listener, worker, graceful shutdown
   cli/               dedie: one file per command group
-  desktop/           dedie-desktop: loopback listener and window launcher
-  internal/httpapi/  routes, middleware and handlers shared by server and desktop
+  desktop/           Dedie Desktop: JavaFX window that runs the server as its engine
+  internal/httpapi/  routes, middleware and handlers
 engine/
   app/               use cases: authorization, auditing, orchestration
   connector/         driver contract and registry
     postgres/        connection, query execution, catalog, administration
-  migrate/
-    pgpg/            PostgreSQL → PostgreSQL pipeline, one file per phase
-  backup/            pg_dump / pg_restore drivers
+    mysql/           the same for MySQL
+  migrate/           options, phases, reporting and the pipeline registry
+    pgpg/            PostgreSQL → PostgreSQL, one file per phase
+    mymy/            MySQL → MySQL, one file per phase
+  backup/            pg_dump / pg_restore and mysqldump / mysql drivers
   secure/            envelope and stream encryption, password hashing, tokens
   store/             metadata database (SQLite), one file per entity
-web/                 Next.js interface, exported statically and embedded in the binaries
+web/                 Next.js interface, exported statically and embedded in the server
 ```
 
 Every front end calls `engine/app` and nothing beneath it, so a permission check or audit entry cannot be bypassed by using a different interface.
 
+Two registries keep the engine open to new databases. A driver implements `connector.Driver` and registers under its kind, which makes it available to the query browser, the server console and connection management. A pipeline implements `migrate.Pipeline` and registers for a source and target kind; the application layer looks pipelines up by that pair and knows nothing else about them.
+
 Migration jobs are leased in the metadata database with a heartbeat. Several processes can share a data directory without running a job twice, and a job whose worker dies is picked up by the next one.
+
+How each pipeline gets exactly-once delivery:
+
+| | PostgreSQL | MySQL |
+|---|---|---|
+| Consistent start | replication slot created together with an exported snapshot | read transactions opened at a recorded binary log position under a brief global read lock |
+| Change stream | logical replication (`pgoutput`) | row events from the binary log |
+| Checkpoint | commit LSN, stored on the target in the same transaction as the data | binary log file and offset, stored the same way |
+| Cutover marker | a logical message written to the WAL after fencing | the end of the binary log after fencing |
 
 ## Development
 
@@ -184,19 +327,31 @@ make lint               # gofmt and go vet
 cd web && npm run dev   # interface with hot reload, proxying /api to 127.0.0.1:8080
 ```
 
-The end-to-end test needs two PostgreSQL servers, the source with `wal_level = logical`. It creates and drops its own databases:
+To compile the Go programs without building the interface, pass `-tags noui`.
+
+The end-to-end tests need two servers of the same kind and create and drop their own databases. Each test skips itself when its variables are not set.
 
 ```sh
+# PostgreSQL: the source needs wal_level = logical
 export DEDIE_TEST_SOURCE=postgres://postgres@127.0.0.1:54316/postgres
 export DEDIE_TEST_TARGET=postgres://postgres@127.0.0.1:54318/postgres
+
+# MySQL: the source needs binary logging in ROW format
+export DEDIE_TEST_MYSQL_SOURCE=mysql://root@127.0.0.1:33161
+export DEDIE_TEST_MYSQL_TARGET=mysql://root@127.0.0.1:33162
+
 make test-integration
 ```
 
-To compile without building the interface, pass `-tags noui`.
+To check a desktop build without watching the window, run it with `-Ddedie.smoke=true`: it loads the interface, prints what it rendered and exits.
 
 ### Continuous integration
 
-`.github/workflows/ci.yml` lints, runs the unit tests, runs the end-to-end migration against PostgreSQL 16 and 18, and builds binaries for Linux, macOS and Windows. Pushing a tag that starts with `v` publishes them as a GitHub release with checksums.
+`.github/workflows/ci.yml` lints, runs the unit tests, runs the PostgreSQL 16 → 18 migration test, builds the server and CLI for Linux, macOS and Windows, and builds the desktop application on a runner of each operating system. Pushing a tag that starts with `v` publishes everything as a GitHub release with checksums. The MySQL migration test is run locally for now.
+
+### Branching
+
+`main` holds released work. Each feature is developed on a `feature/...` branch and merged through a pull request once its tests pass.
 
 ## Configuration reference
 
@@ -205,8 +360,27 @@ To compile without building the interface, pass `-tags noui`.
 | `DEDIE_DATA_DIR`, `--data` | metadata database, master key, backups | `~/.dedie` |
 | `DEDIE_MASTER_KEY` | master key, base64 of 32 bytes | `master.key` in the data directory |
 | `DEDIE_PG_BIN` | directory containing `pg_dump` and `pg_restore` | newest version found on the system |
+| `DEDIE_MYSQL_BIN` | directory containing `mysqldump` and `mysql` | the `PATH` |
 | `DEDIE_PASSWORD` | password for CLI commands that would prompt | prompt |
-| `--addr` | listen address of `dedie-server` | `127.0.0.1:8080` |
+| `DEDIE_SERVER` | location of `dedie-server` for the desktop application | beside the jar, then `PATH` |
+| `--addr` | listen address of `dedie-server`; port 0 picks a free port | `127.0.0.1:8080` |
 | `--tls-cert`, `--tls-key` | serve HTTPS | off |
 | `--behind-tls-proxy` | trust `X-Forwarded-For`, mark cookies `Secure` | off |
 | `--no-worker` | serve the API without executing migrations | off |
+
+What the data directory holds:
+
+| Path | Contents |
+|---|---|
+| `dedie.db` | organizations, users, sessions, connections (passwords encrypted), jobs, audit log |
+| `master.key` | the master key, unless `DEDIE_MASTER_KEY` is set |
+| `backups/` | encrypted backup files |
+| `desktop/` | the desktop window's local preferences |
+
+## Roadmap
+
+1. **Cross-engine migration and sync**: MySQL → PostgreSQL and back, with type mapping and schema translation, building on the two existing change streams.
+2. **Document to relational**: MongoDB → PostgreSQL, with a reviewed mapping from documents to tables.
+3. **Scheduled backups and retention**, then point-in-time recovery.
+4. **Partitioned tables** for PostgreSQL, and tested upgrade paths across more MySQL versions.
+5. **Single sign-on** and **external key management** (cloud KMS, Vault) behind the existing key interface.
