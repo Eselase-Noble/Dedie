@@ -124,7 +124,7 @@ export default function UsersPage() {
 
   return (
     <div className="content">
-      <PageHeader title="Users" subtitle="People in this organization and what their role allows.">
+      <PageHeader title="Dedie users" subtitle="People who sign in to Dedie and what their role allows. Accounts on the databases themselves are under Database users.">
         <button className="btn primary" onClick={() => setCreating(true)}>New user</button>
       </PageHeader>
       {error && <Banner tone="error">{error}</Banner>}

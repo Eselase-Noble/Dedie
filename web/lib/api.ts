@@ -1,4 +1,5 @@
 import type {
+  AccountChange,
   AlertChannel,
   ApiToken,
   AuditEntry,
@@ -12,6 +13,7 @@ import type {
   ConnectionAccess,
   ConnectionInput,
   ConnectionStatus,
+  DbAccounts,
   Migration,
   MigrationAction,
   MigrationDetail,
@@ -31,6 +33,7 @@ import type {
   ServerInfo,
   ServerObjects,
   Session,
+  SessionFilter,
   SessionInfo,
   User,
   UserUpdate,
@@ -163,6 +166,16 @@ export const api = {
   query: (connId: string, body: { sql: string; write: boolean; max_rows: number }, signal?: AbortSignal) =>
     post<QueryResponse>(`/connections/${id(connId)}/query`, body, { signal }),
   changeRow: (connId: string, body: RowChange) => post<{ ok: boolean }>(`/connections/${id(connId)}/rows`, body),
+
+  // Users and connections of a database server
+  dbAccounts: (connId: string) => get<DbAccounts>(`/connections/${id(connId)}/accounts`),
+  saveDbAccount: (connId: string, body: AccountChange) => post<{ ok: boolean }>(`/connections/${id(connId)}/accounts`, body),
+  dropDbAccount: (connId: string, user: string, host: string, handOver: boolean) =>
+    request<{ ok: boolean }>("DELETE", `/connections/${id(connId)}/accounts/${id(user)}?host=${id(host)}${handOver ? "&hand_over=1" : ""}`),
+  setConnectionLimit: (connId: string, body: { scope: "account" | "database"; name: string; host: string; limit: number }) =>
+    post<{ ok: boolean }>(`/connections/${id(connId)}/connection-limit`, body),
+  terminateSessions: (connId: string, filter: SessionFilter) =>
+    post<{ sessions: number }>(`/connections/${id(connId)}/sessions/terminate`, filter),
 
   // Saved queries
   savedQueries: () => get<SavedQuery[]>("/queries"),

@@ -52,6 +52,21 @@ type Session interface {
 	ServerObjects(ctx context.Context) (*ServerObjects, error)
 	// SetOwner hands a database, schema or table to another role.
 	SetOwner(ctx context.Context, change OwnerChange) error
+	// Accounts lists the server's users and roles with their connection
+	// limits, and who is holding connections right now.
+	Accounts(ctx context.Context) (*Accounts, error)
+	// SaveAccount creates a database user or changes one.
+	SaveAccount(ctx context.Context, change AccountChange) error
+	// DropAccount removes an account. With handOver, what the account
+	// owns in the connected database is first given to the connecting
+	// user and its privileges there are revoked, which is what otherwise
+	// stops a PostgreSQL role from being dropped.
+	DropAccount(ctx context.Context, name, host string, handOver bool) error
+	// SetConnectionLimit caps the connections of a user or a database.
+	SetConnectionLimit(ctx context.Context, limit LimitChange) error
+	// TerminateSessions disconnects the sessions a filter matches and
+	// returns how many there were.
+	TerminateSessions(ctx context.Context, filter SessionFilter) (int, error)
 	// ChangeRow inserts, updates or deletes exactly one row. Values are
 	// bound as parameters, never spliced into the statement.
 	ChangeRow(ctx context.Context, change RowChange) error
@@ -86,6 +101,136 @@ type OwnerChange struct {
 	Schema string `json:"schema"`
 	Name   string `json:"name"`
 	Owner  string `json:"owner"`
+}
+
+// Unlimited is the connection limit of an account or database that has none.
+const Unlimited = -1
+
+// Account is a user or role on a database server.
+type Account struct {
+	Name string `json:"name"`
+	// Host is the client host part of a MySQL account ('user'@'host').
+	Host        string `json:"host,omitempty"`
+	CanLogin    bool   `json:"can_login"`
+	Superuser   bool   `json:"superuser"`
+	CreateDB    bool   `json:"create_db"`
+	CreateRole  bool   `json:"create_role"`
+	Replication bool   `json:"replication"`
+	// ConnectionLimit is the most connections the account may hold at
+	// once; Unlimited when there is no cap.
+	ConnectionLimit int `json:"connection_limit"`
+	// Connections is how many it holds now.
+	Connections int `json:"connections"`
+	// MemberOf lists the roles granted to the account.
+	MemberOf   []string `json:"member_of"`
+	ValidUntil string   `json:"valid_until,omitempty"`
+}
+
+// DatabaseLimit is a database's connection cap and current use.
+type DatabaseLimit struct {
+	Name            string `json:"name"`
+	ConnectionLimit int    `json:"connection_limit"`
+	Connections     int    `json:"connections"`
+}
+
+// ConnectionUsage counts the connections one application holds as one
+// user from one address.
+type ConnectionUsage struct {
+	User        string `json:"user"`
+	Application string `json:"application"`
+	Client      string `json:"client"`
+	Database    string `json:"database"`
+	Total       int    `json:"total"`
+	Active      int    `json:"active"`
+	Idle        int    `json:"idle"`
+	// IdleInTransaction connections hold locks and block maintenance
+	// while doing nothing; they are the ones worth chasing.
+	IdleInTransaction int `json:"idle_in_transaction"`
+	// LongestSeconds is the age of the oldest of these connections' current state.
+	LongestSeconds int64 `json:"longest_seconds"`
+}
+
+// Accounts is the user and connection picture of a server.
+type Accounts struct {
+	Accounts []Account `json:"accounts"`
+	// Roles lists what can be granted to an account.
+	Roles          []string          `json:"roles"`
+	MaxConnections int               `json:"max_connections"`
+	Used           int               `json:"used_connections"`
+	Reserved       int               `json:"reserved_connections"`
+	Databases      []DatabaseLimit   `json:"databases"`
+	Usage          []ConnectionUsage `json:"usage"`
+	// DatabaseLimits reports whether this kind of server can cap
+	// connections per database.
+	DatabaseLimits bool `json:"database_limits"`
+}
+
+// Access levels that SaveAccount can grant on a database.
+const (
+	AccessReadOnly  = "readonly"
+	AccessReadWrite = "readwrite"
+)
+
+// AccountChange creates an account or changes one. Fields left nil are
+// not touched.
+type AccountChange struct {
+	Create bool   `json:"create"`
+	Name   string `json:"name"`
+	Host   string `json:"host"`
+	// Password is sent once and never stored by Dedie.
+	Password        *string  `json:"password"`
+	CanLogin        *bool    `json:"can_login"`
+	ConnectionLimit *int     `json:"connection_limit"`
+	Grant           []string `json:"grant"`
+	Revoke          []string `json:"revoke"`
+	// Access grants a ready-made level on the connection's database:
+	// AccessReadOnly or AccessReadWrite.
+	Access string `json:"access"`
+}
+
+// Validate checks the parts of a change that are the same for every database.
+func (c AccountChange) Validate() error {
+	if err := CheckName("user", c.Name); err != nil {
+		return err
+	}
+	if c.Create && c.Password != nil && len(*c.Password) < 8 {
+		return errors.New("give the database user a password of at least 8 characters")
+	}
+	if c.ConnectionLimit != nil && *c.ConnectionLimit < Unlimited {
+		return errors.New("the connection limit cannot be negative")
+	}
+	switch c.Access {
+	case "", AccessReadOnly, AccessReadWrite:
+	default:
+		return fmt.Errorf("unknown access level %q", c.Access)
+	}
+	for _, r := range append(append([]string{}, c.Grant...), c.Revoke...) {
+		if err := CheckName("role", r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// LimitChange caps connections. Scope is "account" or "database".
+type LimitChange struct {
+	Scope string `json:"scope"`
+	Name  string `json:"name"`
+	Host  string `json:"host"`
+	Limit int    `json:"limit"`
+}
+
+// SessionFilter selects sessions to disconnect. At least one field must
+// be set: an empty filter would disconnect everyone.
+type SessionFilter struct {
+	User        string `json:"user"`
+	Application string `json:"application"`
+	Database    string `json:"database"`
+	Client      string `json:"client"`
+}
+
+func (f SessionFilter) Empty() bool {
+	return f.User == "" && f.Application == "" && f.Database == "" && f.Client == ""
 }
 
 // Row actions.
