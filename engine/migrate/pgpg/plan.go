@@ -28,6 +28,12 @@ type Stmt struct {
 
 const kindForeignKey = "foreign key"
 
+// constraintKinds names a table constraint by its pg_constraint.contype.
+var constraintKinds = map[string]string{
+	"p": "primary key", "u": "unique constraint", "c": "check constraint",
+	"x": "exclusion constraint", "f": kindForeignKey,
+}
+
 // Table is a source table that will be copied and replicated.
 type Table struct {
 	OID      uint32
@@ -433,7 +439,7 @@ func (p *Plan) loadConstraints(ctx context.Context, src *pgx.Conn, oids []uint32
 		if err := rows.Scan(&typ, &table, &name, &def, &index); err != nil {
 			return err
 		}
-		s := Stmt{Kind: "constraint", Name: table + " " + name, taken: index,
+		s := Stmt{Kind: constraintKinds[typ], Name: table + " " + name, taken: index,
 			SQL: "ALTER TABLE ONLY " + table + " ADD CONSTRAINT " + qident(name) + " " + def}
 		switch typ {
 		case "p", "u":
@@ -441,9 +447,6 @@ func (p *Plan) loadConstraints(ctx context.Context, src *pgx.Conn, oids []uint32
 		case "c":
 			s.Soft = true
 			p.Pre = append(p.Pre, s)
-		case "f":
-			s.Kind, s.Soft = kindForeignKey, true
-			p.Post = append(p.Post, s)
 		default:
 			s.Soft = true
 			p.Post = append(p.Post, s)
@@ -508,10 +511,8 @@ func (s Stmt) claim() (Claim, bool) {
 		return Claim{Kind: s.Kind, Name: s.Name, Ident: s.Name, Args: s.taken}, true
 	case "trigger":
 		return Claim{Kind: s.Kind, Name: s.Name, Ident: s.taken}, true
-	case "constraint":
-		if s.taken != "" {
-			return Claim{Kind: "index", Name: s.taken, Ident: s.taken}, true
-		}
+	case "primary key", "unique constraint", "exclusion constraint":
+		return Claim{Kind: "index", Name: s.taken, Ident: s.taken}, true
 	}
 	return Claim{}, false
 }
@@ -531,6 +532,22 @@ func (p *Plan) claims() []Claim {
 		}
 	}
 	return out
+}
+
+// deferred splits the statements that wait for the copy between the two
+// phases that run them: indexing and cutover. A foreign key is built with
+// the indexes when fkNow says the job may (see indexingPhase), and waits
+// for cutover with the triggers otherwise.
+func (p *Plan) deferred(fkNow bool) (indexing, cutover []Stmt) {
+	cutover = p.Final[:len(p.Final):len(p.Final)]
+	for _, s := range p.Post {
+		if s.Kind != kindForeignKey || fkNow {
+			indexing = append(indexing, s)
+		} else {
+			cutover = append(cutover, s)
+		}
+	}
+	return indexing, cutover
 }
 
 // keep removes from the plan every statement that would create or alter an

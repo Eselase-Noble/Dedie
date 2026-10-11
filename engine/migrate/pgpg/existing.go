@@ -2,6 +2,7 @@ package pgpg
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -269,6 +270,27 @@ func Decide(policy string, found []Existing) (skipped, kept, drops []string) {
 		}
 	}
 	return skipped, kept, drops
+}
+
+// ErrNothingLeft stops a job, and its preview, when the target is to keep
+// every table the migration would have created.
+var ErrNothingLeft = errors.New("every table to be migrated already exists on the target and is kept; nothing is left to migrate")
+
+// DropStatements writes out, for a preview, the statements Decide chose to
+// remove what a job replaces, each named after the object it removes. They
+// are the first thing such a job runs.
+func DropStatements(found []Existing, drops []string) []migrate.Statement {
+	removes := map[string]string{}
+	for _, e := range found {
+		if _, ok := removes[e.Drop]; !ok {
+			removes[e.Drop] = e.Target
+		}
+	}
+	out := make([]migrate.Statement, len(drops))
+	for i, stmt := range drops {
+		out[i] = migrate.Statement{Phase: migrate.PhaseSchema, Kind: "drop", Name: removes[stmt], SQL: stmt}
+	}
+	return out
 }
 
 // KeptKey is how a kept object is written in a job's state.

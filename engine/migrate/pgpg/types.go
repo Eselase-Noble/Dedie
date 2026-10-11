@@ -49,6 +49,10 @@ func (pipeline) Run(ctx context.Context, jobID string, cfg Config, state json.Ra
 	return Run(ctx, jobID, cfg, st, src, dst, rep)
 }
 
+func (pipeline) Preview(ctx context.Context, src, dst connector.Config, cfg Config) ([]migrate.Statement, error) {
+	return Preview(ctx, src, dst, cfg)
+}
+
 // The shared vocabulary of all pipelines, re-exported for brevity.
 const (
 	PhaseSchema    = migrate.PhaseSchema

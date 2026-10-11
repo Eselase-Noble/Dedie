@@ -248,7 +248,7 @@ func (r *runner) schemaPhase(ctx context.Context) error {
 			}
 			r.rep.Event("warn", fmt.Sprintf("kept %d existing table(s) and %d other object(s) on the target as they are, as chosen; they are left out of the migration", n, m))
 			if len(r.plan.Tables) == 0 {
-				return errors.New("every table to be migrated already exists on the target and is kept; nothing is left to migrate")
+				return ErrNothingLeft
 			}
 		}
 	}
@@ -364,6 +364,17 @@ func (r *runner) offlineSnapshot(ctx context.Context) error {
 	return nil
 }
 
+// replicaRole reports whether the target lets a session run with
+// session_replication_role = replica. It tries the setting on the session
+// and puts it back; nothing in the database changes.
+func replicaRole(ctx context.Context, dst *pgx.Conn) bool {
+	if _, err := dst.Exec(ctx, "SET session_replication_role = replica"); err != nil {
+		return false
+	}
+	dst.Exec(ctx, "RESET session_replication_role")
+	return true
+}
+
 func (r *runner) indexingPhase(ctx context.Context) error {
 	r.rep.SetPhase(PhaseIndexing)
 	if err := r.reconnect(ctx); err != nil {
@@ -384,18 +395,14 @@ func (r *runner) indexingPhase(ctx context.Context) error {
 	// offline job replays nothing, so its foreign keys never need to wait.
 	offline := r.cfg.Offline()
 	if !offline {
-		if _, err := r.dst.Exec(ctx, "SET session_replication_role = replica"); err == nil {
+		if replicaRole(ctx, r.dst) {
 			r.st.ReplicaRole = true
-			r.dst.Exec(ctx, "RESET session_replication_role")
 		} else {
 			r.rep.Event("warn", "target user may not set session_replication_role; foreign keys will be created at cutover instead of now")
 		}
 	}
-	for _, s := range r.plan.Post {
-		if s.Kind != kindForeignKey || r.st.ReplicaRole || offline {
-			list = append(list, s)
-		}
-	}
+	indexing, _ := r.plan.deferred(r.st.ReplicaRole || offline)
+	list = append(list, indexing...)
 	r.rep.Event("info", "building indexes, foreign keys and views")
 	failed, err := applyStmts(ctx, r.dst, list)
 	if err != nil {
@@ -451,14 +458,7 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
-	final := r.plan.Final
-	if !r.st.ReplicaRole && !r.cfg.Offline() {
-		for _, s := range r.plan.Post {
-			if s.Kind == kindForeignKey {
-				final = append(final, s)
-			}
-		}
-	}
+	_, final := r.plan.deferred(r.st.ReplicaRole || r.cfg.Offline())
 	failed, err := applyStmts(ctx, r.dst, final)
 	if err != nil {
 		return false, err

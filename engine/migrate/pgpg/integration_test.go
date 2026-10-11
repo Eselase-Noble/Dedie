@@ -819,3 +819,268 @@ func (e *eventReporter) Event(level, msg string) {
 	e.on(msg)
 	e.memReporter.Event(level, msg)
 }
+
+// previewLine writes one statement of a preview for comparison.
+func previewLine(s migrate.Statement) string { return s.Phase + " | " + s.Kind + " | " + s.Name }
+
+// findStatement returns the previewed statement of that kind and name.
+func findStatement(t *testing.T, list []migrate.Statement, kind, name string) migrate.Statement {
+	t.Helper()
+	for _, s := range list {
+		if s.Kind == kind && s.Name == name {
+			return s
+		}
+	}
+	t.Fatalf("the preview has no %s %s", kind, name)
+	return migrate.Statement{}
+}
+
+// checkPhaseOrder fails unless the statements come phase by phase, in the
+// order a job moves through the phases, each complete and unterminated.
+func checkPhaseOrder(t *testing.T, list []migrate.Statement) {
+	t.Helper()
+	order := map[string]int{PhaseSchema: 1, PhaseIndexing: 2, PhaseCutover: 3}
+	last := 0
+	for _, s := range list {
+		n := order[s.Phase]
+		if n == 0 || n < last {
+			t.Errorf("%s: out of phase order", previewLine(s))
+		}
+		last = n
+		if s.Kind == "" || s.Name == "" || strings.TrimSpace(s.SQL) == "" || strings.HasSuffix(strings.TrimSpace(s.SQL), ";") {
+			t.Errorf("%s: incomplete or terminated statement %q", previewLine(s), s.SQL)
+		}
+	}
+}
+
+// TestMigrationPreview reads the statements of a migration before it is
+// started. A preview must be the real script, so the test runs it, as it
+// is, against the target; and it must be only a preview, so both databases
+// are compared with what they were before.
+func TestMigrationPreview(t *testing.T) {
+	var _ migrate.Previewer = pipeline{}
+	srcAdmin, dstAdmin := testConfig(t, "DEDIE_TEST_SOURCE"), testConfig(t, "DEDIE_TEST_TARGET")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	db := fmt.Sprintf("dedie_test_%d", time.Now().UnixNano())
+	srcCfg, dstCfg := srcAdmin, dstAdmin
+	srcCfg.Database, dstCfg.Database = db, db
+	for _, admin := range []connector.Config{srcAdmin, dstAdmin} {
+		c, err := postgres.Connect(ctx, admin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Exec(ctx, "CREATE DATABASE "+db); err != nil {
+			t.Fatal(err)
+		}
+		c.Close(ctx)
+		t.Cleanup(func() {
+			bg := context.Background()
+			if c, err := postgres.Connect(bg, admin); err == nil {
+				c.Exec(bg, "DROP DATABASE IF EXISTS "+db+" WITH (FORCE)")
+				c.Close(bg)
+			}
+		})
+	}
+	src, err := postgres.Connect(ctx, srcCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close(ctx)
+	if _, err := src.PgConn().Exec(ctx, fixture+`CREATE MATERIALIZED VIEW customer_names AS SELECT name FROM customers;`).ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	dst, err := postgres.Connect(ctx, dstCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close(ctx)
+
+	// Everything a job leaves behind on either side: the objects of the
+	// user schemas and the checkpoint schema on the target, the slot and
+	// the publication on the source.
+	const stateSQL = `SELECT concat_ws(' | ',
+		(SELECT string_agg(nspname, ',' ORDER BY 1) FROM pg_namespace WHERE nspname NOT LIKE 'pg\_%' AND nspname <> 'information_schema'),
+		(SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'),
+		(SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'),
+		(SELECT count(*) FROM pg_type y JOIN pg_namespace n ON n.oid = y.typnamespace WHERE n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'),
+		(SELECT count(*) FROM pg_trigger), (SELECT count(*) FROM pg_constraint),
+		(SELECT count(*) FROM pg_publication),
+		(SELECT count(*) FROM pg_replication_slots WHERE database = current_database()))`
+	state := func(conn *pgx.Conn) string {
+		t.Helper()
+		var s string
+		if err := conn.QueryRow(ctx, stateSQL).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	srcBefore, dstBefore := state(src), state(dst)
+	if !strings.HasPrefix(dstBefore, "public | 0 | 0 | 0 | ") {
+		t.Fatalf("the target is not empty: %s", dstBefore)
+	}
+	unchanged := func(when string) {
+		t.Helper()
+		if got := state(src); got != srcBefore {
+			t.Errorf("%s changed the source:\nbefore %s\nafter  %s", when, srcBefore, got)
+		}
+		if got := state(dst); got != dstBefore {
+			t.Errorf("%s changed the target:\nbefore %s\nafter  %s", when, dstBefore, got)
+		}
+	}
+
+	cfg := Config{ExcludeTables: []string{"public.scratch"}}
+	list, err := pipeline{}.Preview(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged("the preview")
+	var lines []string
+	for _, s := range list {
+		lines = append(lines, previewLine(s))
+	}
+	// The test account is a superuser and may apply changes in the replica
+	// role, so the foreign key is built with the indexes; the trigger, the
+	// identity column's return to ALWAYS and the refresh of the
+	// materialized view wait for cutover.
+	want := []string{
+		"schema | schema | billing", "schema | schema | public",
+		"schema | type | public.mood", "schema | domain | public.email",
+		"schema | sequence | public.change_log_id_seq", "schema | sequence | public.customers_id_seq",
+		"schema | function | public.log_change()",
+		"schema | table | billing.invoices", "schema | table | public.change_log", "schema | table | public.customers", "schema | table | public.events",
+		"schema | primary key | billing.invoices invoices_pkey", "schema | primary key | public.change_log change_log_pkey", "schema | primary key | public.customers customers_pkey",
+		"schema | check constraint | billing.invoices invoices_amount_check",
+		"schema | sequence owner | public.change_log_id_seq", "schema | sequence owner | public.customers_id_seq",
+		"indexing | foreign key | billing.invoices invoices_customer_id_fkey",
+		"indexing | index | public.customers_name_idx",
+		"indexing | materialized view | public.customer_names", "indexing | view | public.customer_totals",
+		"cutover | identity | billing.invoices.id", "cutover | refresh | public.customer_names",
+		"cutover | trigger | customers_log on public.customers",
+	}
+	if got := strings.Join(lines, "\n"); got != strings.Join(want, "\n") {
+		t.Errorf("preview:\n got:\n%s\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+	checkPhaseOrder(t, list)
+	for _, exact := range []struct{ kind, name, sql string }{
+		{"schema", "billing", `CREATE SCHEMA IF NOT EXISTS "billing"`},
+		{"type", "public.mood", `CREATE TYPE public.mood AS ENUM ('sad', 'ok', 'happy')`},
+		{"index", "public.customers_name_idx", `CREATE INDEX customers_name_idx ON public.customers USING btree (lower(name))`},
+		{"foreign key", "billing.invoices invoices_customer_id_fkey",
+			`ALTER TABLE ONLY billing.invoices ADD CONSTRAINT "invoices_customer_id_fkey" FOREIGN KEY (customer_id) REFERENCES public.customers(id) ON UPDATE CASCADE ON DELETE CASCADE`},
+		{"identity", "billing.invoices.id", `ALTER TABLE "billing"."invoices" ALTER COLUMN "id" SET GENERATED ALWAYS`},
+	} {
+		if s := findStatement(t, list, exact.kind, exact.name); s.SQL != exact.sql {
+			t.Errorf("%s %s:\n got %s\nwant %s", exact.kind, exact.name, s.SQL, exact.sql)
+		}
+	}
+	customers := findStatement(t, list, "table", "public.customers").SQL
+	for _, part := range []string{`CREATE TABLE "public"."customers" (`, `"contact" public.email`, `"feeling" public.mood DEFAULT 'ok'::public.mood`,
+		`"balance" numeric(12,2) DEFAULT 0`, `"name_upper" text GENERATED ALWAYS AS (upper(name)) STORED`} {
+		if !strings.Contains(customers, part) {
+			t.Errorf("CREATE TABLE of customers lacks %q:\n%s", part, customers)
+		}
+	}
+	// A column that is GENERATED ALWAYS on the source is created BY DEFAULT
+	// until cutover, and the preview shows it as it is sent.
+	if s := findStatement(t, list, "table", "billing.invoices").SQL; !strings.Contains(s, `"id" bigint GENERATED BY DEFAULT AS IDENTITY NOT NULL`) {
+		t.Errorf("CREATE TABLE of invoices:\n%s", s)
+	}
+
+	// An offline job builds its foreign keys with the indexes too, and a
+	// table-level one leaves the views out.
+	scoped, err := Preview(ctx, srcCfg, dstCfg, Config{Mode: migrate.ModeOffline, Tables: []string{"billing.invoices", "public.customers"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkPhaseOrder(t, scoped)
+	if s := findStatement(t, scoped, "foreign key", "billing.invoices invoices_customer_id_fkey"); s.Phase != PhaseIndexing {
+		t.Errorf("offline foreign key in phase %s", s.Phase)
+	}
+	for _, s := range scoped {
+		if s.Kind == "view" || s.Kind == "materialized view" || strings.Contains(s.Name, "change_log") && s.Kind == "table" {
+			t.Errorf("table scope previews %s", previewLine(s))
+		}
+	}
+
+	// What the target already has. From here on the previews depend on it.
+	if _, err := dst.PgConn().Exec(ctx, `CREATE TABLE customers (id int); INSERT INTO customers VALUES (42);
+		CREATE VIEW customer_totals AS SELECT 1 AS one;`).ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	dstBefore = state(dst)
+
+	// Under the default policy the job would refuse to start; its preview
+	// still shows every object as it would be created.
+	again, err := Preview(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(again) != fmt.Sprint(list) {
+		t.Error("the default policy previews something else once the target holds some of the names")
+	}
+
+	// Kept: the table, with all that belongs to it, and the view are left
+	// out, and nothing is dropped.
+	cfg.OnExisting = migrate.ExistingSkip
+	skip, err := Preview(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkPhaseOrder(t, skip)
+	for _, s := range skip {
+		// The table's serial sequence is an object of the schema in its
+		// own right and is still created.
+		if s.Kind == "drop" || strings.Contains(s.Name, "customers") && s.Kind != "sequence" || s.Name == "public.customer_totals" {
+			t.Errorf("skip previews %s: %s", previewLine(s), s.SQL)
+		}
+	}
+	findStatement(t, skip, "table", "billing.invoices")
+	findStatement(t, skip, "materialized view", "public.customer_names")
+	if len(skip) >= len(list) {
+		t.Errorf("skip previews %d statements, the whole migration %d", len(skip), len(list))
+	}
+
+	// Replaced: the drops come first, then the whole migration.
+	cfg.OnExisting = migrate.ExistingReplace
+	replace, err := Preview(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkPhaseOrder(t, replace)
+	drops := []migrate.Statement{
+		{Phase: PhaseSchema, Kind: "drop", Name: "public.customers", SQL: `DROP TABLE IF EXISTS public.customers CASCADE`},
+		{Phase: PhaseSchema, Kind: "drop", Name: "public.customer_totals", SQL: `DROP VIEW IF EXISTS public.customer_totals CASCADE`},
+	}
+	if len(replace) != len(drops)+len(list) || fmt.Sprint(replace[:len(drops)]) != fmt.Sprint(drops) || fmt.Sprint(replace[len(drops):]) != fmt.Sprint(list) {
+		t.Errorf("replace previews:\n%v", replace)
+	}
+	unchanged("the previews")
+
+	// The preview is the script: every statement runs, in order, as it is.
+	// Nothing in it depends on the rows the job would copy in between.
+	for _, s := range replace {
+		if _, err := dst.PgConn().Exec(ctx, s.SQL).ReadAll(); err != nil {
+			t.Fatalf("%s: %v\n%s", previewLine(s), err, s.SQL)
+		}
+	}
+	const shapeSQL = `SELECT concat_ws(' | ',
+		(SELECT string_agg(n.nspname || '.' || c.relname || ':' || c.relkind::text, ',' ORDER BY n.nspname, c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE n.nspname IN ('public', 'billing') AND c.relname <> 'scratch'),
+		(SELECT string_agg(conname || ':' || contype::text, ',' ORDER BY conname) FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace
+			WHERE n.nspname IN ('public', 'billing') AND c.contype IN ('p', 'u', 'c', 'f', 'x')),
+		(SELECT string_agg(tgname, ',') FROM pg_trigger WHERE NOT tgisinternal),
+		(SELECT string_agg(attrelid::regclass::text || '.' || attname || ':' || attidentity::text || attgenerated::text, ',' ORDER BY attrelid::regclass::text, attname) FROM pg_attribute
+			WHERE attrelid IN ('public.customers'::regclass, 'billing.invoices'::regclass) AND attnum > 0))`
+	var a, b string
+	if err := src.QueryRow(ctx, shapeSQL).Scan(&a); err != nil {
+		t.Fatal(err)
+	}
+	if err := dst.QueryRow(ctx, shapeSQL).Scan(&b); err != nil {
+		t.Fatal(err)
+	}
+	if a != b {
+		t.Errorf("the script did not build the source's schema:\nsource %s\ntarget %s", a, b)
+	}
+}
