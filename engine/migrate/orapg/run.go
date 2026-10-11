@@ -57,6 +57,11 @@ func (r *runner) buildPlan(ctx context.Context) error {
 	cfg.ExcludeTables = append(cfg.ExcludeTables[:len(cfg.ExcludeTables):len(cfg.ExcludeTables)], r.st.SkippedTables...)
 	plan, err := BuildPlan(ctx, r.src, cfg)
 	if err != nil {
+		// With every table kept there is nothing to plan; say why,
+		// rather than that the schema appears to be empty.
+		if len(r.st.SkippedTables) > 0 && strings.Contains(err.Error(), "there are no tables to migrate") {
+			return errors.New("every table to be migrated already exists on the target and is kept; nothing is left to migrate")
+		}
 		return err
 	}
 	plan.keep(r.st.KeptObjects)
