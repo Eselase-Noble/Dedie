@@ -283,7 +283,7 @@ export default function MigrationForm({ connections, onClose, onCreated, initial
             </select>
           </Field>
           {!offline && (
-            <Field label="Cutover timeout (seconds)" hint="How long cutover waits for the stream to drain before giving up.">
+            <Field label={sync ? "Finish timeout (seconds)" : "Cutover timeout (seconds)"} hint={sync ? "How long finishing waits for the stream to drain before giving up." : "How long cutover waits for the stream to drain before giving up."}>
               <input className="input" type="number" min={10} value={timeout} onChange={(e) => setTimeoutSeconds(Number(e.target.value))} />
             </Field>
           )}

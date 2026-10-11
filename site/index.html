@@ -95,11 +95,12 @@
 
 <main id="top">
   <div class="wrap hero">
-    <span class="eyebrow">For PostgreSQL, MySQL and MongoDB</span>
+    <span class="eyebrow">For PostgreSQL, MySQL, Oracle and MongoDB</span>
     <h1>Move a live database without taking it down</h1>
-    <p class="lead">Dedie upgrades a database to a new version, or moves it to another engine, while the old one keeps serving your application. It also gives your team a query browser, scheduled encrypted backups, monitoring with alerts, database user management and a full audit trail.</p>
+    <p class="lead">Dedie upgrades a database to a new version, or moves it to another engine, while the old one keeps serving your application, or as a one-time offline copy when that is all you need. It also gives your team a query browser, scheduled encrypted backups, monitoring with alerts, database user management and a full audit trail.</p>
     <div class="cta">
       <a class="btn primary" href="https://github.com/Eselase-Noble/Dedie/releases/latest">Download the latest release</a>
+      <a class="btn" href="https://github.com/Eselase-Noble/Dedie/blob/main/docs/setup.md">Set it up</a>
       <a class="btn" href="https://github.com/Eselase-Noble/Dedie#readme">Read the documentation</a>
     </div>
     <div class="shot"><img src="img/migration-detail.png" alt="A completed migration in Dedie: six phases from schema to done, replication figures, and each table validated as matching between source and target." width="1440" height="813"></div>
@@ -111,6 +112,8 @@
       <p class="sub">Everything runs on the same engine, behind the same access rules, whether you use the web interface, the command line or the desktop application.</p>
       <div class="grid">
         <div class="card"><h3>Online migration</h3><p>Copy a consistent snapshot, follow the replication log to stay in step, and switch over in a write pause measured in seconds. Pause and resume at any point, at database, schema or table level.</p></div>
+        <div class="card"><h3>Offline migration</h3><p>Every path also runs as a one-time copy: the source is read as it stood at one moment, the result is validated, and the job finishes by itself. It needs no replication set up, only an account that can read the tables.</p></div>
+        <div class="card"><h3>Out of Oracle</h3><p>Move Oracle 12c and newer to a newer Oracle, to PostgreSQL or to MySQL. Tables are read with flashback queries and changes are followed with LogMiner, with no Oracle client to install.</p></div>
         <div class="card"><h3>Continuous sync</h3><p>Keep a second database following the first for as long as you like: a reporting copy on another engine, or MongoDB collections you can query in SQL.</p></div>
         <div class="card"><h3>Query browser</h3><p>Tabs, a SQL editor that knows your tables, explain plans, saved queries, and a grid built for wide and long results. Open a table and edit its rows in place.</p></div>
         <div class="card"><h3>Backup and recovery</h3><p>Logical and physical backups, full, differential or incremental, kept in a directory you choose or in S3-compatible object storage, encrypted by default. Schedules take them, verify them and delete old ones. Restore a whole chain, into a new database, or one table at a time.</p></div>
@@ -118,6 +121,8 @@
         <div class="card"><h3>Monitoring and alerts</h3><p>Every database is checked each minute. Uptime, response time and migration lag on one page and in Prometheus, with alerts to Slack, a webhook or email.</p></div>
         <div class="card"><h3>Database users and connections</h3><p>Create database users, grant roles or a ready-made access level, cap connections per user or database, see which applications hold the connections, and disconnect them.</p></div>
         <div class="card"><h3>Server administration</h3><p>Who is connected and what they are running. Cancel a query, end a session, change who owns a database, schema or table, and spot replication slots that hold WAL.</p></div>
+        <div class="card"><h3>Notifications</h3><p>A bell in the corner, a message when something finishes or fails, and system notifications in the browser and the desktop application: migrations, backups, restores, alerts, and decisions waiting for you.</p></div>
+        <div class="card"><h3>See it before it runs</h3><p>Preview the exact statements a migration would run on the target, translated for its engine, and download the script for review. If the target already has some of the objects, you choose: refuse, keep them, or replace them.</p></div>
         <div class="card"><h3>Built for organizations</h3><p>Five roles, two-factor sign-in, API tokens, per-connection permissions, encrypted credentials, and a tamper-evident audit log of every statement and change.</p></div>
         <div class="card"><h3>Web, command line and desktop</h3><p>One engine behind all three. Sign the command line in to your Dedie server and run migrations and backups from any machine or from CI.</p></div>
       </div>
@@ -135,10 +140,13 @@
           <tr><td>MySQL 5.6 or newer</td><td>Any newer MySQL</td><td>Tables, data, views, routines, triggers, events</td><td><span class="tag">Working</span></td></tr>
           <tr><td>MySQL</td><td>PostgreSQL</td><td>Tables, data, keys, indexes and foreign keys, translated to PostgreSQL types</td><td><span class="tag">Working</span></td></tr>
           <tr><td>PostgreSQL</td><td>MySQL 8.0 or newer</td><td>Tables, data, keys, indexes and foreign keys, translated to MySQL types</td><td><span class="tag">Working</span></td></tr>
+          <tr><td>Oracle 12c or newer</td><td>A newer Oracle</td><td>Tables, data, sequences, indexes, constraints, views, synonyms, PL/SQL and triggers, from Oracle's own definitions</td><td><span class="tag">Working</span></td></tr>
+          <tr><td>Oracle 12c or newer</td><td>PostgreSQL</td><td>Tables, data, keys, sequences, identity columns, indexes, check constraints and foreign keys, translated to PostgreSQL types</td><td><span class="tag">Working</span></td></tr>
+          <tr><td>Oracle 12c or newer</td><td>MySQL 8.0 or newer</td><td>Tables, data, keys, identity columns, indexes, check constraints and foreign keys, translated to MySQL types</td><td><span class="tag">Working</span></td></tr>
           <tr><td>MongoDB 4.0 or newer (replica set)</td><td>PostgreSQL</td><td>Every collection becomes a table that holds each document in full as <code>jsonb</code>, with the fields you choose lifted into typed columns</td><td><span class="tag">Working</span></td></tr>
         </tbody>
       </table>
-      <p class="note">Every path can also run as a continuous sync that never cuts over. The PostgreSQL test runs version 16 to 18; the MySQL tests use MySQL 8.0 and the MongoDB test 8.0, and other versions of those two have not been exercised yet. Moving between engines does not translate views, routines or triggers, MongoDB indexes are not translated, and the preflight check lists every difference before anything is changed.</p>
+      <p class="note">Every path runs online, offline as a one-time copy, or as a continuous sync that never cuts over. The PostgreSQL test runs version 16 to 18; the MySQL tests use MySQL 8.0, the MongoDB test 8.0 and the Oracle tests 23ai, and other versions of those three have not been exercised yet, Oracle 12c included. Moving between engines does not translate views, routines or triggers, MongoDB indexes are not translated, and the preflight check lists every difference before anything is changed.</p>
     </div>
   </section>
 
@@ -147,12 +155,45 @@
       <h2>How a migration works</h2>
       <p class="sub">Your application keeps reading and writing the source until the last step. If source and target differ at the end, nothing is switched.</p>
       <div class="steps">
-        <div class="step"><div><h3>Preflight</h3><p>Both databases are inspected without changing either. Anything that would block the migration, or change in meaning on the way, is listed before you start.</p></div></div>
+        <div class="step"><div><h3>Preflight</h3><p>Both databases are inspected without changing either. Anything that would block the migration, or change in meaning on the way, is listed before you start. If the target already has some of the objects, you are shown them and choose: refuse, keep and skip them, or replace them.</p></div></div>
         <div class="step"><div><h3>Schema</h3><p>Tables and the objects they depend on are recreated on the target from the source's own definitions.</p></div></div>
         <div class="step"><div><h3>Snapshot</h3><p>Every table is copied in parallel from one consistent point in time, and the replication position of that point is recorded.</p></div></div>
         <div class="step"><div><h3>Streaming</h3><p>Changes made since the snapshot are applied in order. Each transaction is stored together with its position, so a crash or a restart never loses or repeats a change.</p></div></div>
         <div class="step"><div><h3>Cutover</h3><p>The source is made read-only, the last changes drain, counters are synchronized and every table is compared. Then you point your application at the target.</p></div></div>
       </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap split">
+      <div>
+        <h2>Nothing happens to the target that you did not see first</h2>
+        <p class="sub" style="margin-bottom:0">A migration creates objects in a database that somebody owns. Dedie shows what it is about to do, and asks before touching anything that is already there.</p>
+        <ul class="checks">
+          <li><strong>Preview the schema.</strong> Read every statement the migration would run, translated for the target engine and grouped by when it runs. Download the script and attach it to the change request.</li>
+          <li><strong>Existing objects are your call.</strong> If the target already has a table, view, function, trigger or sequence being migrated, you are shown the list and choose: refuse, keep them and skip them, or replace them. Replacing has to be typed.</li>
+          <li><strong>A preflight report you can keep.</strong> What blocks, what to read, what passed; filter it, copy it, download it.</li>
+          <li><strong>Types are matched, not guessed.</strong> Every type maps to one that holds all of its values; every change of meaning is listed per column, and a type with no safe equivalent stops the migration before it starts.</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="img/schema-preview.png" alt="The schema preview in Dedie: the CREATE TABLE statements a migration would run on the target, grouped under 'Before the copy', with a filter by kind of object." width="1440" height="900" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section class="alt">
+    <div class="wrap split flip">
+      <div>
+        <h2>Online when it must stay up, offline when it need not</h2>
+        <p class="sub" style="margin-bottom:0">The same eight paths run three ways, chosen when you create the migration.</p>
+        <ul class="checks">
+          <li><strong>Online.</strong> Copy, follow every change, and cut over in seconds. For production.</li>
+          <li><strong>Offline.</strong> One consistent copy, validated, finished. No replication slot, binary log, replica set or LogMiner needed on the source: an account that can read the tables is enough.</li>
+          <li><strong>Continuous sync.</strong> Keep a second database following the first for as long as you like.</li>
+          <li><strong>Progress you can plan around.</strong> Rows copied, speed, and the time remaining while the estimate holds.</li>
+          <li><strong>Told when it is done.</strong> A notification when a migration finishes, fails, or waits for you, in the browser and in the desktop application.</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="img/preflight-existing.png" alt="Dedie asking what to do about 24 objects that already exist on the target: refuse, keep them and skip them, or replace them." width="1440" height="900" loading="lazy"></div>
     </div>
   </section>
 
@@ -253,6 +294,9 @@ dedie migrate preflight &lt;id&gt;
 dedie migrate run &lt;id&gt;
 dedie migrate cutover &lt;id&gt;
 
+<span class="c"># or a one-time copy that needs no replication set up on the source</span>
+dedie migrate create --name "erp to postgres" --source erp-oracle --target erp-pg --schemas HR,SALES --offline
+
 <span class="c"># nightly backups, keeping the last fourteen</span>
 dedie backup schedule add --name nightly --connection prod-18 --cron "0 2 * * *" --keep-last 14</pre>
       <div class="grid" style="margin-top:22px">
@@ -260,7 +304,7 @@ dedie backup schedule add --name nightly --connection prod-18 --cron "0 2 * * *"
         <div class="card"><h3>dedie</h3><p>The command line. Sign in to a Dedie server and run everything from your own machine or from CI, or use it on the server host to set an installation up.</p></div>
         <div class="card"><h3>Dedie Desktop</h3><p>A JavaFX application around the same engine, for one person on their own machine, with native menus, downloads and shortcuts.</p></div>
       </div>
-      <p class="note">The full guide, including requirements for each database and everything that is not migrated, is in the <a href="https://github.com/Eselase-Noble/Dedie#readme">README</a>.</p>
+      <p class="note">Guides: <a href="https://github.com/Eselase-Noble/Dedie/blob/main/docs/setup.md">setting up Dedie</a> (installing, TLS, running as a service, the master key, upgrading) and <a href="https://github.com/Eselase-Noble/Dedie/blob/main/docs/databases.md">preparing your databases</a> (the settings and privileges each source needs, online and offline). Everything each feature does, and everything that is not migrated, is in the <a href="https://github.com/Eselase-Noble/Dedie#readme">README</a>.</p>
     </div>
   </section>
 </main>
