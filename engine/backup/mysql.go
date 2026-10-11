@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"dedie/engine/connector"
@@ -78,18 +80,36 @@ func mysqlTool(name string) (string, error) {
 	return path, nil
 }
 
+// positionRe finds the binary log position mysqldump writes at the top of
+// a dump taken with --source-data (or --master-data on older versions).
+var positionRe = regexp.MustCompile(`(?:MASTER|SOURCE)_LOG_FILE='([^']+)', (?:MASTER|SOURCE)_LOG_POS=(\d+)`)
+
+// sniffer passes a dump through unchanged while keeping its beginning,
+// where the binary log position is written.
+type sniffer struct {
+	w    io.Writer
+	head []byte
+}
+
+func (s *sniffer) Write(p []byte) (int, error) {
+	if room := 64<<10 - len(s.head); room > 0 {
+		s.head = append(s.head, p[:min(room, len(p))]...)
+	}
+	return s.w.Write(p)
+}
+
 // dumpMySQL writes a gzip-compressed mysqldump to w. The dump is taken in
 // one transaction, so InnoDB tables are consistent with each other without
 // blocking writers. A full or schema backup includes routines, triggers and
 // events.
-func dumpMySQL(ctx context.Context, cfg connector.Config, opts Options, w io.Writer) error {
+func dumpMySQL(ctx context.Context, cfg connector.Config, opts Options, w io.Writer) (Meta, error) {
 	tool, err := mysqlTool("mysqldump")
 	if err != nil {
-		return err
+		return Meta{}, err
 	}
 	options, cleanup, err := mysqlOptionFile(cfg)
 	if err != nil {
-		return err
+		return Meta{}, err
 	}
 	defer cleanup()
 	// --defaults-file must come first; it also stops the tool from reading
@@ -106,6 +126,15 @@ func dumpMySQL(ctx context.Context, cfg connector.Config, opts Options, w io.Wri
 	default:
 		args = append(args, "--routines", "--triggers", "--events")
 	}
+	if opts.RecordPosition {
+		// Written as a comment in the dump, at the exact point the
+		// dump's transaction began. The option was renamed in 8.0.26.
+		flag := "--master-data=2"
+		if help, err := exec.CommandContext(ctx, tool, "--help").Output(); err == nil && bytes.Contains(help, []byte("--source-data")) {
+			flag = "--source-data=2"
+		}
+		args = append(args, flag)
+	}
 	// "--" ends the options, so a table name can never be read as one.
 	args = append(args, "--", cfg.Database)
 	if opts.Type == TypeTables {
@@ -120,15 +149,111 @@ func dumpMySQL(ctx context.Context, cfg connector.Config, opts Options, w io.Wri
 	cmd := exec.CommandContext(ctx, tool, args...)
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 	zw := gzip.NewWriter(w)
+	sniff := &sniffer{w: zw}
+	var stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = sniff, &stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return Meta{}, ctx.Err()
+		}
+		return Meta{}, fmt.Errorf("mysqldump failed: %s", tail(&stderr))
+	}
+	var meta Meta
+	if m := positionRe.FindSubmatch(sniff.head); m != nil {
+		meta.Position = string(m[1]) + ":" + string(m[2])
+	}
+	return meta, zw.Close()
+}
+
+// mysqlRows runs a statement with the mysql client and returns its rows
+// as tab-separated fields.
+func mysqlRows(ctx context.Context, options, stmt string) ([][]string, error) {
+	tool, err := mysqlTool("mysql")
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, tool, "--defaults-file="+options, "--batch", "--skip-column-names", "-e", stmt)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("%s", tail(&stderr))
+	}
+	var rows [][]string
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line != "" {
+			rows = append(rows, strings.Split(line, "\t"))
+		}
+	}
+	return rows, nil
+}
+
+// binlogBackup writes, as gzip-compressed SQL, every change the database
+// received between a binary log position and now. Applied on top of the
+// backup that ended at that position, it brings a restore up to the
+// moment this backup was taken.
+func binlogBackup(ctx context.Context, cfg connector.Config, from string, w io.Writer) (Meta, error) {
+	startFile, startPos, ok := strings.Cut(from, ":")
+	if !ok || startFile == "" {
+		return Meta{}, errors.New("the backup this one builds on did not record a binary log position; take a new full backup")
+	}
+	tool, err := mysqlTool("mysqlbinlog")
+	if err != nil {
+		return Meta{}, err
+	}
+	options, cleanup, err := mysqlOptionFile(cfg)
+	if err != nil {
+		return Meta{}, err
+	}
+	defer cleanup()
+
+	// Where the log ends now is where this backup ends. The statement was
+	// renamed in MySQL 8.2.
+	status, err := mysqlRows(ctx, options, "SHOW BINARY LOG STATUS")
+	if err != nil {
+		if status, err = mysqlRows(ctx, options, "SHOW MASTER STATUS"); err != nil {
+			return Meta{}, fmt.Errorf("could not read the binary log position (the account needs REPLICATION CLIENT): %w", err)
+		}
+	}
+	if len(status) == 0 || len(status[0]) < 2 {
+		return Meta{}, errors.New("binary logging is off on this server, so there is nothing to build an incremental backup from")
+	}
+	endFile, endPos := status[0][0], status[0][1]
+
+	logs, err := mysqlRows(ctx, options, "SHOW BINARY LOGS")
+	if err != nil {
+		return Meta{}, fmt.Errorf("could not list the binary logs: %w", err)
+	}
+	var files []string
+	for _, row := range logs {
+		name := row[0]
+		if name >= startFile && name <= endFile {
+			files = append(files, name)
+		}
+	}
+	if len(files) == 0 || files[0] != startFile {
+		return Meta{}, fmt.Errorf("the server no longer has binary log %s, which this backup needs to start from; take a new full backup", startFile)
+	}
+
+	// --start-position applies to the first file and --stop-position to
+	// the last. GTIDs are left out so the events can be applied to a
+	// server whether or not it uses them.
+	args := []string{"--defaults-file=" + options, "--read-from-remote-server", "--skip-gtids", "--database=" + cfg.Database,
+		"--start-position=" + startPos, "--stop-position=" + endPos}
+	args = append(args, files...)
+	cmd := exec.CommandContext(ctx, tool, args...)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+	zw := gzip.NewWriter(w)
 	var stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = zw, &stderr
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return Meta{}, ctx.Err()
 		}
-		return fmt.Errorf("mysqldump failed: %s", tail(&stderr))
+		return Meta{}, fmt.Errorf("mysqlbinlog failed (the account needs REPLICATION SLAVE): %s", tail(&stderr))
 	}
-	return zw.Close()
+	return Meta{Position: endFile + ":" + endPos}, zw.Close()
 }
 
 // restoreMySQL replays a dump into the database. Unlike a PostgreSQL restore

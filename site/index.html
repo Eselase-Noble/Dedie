@@ -113,7 +113,7 @@
         <div class="card"><h3>Online migration</h3><p>Copy a consistent snapshot, follow the replication log to stay in step, and switch over in a write pause measured in seconds. Pause and resume at any point, at database, schema or table level.</p></div>
         <div class="card"><h3>Continuous sync</h3><p>Keep a second database following the first for as long as you like: a reporting copy on another engine, or MongoDB collections you can query in SQL.</p></div>
         <div class="card"><h3>Query browser</h3><p>Tabs, a SQL editor that knows your tables, explain plans, saved queries, and a grid built for wide and long results. Open a table and edit its rows in place.</p></div>
-        <div class="card"><h3>Backup and recovery</h3><p>Full, structure-only, data-only, single-table and physical backups, encrypted before they reach disk. Schedules take them, verify them and delete old ones. Restore into a new database or one table at a time.</p></div>
+        <div class="card"><h3>Backup and recovery</h3><p>Logical and physical backups, full, differential or incremental, written to the directory you choose, encrypted by default. Schedules take them, verify them and delete old ones. Restore a whole chain, into a new database, or one table at a time.</p></div>
         <div class="card"><h3>Monitoring and alerts</h3><p>Every database is checked each minute. Uptime, response time and migration lag on one page and in Prometheus, with alerts to Slack, a webhook or email.</p></div>
         <div class="card"><h3>Database users and connections</h3><p>Create database users, grant roles or a ready-made access level, cap connections per user or database, see which applications hold the connections, and disconnect them.</p></div>
         <div class="card"><h3>Server administration</h3><p>Who is connected and what they are running. Cancel a query, end a session, change who owns a database, schema or table, and spot replication slots that hold WAL.</p></div>
@@ -195,11 +195,12 @@
         <ul class="checks">
           <li><strong>Create users and roles</strong> with a generated password, read-only or read-write access, and role membership.</li>
           <li><strong>Limit connections</strong> per user or per database, so one application cannot exhaust the server.</li>
+          <li><strong>Keep connection pools in check.</strong> See which user is at its limit and close idle connections by hand, or let a rule close them automatically.</li>
           <li><strong>See who is connected</strong> by user, application and address, including sessions idle inside a transaction, and disconnect them.</li>
           <li><strong>Passwords stay private.</strong> PostgreSQL receives a SCRAM verifier, never the password, and Dedie does not store it.</li>
         </ul>
       </div>
-      <div class="shot"><img src="img/dbusers.png" alt="The Dedie database users page: connections in use against the server limit, users and roles with their privileges and limits, and limits per database." width="1500" height="863" loading="lazy"></div>
+      <div class="shot"><img src="img/dbusers.png" alt="The Dedie database users page: server connections by application, connection pools per user with a button to close idle connections, the rule for closing them automatically, and users with their privileges and limits." width="1500" height="1163" loading="lazy"></div>
     </div>
   </section>
 

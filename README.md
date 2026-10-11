@@ -39,7 +39,7 @@ Dedie moves a production database to a newer server version, or to a different d
 
 **Creating and owning objects.** Create a database, a schema or a table in any database on the server, and hand databases, schemas and tables to another role.
 
-**Backup and recovery.** Full, structure-only, data-only, selected-table and physical backups, compressed and encrypted before they reach disk. Schedules with retention take them automatically and verify each one. Restore into an existing database, into a new one, or one table at a time.
+**Backup and recovery.** Logical and physical backups at full, differential and incremental levels, compressed, encrypted by default, and stored in the directory you choose. Schedules with retention take them automatically and verify each one. Restore into an existing database, into a new one, or one table at a time.
 
 **Monitoring and alerts.** Every database is checked once a minute. Uptime, response time and migration lag are shown on one page and exported for Prometheus, and alerts go to Slack, a webhook or email.
 
@@ -56,8 +56,11 @@ Dedie moves a production database to a newer server version, or to a different d
 | Online version upgrade | Working (source 10+) | Working (source 5.6+) | — |
 | Query browser and schema explorer | Working | Working | Working (commands as JSON) |
 | Edit rows in the grid | Working | Working | — |
-| Backups: full, structure, data, selected tables | Working | Working | — |
+| Logical backups: whole database, structure, data, selected tables | Working | Working | — |
 | Physical backup of the whole server | Working | — | — |
+| Differential and incremental backups | Working (physical, 17+) | Working (logical, from the binary log) | — |
+| Backup storage locations, plain or encrypted files | Working | Working | — |
+| Connection pool view, manual and automatic closing of idle connections | Working | Working | — |
 | Scheduled backups with retention | Working | Working | — |
 | Health monitoring and alerts | Working | Working | Working |
 | Database users, roles, connection limits | Working | Working | — |
@@ -405,20 +408,46 @@ The target is filled, then every change on the source is applied to it for as lo
 
 ## Backups
 
-Backups are compressed, encrypted before they reach disk, and stored under `backups/` in the data directory with a SHA-256 of the encrypted file.
+Every backup is described by three things, and the Backups page shows all three for each one:
 
-| Type | Contains | PostgreSQL | MySQL |
-|---|---|---|---|
-| `full` | structure and data of the database | `pg_dump` custom format | `mysqldump`, gzip |
-| `schema` | structure only: tables, indexes, views, routines | yes | yes |
-| `data` | rows only, for a database that already has the structure | yes | yes |
-| `tables` | structure and data of the tables you choose | yes | yes |
-| `physical` | a copy of the server's data files, covering every database | `pg_basebackup`, needs the `REPLICATION` attribute | not available |
+- **Method**: *logical* or *physical*. A logical backup is a description of the data (`pg_dump`, `mysqldump`) that any server of the same kind can load, whole or a table at a time, into another database, server or newer version. A physical backup is a copy of the server's own data files (`pg_basebackup`): fast for large servers and restored as a whole server of the same major version.
+- **Level**: *full*, *differential* or *incremental*.
+- **Where it is stored**, and whether the file is encrypted.
+
+| Level | Holds | To restore you need |
+|---|---|---|
+| Full | everything | this backup |
+| Differential | what changed since the last full backup | the full backup and this one |
+| Incremental | what changed since the last backup of any level | the full backup and every backup after it, in order |
+
+Differential and incremental backups are available where the database can produce them reliably:
+
+| | Differential and incremental | Requirements |
+|---|---|---|
+| PostgreSQL, physical | yes, with `pg_basebackup --incremental` | PostgreSQL 17 or newer with `summarize_wal = on`, set before the full backup is taken |
+| PostgreSQL, logical | no: a logical PostgreSQL backup is always full | |
+| MySQL, logical, whole database | yes, as the binary log written since the backup they build on | binary logging on; the account needs `RELOAD`, `REPLICATION CLIENT` and `REPLICATION SLAVE` |
+| MySQL, structure-only, data-only or selected tables | no | |
+
+Dedie works out which backup a differential or incremental one builds on, restores the whole chain in order when you restore one, and refuses to delete a backup that later ones depend on.
+
+Backups are compressed and stored with a SHA-256 of the file.
+
+| `--type` | Method | Contains | PostgreSQL | MySQL |
+|---|---|---|---|---|
+| `full` | logical | structure and data of the database | `pg_dump` custom format | `mysqldump`, gzip |
+| `schema` | logical | structure only: tables, indexes, views, routines | yes | yes |
+| `data` | logical | rows only, for a database that already has the structure | yes | yes |
+| `tables` | logical | structure and data of the tables you choose | yes | yes |
+| `physical` | physical | a copy of the server's data files, covering every database | `pg_basebackup`, needs the `REPLICATION` attribute | not available |
 
 ```sh
 dedie backup create prod-18 --note "before release"
 dedie backup create prod-18 --type tables --tables public.orders,public.order_items
 dedie backup create prod-18 --type physical
+dedie backup create prod-18 --type physical --level incremental     # since the last backup
+dedie backup create prod-18 --type physical --level differential    # since the last full backup
+dedie backup create orders --level incremental                      # MySQL: from the binary log
 dedie backup list
 dedie backup verify <id>          # checksum matches and the whole archive decrypts
 dedie backup restore <id> --target staging --clean --confirm shop_staging
@@ -427,6 +456,23 @@ dedie backup restore <id> --target staging --new-database one_table --tables pub
 dedie backup export <id> shop.dump            # the decrypted archive, for use outside Dedie
 dedie backup extract <id> /var/lib/pg-recovered   # a physical backup, into an empty data directory
 ```
+
+### Where backups are stored
+
+By default backups are written to `backups/` in Dedie's data directory. An owner or admin can add **storage locations**: other directories on the machine that runs Dedie, such as a second disk or a mounted network share. Each backup, and each schedule, chooses its location, and the page shows the full path of every backup file with a button to copy it.
+
+```sh
+dedie backup location add --name nas --path /mnt/backups/dedie
+dedie backup location list
+dedie backup create prod-18 --location nas
+dedie backup create prod-18 --location nas --plain      # an unencrypted file in the database's own format
+```
+
+- Adding a location checks that Dedie can create and write to the directory. Only owners and admins can add one, because it decides where on the host Dedie writes files.
+- Files are named for what they are: `shop-20261011-020000-logical-full-1a2b3c4d.dediebak`.
+- **Encrypted (the default).** The file can only be read through Dedie: restore, download or `dedie backup export`.
+- **Plain.** With `--plain`, or the checkbox in the dialog, the file is written in the database's own format (`.dump`, `.sql.gz`, `.tar.gz`) and can be used straight from its path with `pg_restore`, `mysql` or `tar`. It is not encrypted; whoever can read the directory can read the data.
+- Removing a location leaves its directory and files as they are. A location that still holds backups cannot be removed.
 
 ### Schedules and retention
 
@@ -440,6 +486,8 @@ dedie backup schedule list
 
 - A backup is deleted as soon as it is beyond `--keep-last` or older than `--keep-days`. The newest backup is always kept, so a schedule never deletes its only good one.
 - A running `dedie-server` takes the backups. After downtime it takes one backup, not one for every slot it missed.
+- A schedule has a level and a location like any backup. A common arrangement is one schedule for a weekly full backup and another for daily incrementals. An incremental or differential schedule with no full backup to build on takes a full one on its first run.
+- A backup that later ones build on is kept until those have expired, whatever the retention rule says.
 - A failed scheduled backup raises an alert.
 - Backups taken by hand are never deleted by a schedule.
 
@@ -449,7 +497,8 @@ A restore verifies the file first and requires the name of the database being wr
 
 - **Into a new database.** The safest way to look inside a backup or recover one table: the database is created on the target server and restored into, and nothing existing is touched.
 - **Selected tables** can be restored from a PostgreSQL backup.
-- **Physical backups** are not restored into a running database. `dedie backup extract` unpacks one into an empty directory; start PostgreSQL of the same major version on that directory and the server comes back as it was when the backup was taken, with every database.
+- **Differential and incremental backups.** For MySQL, restoring one applies the full backup and then each later backup in order; the target database must have the same name as the source. Schema changes are captured when they were made while connected to that database, which is how applications and tools work; a statement that changed it from a session using a different default database is not in the binary log's view of it.
+- **Physical backups** are not restored into a running database. For a differential or incremental one, `dedie backup extract` unpacks the whole chain and combines it with `pg_combinebackup` into one complete data directory. `dedie backup extract` unpacks one into an empty directory; start PostgreSQL of the same major version on that directory and the server comes back as it was when the backup was taken, with every database.
 
 - **PostgreSQL** restores run in a single transaction, so a failure changes nothing. Ownership and privileges are left out unless `--keep-owners` is given, since the target server often has different roles.
 - **MySQL** restores replace tables of the same name and cannot be rolled back: MySQL commits at every schema statement, so a restore that fails part-way leaves the tables it had already replaced.
@@ -497,6 +546,9 @@ The Database users page manages accounts on the database server itself, as disti
 - **Change a user**: new password, enable or disable sign-in, grant or revoke roles, change the limit.
 - **Drop a user.** PostgreSQL refuses to drop a role that owns objects or holds privileges. The dialog offers to hand over what the role has in the connection's database first: its objects go to the connecting account and its privileges are revoked. No table or data is dropped.
 - **Connection limits** per user on both engines, and per database on PostgreSQL.
+- **Connection pools.** For every connected user: how much of its limit it is using, with users at or near their limit flagged, and how many of its connections are active, idle, or idle inside a transaction.
+- **Close idle connections by hand.** For one user or the whole server, close connections idle longer than a number of minutes. Connections running a statement are never touched. On PostgreSQL you can also close those idle inside a transaction, which rolls their uncommitted work back.
+- **Close idle connections automatically.** A rule per server, applied every minute: close connections idle for more than N minutes, optionally only while the server is above a chosen fullness, with users that must never be disconnected. Dedie's own sessions and those of the connection's own account are always spared. Each pass that closes something is recorded in the audit log.
 - **Connections in use**: how close the server is to its limit, and who is holding connections, grouped by user, application, client address and database, with how many are active, idle, or idle inside a transaction.
 - **Disconnect** the sessions of a user, an application or a whole database.
 
@@ -557,9 +609,9 @@ Everything the interface and the remote CLI do goes through a JSON API under `/a
 | Objects | `POST /connections/{id}/databases`, `POST /connections/{id}/schemas`, `POST /connections/{id}/tables`, `GET /connections/{id}/server-objects`, `POST /connections/{id}/owner` |
 | Query | `GET /connections/{id}/catalog`, `POST /connections/{id}/query`, `POST /connections/{id}/rows`, `GET/POST /queries`, `PUT/DELETE /queries/{id}` |
 | Server console | `GET /connections/{id}/overview`, `POST /connections/{id}/backends/{pid}/cancel` |
-| Database users | `GET/POST /connections/{id}/accounts`, `DELETE /connections/{id}/accounts/{user}`, `POST /connections/{id}/connection-limit`, `POST /connections/{id}/sessions/terminate` |
+| Database users | `GET/POST /connections/{id}/accounts`, `DELETE /connections/{id}/accounts/{user}`, `POST /connections/{id}/connection-limit`, `POST /connections/{id}/sessions/terminate`, `GET/PUT /connections/{id}/idle-policy` |
 | Migrations | `GET/POST /migrations`, `GET /migrations/{id}`, `POST /migrations/{id}/preflight`, `POST /migrations/{id}/actions/{start,pause,resume,cutover,abort,delete}` |
-| Backups | `GET/POST /backups`, `DELETE /backups/{id}`, `POST /backups/{id}/verify`, `POST /backups/{id}/restore`, `GET /backups/{id}/download`, `GET /restores`, `GET/POST /schedules`, `PUT/DELETE /schedules/{id}`, `POST /schedules/{id}/run` |
+| Backups | `GET/POST /backups`, `DELETE /backups/{id}`, `POST /backups/{id}/verify`, `POST /backups/{id}/restore`, `GET /backups/{id}/download`, `GET /restores`, `GET/POST /schedules`, `PUT/DELETE /schedules/{id}`, `POST /schedules/{id}/run`, `GET/POST /backup-locations`, `DELETE /backup-locations/{id}` |
 | Monitoring | `GET /monitoring`, `GET /alerts/events`, `GET/POST /alerts/channels`, `PUT/DELETE /alerts/channels/{id}`, `POST /alerts/channels/{id}/test` |
 | Audit | `GET /audit`, `GET /audit/verify` |
 
@@ -675,13 +727,14 @@ What the data directory holds:
 |---|---|
 | `dedie.db` | organizations, users, sessions, API token hashes, connections (passwords encrypted), jobs, schedules, saved queries, alert channels (settings encrypted), health checks, audit log |
 | `master.key` | the master key, unless `DEDIE_MASTER_KEY` is set |
-| `backups/` | encrypted backup files |
+| `backups/` | backup files, unless another storage location is chosen |
 | `desktop/` | the desktop window's local preferences |
 | `desktop.log` | the engine's log when run by the desktop application |
 
 ## Roadmap
 
 1. **Point-in-time recovery** for PostgreSQL: continuous WAL archiving on top of physical backups, and recovery to a chosen moment.
+1. **Physical backups for MySQL**, and incremental backups that do not depend on the binary log being retained.
 2. **Two-way sync** between two databases, with conflict handling.
 3. **Typed columns for MongoDB**: a reviewed mapping that lifts chosen document fields into columns beside `doc`.
 4. **Backup storage outside the server**: S3-compatible object storage, and backups of MongoDB.

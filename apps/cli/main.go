@@ -52,8 +52,10 @@ Migrations
   migrate pause|resume|cutover|abort <id>
 
 Backups
-  backup create <connection>   take an encrypted backup (--type full, schema,
-                               data, tables or physical)
+  backup create <connection>   take a backup: --type full, schema, data, tables
+                               (logical) or physical; --level full,
+                               differential or incremental; --location <name>;
+                               --plain for an unencrypted file
   backup list                  list backups
   backup verify <id>           check integrity of a backup file
   backup restore <id>          restore into a connection or a new database
@@ -61,6 +63,7 @@ Backups
   backup extract <id> <dir>    unpack a physical backup into a data directory
   backup rm <id>               delete a backup
   backup schedule add|list|rm  recurring backups with retention
+  backup location add|list|rm  directories backups may be written to
 
 Audit
   audit list                   show recent audit entries
@@ -194,6 +197,19 @@ func (c *cli) dispatch(args []string) error {
 			return c.backupExport(rest)
 		case "extract":
 			return c.backupExtract(rest)
+		case "location":
+			action := ""
+			if len(rest) > 0 {
+				action, rest = rest[0], rest[1:]
+			}
+			switch action {
+			case "add":
+				return c.locationAdd(rest)
+			case "list":
+				return c.locationList()
+			case "rm":
+				return c.locationRemove(rest)
+			}
 		case "schedule":
 			action := ""
 			if len(rest) > 0 {

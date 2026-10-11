@@ -43,6 +43,12 @@ type backend interface {
 	ExportBackup(id string) (io.ReadCloser, string, error)
 	ExtractBackup(id, dir string) (int, error)
 
+	// ListLocations returns the default backup directory and the
+	// locations added besides it.
+	ListLocations() (string, []store.Location, error)
+	CreateLocation(name, path string) (store.Location, error)
+	DeleteLocation(name string) error
+
 	SaveSchedule(id string, in app.ScheduleInput) (store.Schedule, error)
 	ListSchedules() ([]store.Schedule, error)
 	DeleteSchedule(id string) error
@@ -109,6 +115,14 @@ func (l *local) ExportBackup(id string) (io.ReadCloser, string, error) {
 func (l *local) ExtractBackup(id, dir string) (int, error) {
 	return l.app.ExtractBackup(l.ctx, l.actor, id, dir)
 }
+func (l *local) ListLocations() (string, []store.Location, error) {
+	list, err := l.app.ListLocations(l.ctx, l.actor)
+	return l.app.DefaultLocation(), list, err
+}
+func (l *local) CreateLocation(name, path string) (store.Location, error) {
+	return l.app.CreateLocation(l.ctx, l.actor, name, path)
+}
+func (l *local) DeleteLocation(name string) error { return l.app.DeleteLocation(l.ctx, l.actor, name) }
 func (l *local) SaveSchedule(id string, in app.ScheduleInput) (store.Schedule, error) {
 	return l.app.SaveSchedule(l.ctx, l.actor, id, in)
 }

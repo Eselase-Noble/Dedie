@@ -390,3 +390,5 @@ a.btn.primary { color: #fff; }
 .pool { display: flex; align-items: center; gap: 10px; }
 .pool .progress { flex: 1; min-width: 90px; }
 .pool .progress.done > span { background: var(--danger); }
+.link-btn.path { font-family: var(--mono); font-size: 12px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; text-align: left; }
+.segmented button:disabled { color: var(--text-faint); cursor: not-allowed; background: var(--bg-subtle); }

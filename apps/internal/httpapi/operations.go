@@ -95,6 +95,41 @@ func (s *Server) downloadBackup(w http.ResponseWriter, r *http.Request, actor ap
 	io.Copy(w, src)
 }
 
+// --- backup locations ---
+
+func (s *Server) listLocations(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	list, err := s.app.ListLocations(r.Context(), actor)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"default_path": s.app.DefaultLocation(), "locations": list})
+}
+
+func (s *Server) createLocation(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	var in struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	l, err := s.app.CreateLocation(r.Context(), actor, in.Name, in.Path)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, l)
+}
+
+func (s *Server) deleteLocation(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	if err := s.app.DeleteLocation(r.Context(), actor, r.PathValue("id")); err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // --- backup schedules ---
 
 func (s *Server) listSchedules(w http.ResponseWriter, r *http.Request, actor app.Actor) {

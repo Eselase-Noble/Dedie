@@ -93,6 +93,16 @@ CREATE TABLE IF NOT EXISTS connection_grants (
   connection_id TEXT NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   PRIMARY KEY (connection_id, user_id));
+CREATE TABLE IF NOT EXISTS idle_policies (
+  connection_id TEXT PRIMARY KEY REFERENCES connections(id) ON DELETE CASCADE, org_id TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 0, idle_minutes INTEGER NOT NULL DEFAULT 30, tx_minutes INTEGER NOT NULL DEFAULT 0,
+  min_usage_percent INTEGER NOT NULL DEFAULT 0, exclude_users TEXT NOT NULL DEFAULT '[]',
+  last_run_at TEXT NOT NULL DEFAULT '', last_closed INTEGER NOT NULL DEFAULT 0, total_closed INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '', updated_by TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS backup_locations (
+  id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id),
+  name TEXT NOT NULL, path TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+  UNIQUE(org_id, name));
 CREATE TABLE IF NOT EXISTS saved_queries (
   id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id),
   user_id TEXT NOT NULL, owner TEXT NOT NULL, name TEXT NOT NULL, sql TEXT NOT NULL,
@@ -123,6 +133,14 @@ var columns = []struct{ table, name, def string }{
 	{"backups", "schedule_id", "TEXT NOT NULL DEFAULT ''"},
 	{"backups", "verified_at", "TEXT NOT NULL DEFAULT ''"},
 	{"restores", "database", "TEXT NOT NULL DEFAULT ''"},
+	{"backups", "level", "TEXT NOT NULL DEFAULT 'full'"},
+	{"backups", "parent_id", "TEXT NOT NULL DEFAULT ''"},
+	{"backups", "position", "TEXT NOT NULL DEFAULT ''"},
+	{"backups", "encrypted", "INTEGER NOT NULL DEFAULT 1"},
+	{"backups", "location_id", "TEXT NOT NULL DEFAULT ''"},
+	{"backup_schedules", "level", "TEXT NOT NULL DEFAULT 'full'"},
+	{"backup_schedules", "location_id", "TEXT NOT NULL DEFAULT ''"},
+	{"backup_schedules", "encrypted", "INTEGER NOT NULL DEFAULT 1"},
 	{"users", "totp_secret_enc", "BLOB"},
 	{"users", "totp_enabled", "INTEGER NOT NULL DEFAULT 0"},
 	{"users", "recovery_codes", "TEXT NOT NULL DEFAULT '[]'"},

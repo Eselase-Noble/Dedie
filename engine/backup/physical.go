@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -20,13 +21,23 @@ import (
 // includes the write-ahead log written during the copy, so it starts as a
 // consistent server on its own. It covers every database of the server and
 // needs an account with the REPLICATION attribute.
-func baseBackup(ctx context.Context, cfg connector.Config, w io.Writer) error {
-	path, err := findTool("pg_basebackup", 0)
+//
+// With manifest set, only the blocks changed since the backup that manifest
+// belongs to are written. That needs PostgreSQL 17 or newer with
+// summarize_wal on, and the result is usable only together with the
+// backups it builds on.
+func baseBackup(ctx context.Context, cfg connector.Config, manifest string, w io.Writer) error {
+	minMajor := 0
+	args := []string{"--pgdata=-", "--format=tar", "--wal-method=fetch", "--checkpoint=fast", "--no-password", "--label=dedie"}
+	if manifest != "" {
+		minMajor = 17
+		args = append(args, "--incremental="+manifest)
+	}
+	path, err := findTool("pg_basebackup", minMajor)
 	if err != nil {
 		return err
 	}
-	cmd, cleanup, err := pgCommand(ctx, path, cfg, "--pgdata=-", "--format=tar", "--wal-method=fetch",
-		"--checkpoint=fast", "--no-password", "--label=dedie")
+	cmd, cleanup, err := pgCommand(ctx, path, cfg, args...)
 	if err != nil {
 		return err
 	}
@@ -38,9 +49,56 @@ func baseBackup(ctx context.Context, cfg connector.Config, w io.Writer) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return fmt.Errorf("pg_basebackup failed: %s", tail(&stderr))
+		msg := tail(&stderr)
+		if manifest != "" && (strings.Contains(msg, "summariz") || strings.Contains(msg, "incremental")) {
+			msg += ". Differential and incremental backups need PostgreSQL 17 or newer with summarize_wal = on, set before the full backup was taken"
+		}
+		return fmt.Errorf("pg_basebackup failed: %s", msg)
 	}
 	return zw.Close()
+}
+
+// ExtractManifest copies the backup manifest out of a physical backup
+// read from r. The next differential or incremental backup is taken
+// against it.
+func ExtractManifest(r io.Reader, w io.Writer) error {
+	zr, err := gzip.NewReader(r)
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return errors.New("the backup holds no manifest, so nothing can be built on it")
+		}
+		if err != nil {
+			return err
+		}
+		if filepath.Clean(hdr.Name) == "backup_manifest" {
+			_, err := io.Copy(w, tr)
+			return err
+		}
+	}
+}
+
+// CombineBackups rebuilds a complete data directory in out from a full
+// backup and the differential or incremental backups taken after it, each
+// already extracted into its own directory and given oldest first.
+func CombineBackups(ctx context.Context, dirs []string, out string) error {
+	path, err := findTool("pg_combinebackup", 17)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, path, append(append([]string{}, dirs...), "--output="+out)...)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("pg_combinebackup failed: %s", tail(&stderr))
+	}
+	return os.Chmod(out, 0o700)
 }
 
 // ExtractPhysical unpacks a physical backup read from r into dir, which

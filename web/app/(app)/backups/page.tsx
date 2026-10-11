@@ -2,26 +2,27 @@
 
 import { Fragment, useState } from "react";
 import { api, errorMessage } from "@/lib/api";
-import { desktop } from "@/lib/desktop";
+import { copyText, desktop } from "@/lib/desktop";
 import { formatBytes, formatTime } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 import type { Backup } from "@/lib/types";
 import { useSession } from "@/components/session";
-import { Banner, ConfirmDialog, Loading, PageHeader, StatusBadge } from "@/components/ui";
+import { Badge, Banner, ConfirmDialog, Loading, PageHeader, StatusBadge } from "@/components/ui";
 import CreateBackup from "@/components/backups/CreateBackup";
 import RestoreDialog from "@/components/backups/RestoreDialog";
 import Schedules from "@/components/backups/Schedules";
-import { typeLabel } from "@/components/backups/options";
+import Locations from "@/components/backups/Locations";
+import { METHODS, levelLabel, methodOf, typeLabel } from "@/components/backups/options";
 
 export default function BackupsPage() {
   const { can } = useSession();
   const mayRestore = can("backups.restore");
   const { data, error, loading, reload } = useLoad(
     async () => {
-      const [backups, restores, schedules, connections] = await Promise.all([
-        api.backups(), api.restores(), api.schedules(), can("connections.view") ? api.connections() : [],
+      const [backups, restores, schedules, locations, connections] = await Promise.all([
+        api.backups(), api.restores(), api.schedules(), api.backupLocations(), can("connections.view") ? api.connections() : [],
       ]);
-      return { backups, restores, schedules, connections };
+      return { backups, restores, schedules, locations, connections };
     },
     [],
     2000,
@@ -50,6 +51,11 @@ export default function BackupsPage() {
     }
   };
 
+  const baseLabel = (id: string) => {
+    const b = data?.backups.find((x) => x.id === id);
+    return b ? `${levelLabel(b.level).toLowerCase()} of ${formatTime(b.created_at)}` : "a deleted backup";
+  };
+
   const backupLabel = (id: string) => {
     const b = data?.backups.find((x) => x.id === id);
     return b ? `${b.database} (${formatTime(b.created_at)})` : id;
@@ -57,7 +63,7 @@ export default function BackupsPage() {
 
   return (
     <div className="content">
-      <PageHeader title="Backups" subtitle="Encrypted backups on demand or on a schedule, with retention, verification and restore.">
+      <PageHeader title="Backups" subtitle="Logical and physical backups, full, differential or incremental, on demand or on a schedule, stored where you choose.">
         <button className="btn primary" onClick={() => setCreating(true)}>Create backup</button>
       </PageHeader>
       {error && <Banner tone="error">{error}</Banner>}
@@ -72,8 +78,8 @@ export default function BackupsPage() {
             <table className="data">
               <thead>
                 <tr>
-                  <th>Connection</th><th>Database</th><th>Type</th><th>Status</th><th className="num">Size</th>
-                  <th>Verified</th><th>Created</th><th />
+                  <th>Connection</th><th>Database</th><th>Method</th><th>Level</th><th>Status</th><th className="num">Size</th>
+                  <th>File</th><th>Verified</th><th>Created</th><th />
                 </tr>
               </thead>
               <tbody>
@@ -82,14 +88,26 @@ export default function BackupsPage() {
                     <td>{b.connection_name}{b.note && <div className="muted">{b.note}</div>}</td>
                     <td>{b.database}</td>
                     <td title={b.tables.join(", ")}>
-                      {typeLabel(b.type)}
-                      {b.type === "tables" && <div className="muted">{b.tables.length} table{b.tables.length === 1 ? "" : "s"}</div>}
+                      {METHODS[methodOf(b.type)].label}
+                      <div className="muted">{typeLabel(b.type)}{b.type === "tables" && ` (${b.tables.length})`}</div>
+                    </td>
+                    <td>
+                      <Badge tone={b.level === "full" ? "info" : ""}>{levelLabel(b.level)}</Badge>
+                      {b.parent_id && <div className="muted nowrap" title="The backup this one builds on. Both are needed to restore.">on {baseLabel(b.parent_id)}</div>}
                     </td>
                     <td>
                       <StatusBadge status={b.status} />
                       {b.error && <div className="pre-line" style={{ color: "var(--danger)", minWidth: 260, maxWidth: 420 }}>{b.error}</div>}
                     </td>
                     <td className="num">{b.status === "completed" ? formatBytes(b.size_bytes) : "—"}</td>
+                    <td>
+                      {b.path && (
+                        <button className="link-btn path" title={`${b.path}\nClick to copy the path`} onClick={() => copyText(b.path)}>
+                          {b.path.split(/[\\/]/).pop()}
+                        </button>
+                      )}
+                      <div className="muted">{b.encrypted ? "encrypted" : "plain file"}</div>
+                    </td>
                     <td className="nowrap muted" title={b.sha256 ? `SHA-256 ${b.sha256}` : ""}>{formatTime(b.verified_at)}</td>
                     <td className="nowrap muted">{formatTime(b.created_at)}<div>{b.created_by}</div></td>
                     <td>
@@ -124,7 +142,8 @@ export default function BackupsPage() {
         </div>
       </div>
 
-      {data && <Schedules schedules={data.schedules} connections={data.connections} mayManage={mayRestore} reload={reload} />}
+      {data && <Schedules schedules={data.schedules} connections={data.connections} locations={data.locations} mayManage={mayRestore} reload={reload} />}
+      {data && <Locations locations={data.locations} mayManage={can("users.manage")} reload={reload} />}
 
       <div className="card">
         <div className="card-head"><h2>Restore history</h2></div>
@@ -170,7 +189,7 @@ export default function BackupsPage() {
         </div>
       </div>
 
-      {creating && data && <CreateBackup connections={data.connections} onClose={() => setCreating(false)} onDone={reload} />}
+      {creating && data && <CreateBackup connections={data.connections} locations={data.locations} onClose={() => setCreating(false)} onDone={reload} />}
       {restoring && data && (
         <RestoreDialog backup={restoring} connections={data.connections} onClose={() => setRestoring(null)} onDone={reload} />
       )}

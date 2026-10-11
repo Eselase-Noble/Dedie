@@ -3,10 +3,10 @@
 import { useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
 import { formatTime } from "@/lib/format";
-import type { BackupType, Connection, Schedule } from "@/lib/types";
+import type { BackupLocations, Connection, Schedule } from "@/lib/types";
 import { Banner, Checkbox, ConfirmDialog, Field, Modal, StatusBadge } from "@/components/ui";
-import TablePicker from "./TablePicker";
-import { typeLabel, typeOptions } from "./options";
+import BackupOptions, { type BackupChoice } from "./BackupOptions";
+import { METHODS, levelLabel, methodOf, typeLabel } from "./options";
 
 const PRESETS = [
   { label: "Every hour", cron: "0 * * * *" },
@@ -21,14 +21,16 @@ function describe(cron: string): string {
   return PRESETS.find((p) => p.cron === cron)?.label ?? cron;
 }
 
-function ScheduleForm({ schedule, connections, onClose, onDone }: {
-  schedule: Schedule | null; connections: Connection[]; onClose: () => void; onDone: () => void;
+function ScheduleForm({ schedule, connections, locations, onClose, onDone }: {
+  schedule: Schedule | null; connections: Connection[]; locations: BackupLocations | null; onClose: () => void; onDone: () => void;
 }) {
   const candidates = connections.filter((c) => c.kind === "postgres" || c.kind === "mysql");
   const [name, setName] = useState(schedule?.name ?? "");
   const [connId, setConnId] = useState(schedule?.connection_id ?? candidates[0]?.id ?? "");
-  const [type, setType] = useState<BackupType>(schedule?.type ?? "full");
-  const [tables, setTables] = useState<string[]>(schedule?.tables ?? []);
+  const [choice, setChoice] = useState<BackupChoice>({
+    type: schedule?.type ?? "full", level: schedule?.level ?? "full", tables: schedule?.tables ?? [],
+    locationId: schedule?.location_id ?? "", plain: schedule ? !schedule.encrypted : false,
+  });
   const [cron, setCron] = useState(schedule?.cron ?? "0 2 * * *");
   const [keepLast, setKeepLast] = useState(schedule?.keep_last ?? 7);
   const [keepDays, setKeepDays] = useState(schedule?.keep_days ?? 0);
@@ -38,7 +40,6 @@ function ScheduleForm({ schedule, connections, onClose, onDone }: {
   const [error, setError] = useState("");
 
   const connection = candidates.find((c) => c.id === connId) ?? null;
-  const options = typeOptions(connection?.kind ?? "");
   const preset = PRESETS.some((p) => p.cron === cron) ? cron : "custom";
 
   const submit = async (e: FormEvent) => {
@@ -47,7 +48,8 @@ function ScheduleForm({ schedule, connections, onClose, onDone }: {
     setError("");
     try {
       await api.saveSchedule(schedule?.id ?? "", {
-        name, connection_id: connId, type, tables: type === "tables" ? tables : [], cron,
+        name, connection_id: connId, type: choice.type, tables: choice.type === "tables" ? choice.tables : [],
+        level: choice.level, location_id: choice.locationId, plain: choice.plain, cron,
         keep_last: keepLast, keep_days: keepDays, verify, enabled,
       });
       onDone();
@@ -62,7 +64,7 @@ function ScheduleForm({ schedule, connections, onClose, onDone }: {
     <Modal title={schedule ? "Edit schedule" : "New backup schedule"} onClose={onClose} footer={
       <>
         <button className="btn" type="button" onClick={onClose} disabled={busy}>Cancel</button>
-        <button className="btn primary" type="submit" form="schedule-form" disabled={busy || !connId || (type === "tables" && tables.length === 0)}>
+        <button className="btn primary" type="submit" form="schedule-form" disabled={busy || !connId || (choice.type === "tables" && choice.tables.length === 0)}>
           {busy ? "Saving…" : "Save schedule"}
         </button>
       </>
@@ -72,20 +74,19 @@ function ScheduleForm({ schedule, connections, onClose, onDone }: {
         <Field label="Name">
           <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Nightly orders database" required maxLength={80} />
         </Field>
-        <div className="form-row">
-          <Field label="Connection">
-            <select className="select" value={connId} onChange={(e) => { setConnId(e.target.value); setTables([]); }} required>
-              {candidates.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.database})</option>)}
-            </select>
-          </Field>
-          <Field label="What to back up">
-            <select className="select" value={type} onChange={(e) => setType(e.target.value as BackupType)}>
-              {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          </Field>
-        </div>
-        {type === "tables" && connection && (
-          <Field label="Tables"><TablePicker connection={connection} selected={tables} onChange={setTables} /></Field>
+        <Field label="Connection">
+          <select className="select" value={connId} required
+            onChange={(e) => { setConnId(e.target.value); setChoice({ ...choice, type: "full", level: "full", tables: [] }); }}>
+            {candidates.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.database})</option>)}
+          </select>
+        </Field>
+        <BackupOptions connection={connection} locations={locations} value={choice} onChange={setChoice} />
+        {choice.level !== "full" && (
+          <Banner tone="info">
+            A {choice.level} schedule builds on the newest full backup of this connection. Pair it with a schedule that
+            takes full backups, for example weekly; if there is none yet, the first run takes a full backup itself.
+            A backup that later ones build on is kept until they have expired.
+          </Banner>
         )}
         <div className="form-row">
           <Field label="When">
@@ -118,8 +119,8 @@ function ScheduleForm({ schedule, connections, onClose, onDone }: {
 }
 
 /** The card that lists backup schedules and lets them be managed. */
-export default function Schedules({ schedules, connections, mayManage, reload }: {
-  schedules: Schedule[]; connections: Connection[]; mayManage: boolean; reload: () => Promise<void>;
+export default function Schedules({ schedules, connections, locations, mayManage, reload }: {
+  schedules: Schedule[]; connections: Connection[]; locations: BackupLocations | null; mayManage: boolean; reload: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState<Schedule | "new" | null>(null);
   const [deleting, setDeleting] = useState<Schedule | null>(null);
@@ -156,7 +157,7 @@ export default function Schedules({ schedules, connections, mayManage, reload }:
                 <tr key={s.id}>
                   <td>{s.name}{!s.enabled && <div className="muted">disabled</div>}</td>
                   <td>{connName(s.connection_id)}</td>
-                  <td>{typeLabel(s.type)}</td>
+                  <td>{METHODS[methodOf(s.type)].label} · {levelLabel(s.level)}<div className="muted">{typeLabel(s.type)}</div></td>
                   <td title={s.cron}>{describe(s.cron)}</td>
                   <td>
                     {s.keep_last === 0 && s.keep_days === 0 ? "Keep all" : [
@@ -183,7 +184,7 @@ export default function Schedules({ schedules, connections, mayManage, reload }:
         )}
       </div>
       {editing && (
-        <ScheduleForm schedule={editing === "new" ? null : editing} connections={connections}
+        <ScheduleForm schedule={editing === "new" ? null : editing} connections={connections} locations={locations}
           onClose={() => setEditing(null)} onDone={reload} />
       )}
       {deleting && (

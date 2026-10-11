@@ -5,6 +5,7 @@ import { api, errorMessage } from "@/lib/api";
 import { formatDuration } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 import type { ConnectionUsage, DbAccount, SessionFilter } from "@/lib/types";
+import IdleRule from "@/components/dbusers/IdleRule";
 import Pools from "@/components/dbusers/Pools";
 import UserForm from "@/components/dbusers/UserForm";
 import { Badge, Banner, Checkbox, ConfirmDialog, Field, Loading, Modal, PageHeader, Progress } from "@/components/ui";
@@ -153,6 +154,7 @@ export default function DatabaseUsersPage() {
           </div>
 
           <Pools connection={connection} data={data} readOnly={readOnly} onDone={(m) => void done(m)} />
+          <IdleRule connection={connection} readOnly={readOnly} />
 
           <div className="card">
             <div className="card-head"><h2>Users and roles</h2><span className="muted">{data.accounts.length}</span></div>
