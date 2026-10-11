@@ -783,3 +783,268 @@ func (e *eventReporter) Event(level, msg string) {
 	e.on(msg)
 	e.memReporter.Event(level, msg)
 }
+
+// previewLine writes one statement of a preview for comparison.
+func previewLine(s migrate.Statement) string { return s.Phase + " | " + s.Kind + " | " + s.Name }
+
+// findStatement returns the previewed statement of that kind and name.
+func findStatement(t *testing.T, list []migrate.Statement, kind, name string) migrate.Statement {
+	t.Helper()
+	for _, s := range list {
+		if s.Kind == kind && s.Name == name {
+			return s
+		}
+	}
+	t.Fatalf("the preview has no %s %s", kind, name)
+	return migrate.Statement{}
+}
+
+// checkPhaseOrder fails unless the statements come phase by phase, in the
+// order a job moves through the phases, each complete and unterminated.
+func checkPhaseOrder(t *testing.T, list []migrate.Statement) {
+	t.Helper()
+	order := map[string]int{migrate.PhaseSchema: 1, migrate.PhaseIndexing: 2, migrate.PhaseCutover: 3}
+	last := 0
+	for _, s := range list {
+		n := order[s.Phase]
+		if n == 0 || n < last {
+			t.Errorf("%s: out of phase order", previewLine(s))
+		}
+		last = n
+		if s.Kind == "" || s.Name == "" || strings.TrimSpace(s.SQL) == "" || strings.HasSuffix(strings.TrimSpace(s.SQL), ";") {
+			t.Errorf("%s: incomplete or terminated statement %q", previewLine(s), s.SQL)
+		}
+	}
+}
+
+// TestMigrationPreview reads the statements of a migration before it is
+// started. A preview must be the real script, so the test runs it, as it
+// is, against the target; and it must be only a preview, so both databases
+// are compared with what they were before.
+func TestMigrationPreview(t *testing.T) {
+	var _ migrate.Previewer = pipeline{}
+	srcCfg, dstCfg := testConfig(t, "DEDIE_TEST_MYSQL_SOURCE"), testConfig(t, "DEDIE_TEST_MYSQL_TARGET")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	db := fmt.Sprintf("dedie_test_%d", time.Now().UnixNano())
+	for _, admin := range []connector.Config{srcCfg, dstCfg} {
+		c, err := mysql.Open(ctx, admin, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.ExecContext(ctx, "CREATE DATABASE "+db+" CHARACTER SET utf8mb4"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			c.Exec("DROP DATABASE IF EXISTS " + db)
+			c.Close()
+		})
+	}
+	srcCfg.Database, dstCfg.Database = db, db
+	fresh := map[string]string{"information_schema_stats_expiry": "0"}
+	src, err := mysql.Open(ctx, srcCfg, fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	setup, err := src.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range append(fixture[:len(fixture):len(fixture)],
+		`CREATE FUNCTION twice(x INT) RETURNS INT DETERMINISTIC NO SQL RETURN x * 2`,
+		`CREATE EVENT prune ON SCHEDULE EVERY 1 DAY DISABLE DO DELETE FROM change_log WHERE id < 0`) {
+		if _, err := setup.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("fixture: %v\n%s", err, stmt)
+		}
+	}
+	setup.Close()
+	// A job creates the tables on a session that does not check foreign
+	// keys, because they refer to each other in any order; the script is
+	// run on one like it.
+	dst, err := mysql.Open(ctx, dstCfg, targetParams(map[string]string{"foreign_key_checks": "0", "information_schema_stats_expiry": "0"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close()
+
+	// The objects of a database, each with its definition.
+	shape := func(conn *sql.DB) string {
+		t.Helper()
+		rows, err := QueryStrings(ctx, conn, `SELECT CONCAT(table_type, ' ', table_name) FROM information_schema.tables
+				WHERE table_schema = DATABASE() AND table_name NOT IN ('scratch', 'legacy_counters')
+			UNION ALL SELECT CONCAT('column ', table_name, '.', column_name, ' ', column_type, ' ', is_nullable, ' ', extra) FROM information_schema.columns
+				WHERE table_schema = DATABASE() AND table_name NOT IN ('scratch', 'legacy_counters')
+			UNION ALL SELECT CONCAT('index ', table_name, '.', index_name, ' ', column_name) FROM information_schema.statistics
+				WHERE table_schema = DATABASE() AND table_name NOT IN ('scratch', 'legacy_counters')
+			UNION ALL SELECT CONCAT(constraint_type, ' ', table_name, '.', constraint_name) FROM information_schema.table_constraints
+				WHERE constraint_schema = DATABASE() AND table_name NOT IN ('scratch', 'legacy_counters')
+			UNION ALL SELECT CONCAT(routine_type, ' ', routine_name, ' ', routine_definition) FROM information_schema.routines WHERE routine_schema = DATABASE()
+			UNION ALL SELECT CONCAT('trigger ', trigger_name, ' on ', event_object_table, ' ', action_statement) FROM information_schema.triggers WHERE trigger_schema = DATABASE()
+			UNION ALL SELECT CONCAT('event ', event_name, ' ', status, ' ', event_definition) FROM information_schema.events WHERE event_schema = DATABASE()
+			ORDER BY 1`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := make([]string, len(rows))
+		for i, r := range rows {
+			lines[i] = r[0]
+		}
+		return strings.Join(lines, "\n")
+	}
+	// The source's own tables are left out of shape; count them all here.
+	tables := func(conn *sql.DB) string {
+		t.Helper()
+		var n string
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	srcBefore, dstBefore := shape(src)+tables(src), shape(dst)+tables(dst)
+	if dstBefore != "0" {
+		t.Fatalf("the target is not empty:\n%s", dstBefore)
+	}
+	unchanged := func(when string) {
+		t.Helper()
+		if got := shape(src) + tables(src); got != srcBefore {
+			t.Errorf("%s changed the source:\nbefore %s\nafter  %s", when, srcBefore, got)
+		}
+		if got := shape(dst) + tables(dst); got != dstBefore {
+			t.Errorf("%s changed the target:\nbefore %s\nafter  %s", when, dstBefore, got)
+		}
+	}
+
+	cfg := migrate.Config{ExcludeTables: []string{"scratch"}}
+	list, err := pipeline{}.Preview(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged("the preview")
+	var lines []string
+	for _, s := range list {
+		lines = append(lines, previewLine(s))
+	}
+	// Tables carry their indexes and foreign keys; views and routines
+	// follow the copy; triggers and events wait for cutover.
+	want := []string{
+		"schema | table | change_log", "schema | table | customers", "schema | table | events", "schema | table | invoices",
+		"indexing | view | customer_totals", "indexing | procedure | touch", "indexing | function | twice",
+		"cutover | trigger | customers_log", "cutover | event | prune",
+	}
+	if got := strings.Join(lines, "\n"); got != strings.Join(want, "\n") {
+		t.Errorf("preview:\n got:\n%s\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+	checkPhaseOrder(t, list)
+	customers := findStatement(t, list, "table", "customers").SQL
+	for _, part := range []string{"CREATE TABLE `customers` (", "`id` int unsigned NOT NULL AUTO_INCREMENT", "`feeling` enum('sad','ok','happy') DEFAULT 'ok'",
+		"`legacy_name` varchar(100) CHARACTER SET latin1", "KEY `name_idx` (`name`)", "ENGINE=InnoDB"} {
+		if !strings.Contains(customers, part) {
+			t.Errorf("CREATE TABLE of customers lacks %q:\n%s", part, customers)
+		}
+	}
+	if s := findStatement(t, list, "table", "invoices").SQL; !strings.Contains(s,
+		"CONSTRAINT `invoices_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE CASCADE ON UPDATE CASCADE") {
+		t.Errorf("CREATE TABLE of invoices:\n%s", s)
+	}
+	// Definitions lose their DEFINER, which the target may not have.
+	for _, exact := range []struct{ kind, name, sql string }{
+		{"procedure", "touch", "CREATE PROCEDURE `touch`(IN cid INT)\nUPDATE customers SET seen = NOW() WHERE id = cid"},
+		{"trigger", "customers_log", "CREATE TRIGGER `customers_log` AFTER INSERT ON `customers` FOR EACH ROW INSERT INTO change_log (note) VALUES (CONCAT('insert ', NEW.id))"},
+	} {
+		if s := findStatement(t, list, exact.kind, exact.name); s.SQL != exact.sql {
+			t.Errorf("%s %s:\n got %s\nwant %s", exact.kind, exact.name, s.SQL, exact.sql)
+		}
+	}
+	for _, s := range list {
+		if strings.Contains(s.SQL, "DEFINER=") && !strings.Contains(s.SQL, "SQL SECURITY DEFINER") || strings.Contains(s.SQL, db) {
+			t.Errorf("%s is not portable:\n%s", previewLine(s), s.SQL)
+		}
+	}
+
+	// A table-level job moves the tables and their triggers only.
+	scoped, err := Preview(ctx, srcCfg, dstCfg, migrate.Config{Mode: migrate.ModeOffline, Tables: []string{"customers", "change_log"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkPhaseOrder(t, scoped)
+	lines = nil
+	for _, s := range scoped {
+		lines = append(lines, previewLine(s))
+	}
+	if got := strings.Join(lines, "; "); got != "schema | table | change_log; schema | table | customers; cutover | trigger | customers_log" {
+		t.Errorf("table scope previews %s", got)
+	}
+
+	// What the target already has. From here on the previews depend on it.
+	for _, stmt := range []string{
+		`CREATE TABLE change_log (id INT PRIMARY KEY, other INT) ENGINE=InnoDB`,
+		`CREATE TABLE unrelated (log_id INT, CONSTRAINT unrelated_log FOREIGN KEY (log_id) REFERENCES change_log (id)) ENGINE=InnoDB`,
+		`CREATE VIEW customer_totals AS SELECT 1 AS one`,
+	} {
+		if _, err := dst.ExecContext(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dstBefore = shape(dst) + tables(dst)
+
+	// Under the default policy the job would refuse to start; its preview
+	// still shows every object as it would be created.
+	again, err := Preview(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(again) != fmt.Sprint(list) {
+		t.Error("the default policy previews something else once the target holds some of the names")
+	}
+
+	// Kept: the table and the view are left out, and nothing is dropped.
+	cfg.OnExisting = migrate.ExistingSkip
+	skip, err := Preview(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkPhaseOrder(t, skip)
+	if len(skip) != len(list)-2 {
+		t.Errorf("skip previews %d statements of %d", len(skip), len(list))
+	}
+	for _, s := range skip {
+		if s.Kind == "drop" || s.Name == "change_log" || s.Name == "customer_totals" {
+			t.Errorf("skip previews %s: %s", previewLine(s), s.SQL)
+		}
+	}
+
+	// Replaced: the drops come first, a foreign key that holds a table in
+	// place before the table, and then the whole migration.
+	cfg.OnExisting = migrate.ExistingReplace
+	replace, err := Preview(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkPhaseOrder(t, replace)
+	drops := []migrate.Statement{
+		{Phase: migrate.PhaseSchema, Kind: "drop", Name: "change_log", SQL: "ALTER TABLE `unrelated` DROP FOREIGN KEY `unrelated_log`"},
+		{Phase: migrate.PhaseSchema, Kind: "drop", Name: "change_log", SQL: "DROP TABLE IF EXISTS `change_log`"},
+		{Phase: migrate.PhaseSchema, Kind: "drop", Name: "customer_totals", SQL: "DROP VIEW IF EXISTS `customer_totals`"},
+	}
+	if len(replace) != len(drops)+len(list) || fmt.Sprint(replace[:len(drops)]) != fmt.Sprint(drops) || fmt.Sprint(replace[len(drops):]) != fmt.Sprint(list) {
+		t.Errorf("replace previews:\n%v", replace)
+	}
+	unchanged("the previews")
+
+	// The preview is the script: every statement runs, in order, as it is,
+	// and leaves the target with the source's schema. Nothing in it depends
+	// on the rows the job would copy in between.
+	for _, s := range replace {
+		if _, err := dst.ExecContext(ctx, s.SQL); err != nil {
+			t.Fatalf("%s: %v\n%s", previewLine(s), err, s.SQL)
+		}
+	}
+	if _, err := dst.ExecContext(ctx, "DROP TABLE unrelated"); err != nil {
+		t.Fatal(err)
+	}
+	if a, b := shape(src), shape(dst); a != b {
+		t.Errorf("the script did not build the source's schema:\nsource:\n%s\ntarget:\n%s", a, b)
+	}
+}

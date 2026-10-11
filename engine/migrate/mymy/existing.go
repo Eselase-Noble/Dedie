@@ -189,6 +189,26 @@ func Decide(policy string, found []Existing) (skipped, kept, drops []string) {
 	return skipped, kept, drops
 }
 
+// DropStatements writes out, for a preview, the statements Decide chose to
+// remove what a job replaces, each named after the object it removes or,
+// for a foreign key that is in a table's way, that table. They are the
+// first thing such a job runs.
+func DropStatements(found []Existing, drops []string) []migrate.Statement {
+	removes := map[string]string{}
+	for _, e := range found {
+		for _, stmt := range e.Drops {
+			if _, ok := removes[stmt]; !ok {
+				removes[stmt] = e.Target
+			}
+		}
+	}
+	out := make([]migrate.Statement, len(drops))
+	for i, stmt := range drops {
+		out[i] = migrate.Statement{Phase: migrate.PhaseSchema, Kind: "drop", Name: removes[stmt], SQL: stmt}
+	}
+	return out
+}
+
 // DropExisting removes what a job was told to replace. A retry after an
 // interrupted schema phase runs the statements again, by which time a
 // foreign key may be gone already, alone or with its table.
