@@ -103,22 +103,30 @@ func DropSlot(ctx context.Context, src *pgx.Conn, slot string) error {
 	}
 }
 
+// CleanupSource removes what a job created on the source: its replication
+// slot and its publication.
+func CleanupSource(ctx context.Context, st *State, srcCfg connector.Config, rep Reporter) {
+	ctx = context.WithoutCancel(ctx)
+	src, err := postgres.Connect(ctx, srcCfg)
+	if err != nil {
+		rep.Event("warn", "could not connect to the source to remove the replication slot "+st.Slot+": "+pgMessage(err))
+		return
+	}
+	defer src.Close(ctx)
+	src.Exec(ctx, "SET default_transaction_read_only = off")
+	if err := DropSlot(ctx, src, st.Slot); err != nil {
+		rep.Event("warn", "replication slot "+st.Slot+" was not removed, drop it manually: "+pgMessage(err))
+	}
+	if _, err := src.Exec(ctx, "DROP PUBLICATION IF EXISTS "+qident(st.Publication)); err != nil {
+		rep.Event("warn", "publication "+st.Publication+" was not removed: "+pgMessage(err))
+	}
+}
+
 // cleanup removes what the job created outside the migrated data: the slot
 // and publication on the source and the checkpoint on the target.
 func cleanup(ctx context.Context, jobID string, st *State, srcCfg, dstCfg connector.Config, rep Reporter) {
 	ctx = context.WithoutCancel(ctx)
-	if src, err := postgres.Connect(ctx, srcCfg); err != nil {
-		rep.Event("warn", "could not connect to the source to remove the replication slot "+st.Slot+": "+pgMessage(err))
-	} else {
-		defer src.Close(ctx)
-		src.Exec(ctx, "SET default_transaction_read_only = off")
-		if err := DropSlot(ctx, src, st.Slot); err != nil {
-			rep.Event("warn", "replication slot "+st.Slot+" was not removed, drop it manually: "+pgMessage(err))
-		}
-		if _, err := src.Exec(ctx, "DROP PUBLICATION IF EXISTS "+qident(st.Publication)); err != nil {
-			rep.Event("warn", "publication "+st.Publication+" was not removed: "+pgMessage(err))
-		}
-	}
+	CleanupSource(ctx, st, srcCfg, rep)
 	if dst, err := postgres.Connect(ctx, dstCfg); err == nil {
 		defer dst.Close(ctx)
 		var exists bool

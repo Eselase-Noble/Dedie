@@ -51,16 +51,21 @@ func Run(ctx context.Context, jobID string, cfg Config, st State, srcCfg, dstCfg
 	return out, err
 }
 
+// SlotName derives the name of a job's replication slot and publication.
+// Slot names allow only lower-case letters, digits and underscores.
+func SlotName(jobID string) string {
+	return "dedie_" + strings.Map(func(c rune) rune {
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' {
+			return c
+		}
+		return '_'
+	}, strings.ToLower(jobID))
+}
+
 func (r *runner) run(ctx context.Context) (Outcome, error) {
 	jobID, cfg, st, srcCfg, dstCfg, rep := r.jobID, r.cfg, r.st, r.srcCfg, r.dstCfg, r.rep
 	if st.Slot == "" {
-		name := "dedie_" + strings.Map(func(c rune) rune {
-			if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' {
-				return c
-			}
-			return '_'
-		}, strings.ToLower(jobID))
-		st.Slot, st.Publication = name, name
+		st.Slot, st.Publication = SlotName(jobID), SlotName(jobID)
 	}
 	if rep.Desired() == "abort" {
 		return r.abort(ctx), nil

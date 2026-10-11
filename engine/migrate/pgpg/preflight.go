@@ -31,27 +31,10 @@ func Preflight(ctx context.Context, srcCfg, dstCfg connector.Config, cfg Config)
 	return preflight(ctx, src, dst, plan)
 }
 
-func preflight(ctx context.Context, src, dst *pgx.Conn, plan *Plan) (*Report, error) {
-	r := &Report{Tables: len(plan.Tables)}
-
-	var srcVer, dstVer string
-	var srcNum, dstNum int
-	const verSQL = `SELECT current_setting('server_version'), current_setting('server_version_num')::int`
-	if err := src.QueryRow(ctx, verSQL).Scan(&srcVer, &srcNum); err != nil {
-		return nil, err
-	}
-	if err := dst.QueryRow(ctx, verSQL).Scan(&dstVer, &dstNum); err != nil {
-		return nil, err
-	}
-	switch {
-	case srcNum < 100000:
-		r.Add("Source version", "fail", "PostgreSQL "+srcVer+" has no built-in logical replication; version 10 or newer is required")
-	case dstNum < srcNum:
-		r.Add("Versions", "fail", fmt.Sprintf("target (%s) is older than source (%s); downgrades are not supported", dstVer, srcVer))
-	default:
-		r.Add("Versions", "ok", fmt.Sprintf("%s → %s", srcVer, dstVer))
-	}
-
+// CheckSource records every finding about the source that does not depend on
+// the kind of target: replication settings, privileges and the tables
+// selected. It is shared by all pipelines that read from PostgreSQL.
+func CheckSource(ctx context.Context, src *pgx.Conn, plan *Plan, r *Report) error {
 	var walLevel string
 	var canReplicate bool
 	var slotsFree, sendersFree int
@@ -60,7 +43,7 @@ func preflight(ctx context.Context, src, dst *pgx.Conn, plan *Plan) (*Report, er
 			current_setting('max_replication_slots')::int - (SELECT count(*) FROM pg_replication_slots),
 			current_setting('max_wal_senders')::int - (SELECT count(*) FROM pg_stat_replication)`).
 		Scan(&walLevel, &canReplicate, &slotsFree, &sendersFree); err != nil {
-		return nil, err
+		return err
 	}
 	if walLevel == "logical" {
 		r.Add("Source wal_level", "ok", "logical")
@@ -100,6 +83,33 @@ func preflight(ctx context.Context, src, dst *pgx.Conn, plan *Plan) (*Report, er
 	}
 	if len(skipped) > 0 {
 		r.Add("Tables that will be skipped", "warn", strings.Join(skipped, "\n"))
+	}
+	return nil
+}
+
+func preflight(ctx context.Context, src, dst *pgx.Conn, plan *Plan) (*Report, error) {
+	r := &Report{Tables: len(plan.Tables)}
+
+	var srcVer, dstVer string
+	var srcNum, dstNum int
+	const verSQL = `SELECT current_setting('server_version'), current_setting('server_version_num')::int`
+	if err := src.QueryRow(ctx, verSQL).Scan(&srcVer, &srcNum); err != nil {
+		return nil, err
+	}
+	if err := dst.QueryRow(ctx, verSQL).Scan(&dstVer, &dstNum); err != nil {
+		return nil, err
+	}
+	switch {
+	case srcNum < 100000:
+		r.Add("Source version", "fail", "PostgreSQL "+srcVer+" has no built-in logical replication; version 10 or newer is required")
+	case dstNum < srcNum:
+		r.Add("Versions", "fail", fmt.Sprintf("target (%s) is older than source (%s); downgrades are not supported", dstVer, srcVer))
+	default:
+		r.Add("Versions", "ok", fmt.Sprintf("%s → %s", srcVer, dstVer))
+	}
+
+	if err := CheckSource(ctx, src, plan, r); err != nil {
+		return nil, err
 	}
 
 	// The target must not already contain the tables being migrated.
