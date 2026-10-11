@@ -41,6 +41,11 @@ const (
 //	          functions they may depend on, their indexes, constraints and
 //	          triggers; views and other standalone objects are left out
 type Config struct {
+	// Mode is "migrate" (the default) for a move that ends with a cutover,
+	// or "sync" to keep the target following the source for as long as
+	// the job runs. The pipeline does the same work either way; a sync is
+	// simply not expected to end, and never fences its source.
+	Mode string `json:"mode"`
 	// Schemas limits the migration to these schemas; empty means all. In
 	// MySQL a schema is the database itself, so its pipeline ignores this.
 	Schemas []string `json:"schemas"`

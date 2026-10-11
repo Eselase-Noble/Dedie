@@ -33,8 +33,13 @@ func (in *ConnectionInput) validate() (connector.Driver, error) {
 	if err != nil {
 		return nil, invalid("%s", err.Error())
 	}
-	if in.Name == "" || in.Host == "" || in.Database == "" || in.Username == "" {
-		return nil, invalid("name, host, database and username are required")
+	if in.Name == "" || in.Host == "" || in.Database == "" {
+		return nil, invalid("name, host and database are required")
+	}
+	// A MongoDB server may run without access control; every other kind
+	// of database needs an account.
+	if in.Username == "" && in.Kind != "mongodb" {
+		return nil, invalid("username is required")
 	}
 	if in.Port == 0 {
 		in.Port = drv.DefaultPort()

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState, type ReactNode } from "react";
 import { api, errorMessage } from "@/lib/api";
-import { formatBytes, formatNumber, formatTime } from "@/lib/format";
+import { formatBytes, formatDuration, formatNumber, formatTime } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 import type { MigrationAction, MigrationDetail, PreflightReport } from "@/lib/types";
 import { useSession } from "@/components/session";
@@ -126,14 +126,19 @@ function Detail({ id }: { id: string }) {
   };
 
   const fenced = !!job.config.fence_source;
+  // A continuous sync is the same job with a different intent: it is not
+  // expected to end, and ending it is called finishing rather than cutover.
+  const sync = job.config.mode === "sync";
   const confirmations: Record<"cutover" | "abort" | "delete", Confirm> = {
     cutover: {
       action: "cutover",
-      title: "Start cutover?",
-      label: "Start cutover",
+      title: sync ? "Finish this sync?" : "Start cutover?",
+      label: sync ? "Finish sync" : "Start cutover",
       body: (
         <>
-          <p>Cutover finishes the migration. In order, it will:</p>
+          <p>{sync
+            ? "Finishing stops the sync and leaves the target as an independent copy. Changes made on the source afterwards are no longer carried over. In order, it will:"
+            : "Cutover finishes the migration. In order, it will:"}</p>
           <ol style={{ margin: "0 0 10px", paddingLeft: 20 }}>
             {fenced
               ? <li>Make the source database read-only and disconnect its client sessions.</li>
@@ -199,7 +204,7 @@ function Detail({ id }: { id: string }) {
             <button className="btn primary" disabled={!canCutover || !!busy || job.desired === "cutover"}
               title={canCutover ? undefined : "Available while the migration is streaming changes"}
               onClick={() => setConfirm(confirmations.cutover)}>
-              Cutover
+              {sync ? "Finish sync" : "Cutover"}
             </button>
             {canAbort && <button className="btn danger" disabled={!!busy || job.desired === "abort"} onClick={() => setConfirm(confirmations.abort)}>Abort</button>}
             {canDelete && <button className="btn" disabled={!!busy} onClick={() => setConfirm(confirmations.delete)}>Delete</button>}
@@ -217,10 +222,13 @@ function Detail({ id }: { id: string }) {
       {status === "paused" && (
         <Banner tone="warn">Paused. The source keeps WAL for this migration until it is resumed or aborted; do not leave it paused for long on a busy database.</Banner>
       )}
+      {sync && status === "running" && job.phase === "streaming" && (
+        <Banner tone="ok">In sync: every change on the source is being applied to the target. This continues until you pause or finish it.</Banner>
+      )}
       {st.fenced && status !== "completed" && <Banner tone="warn">The source database is currently read-only (fenced for cutover).</Banner>}
       {status === "completed" && (
         <Banner tone="ok">
-          Cutover complete. The target is ready for application traffic.
+          {sync ? "Sync finished. The target is an independent, validated copy." : "Cutover complete. The target is ready for application traffic."}
           {st.fenced && " The source database was left read-only."}
         </Banner>
       )}
@@ -228,7 +236,10 @@ function Detail({ id }: { id: string }) {
       <div className="card">
         <Stepper job={job} />
         <div className="figures">
-          <Figure label="Replication lag">{job.phase === "streaming" || job.phase === "cutover" ? formatBytes(st.lag_bytes ?? 0) : "—"}</Figure>
+          <Figure label="Replication lag">
+            {job.phase !== "streaming" && job.phase !== "cutover" ? "—"
+              : st.lag_seconds !== undefined ? formatDuration(st.lag_seconds) : formatBytes(st.lag_bytes ?? 0)}
+          </Figure>
           <Figure label="Applied position"><span className="mono">{st.applied_lsn || "—"}</span></Figure>
           <Figure label="Source position"><span className="mono">{st.source_lsn || "—"}</span></Figure>
           <Figure label="Transactions applied">{formatNumber(st.tx_applied ?? 0)}</Figure>

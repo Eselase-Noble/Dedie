@@ -1,0 +1,87 @@
+// Package mongopg migrates a MongoDB database into PostgreSQL while the
+// source stays in use.
+//
+// Each collection becomes a table of two columns: _id, the document's key
+// as text, and doc, the whole document as jsonb. Nothing in a document is
+// lost or reinterpreted, and its fields are reachable from SQL with the
+// jsonb operators (doc->>'email', doc->'address'->>'city').
+//
+// The copy is followed by MongoDB's change stream, which needs the source
+// to be a replica set. The stream is opened at a point taken before the
+// copy starts, and every change is applied as "store this document" or
+// "delete this key", so replaying a change that the copy already included
+// is harmless. The stream's position is committed on the target in the
+// same transaction as the changes it covers.
+package mongopg
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"dedie/engine/connector"
+	"dedie/engine/connector/mongodb"
+	"dedie/engine/connector/postgres"
+	"dedie/engine/migrate"
+)
+
+func init() { migrate.Register(mongodb.Kind, postgres.Kind, pipeline{}) }
+
+// pipeline adapts this package to the engine's pipeline registry.
+type pipeline struct{}
+
+func (pipeline) Preflight(ctx context.Context, src, dst connector.Config, cfg migrate.Config) (*migrate.Report, error) {
+	return Preflight(ctx, src, dst, cfg)
+}
+
+func (pipeline) Run(ctx context.Context, jobID string, cfg migrate.Config, state json.RawMessage, src, dst connector.Config, rep migrate.Reporter) (migrate.Outcome, error) {
+	var st State
+	if len(state) > 0 {
+		_ = json.Unmarshal(state, &st)
+	}
+	return Run(ctx, jobID, cfg, st, src, dst, rep)
+}
+
+// State is the job's durable progress. Field names match the other
+// pipelines where the meaning is the same, so the interface shows them
+// alike.
+type State struct {
+	SchemaDone   bool `json:"schema_done"`
+	SnapshotDone bool `json:"snapshot_done"`
+	// StartT and StartI are the cluster time taken before the copy began;
+	// the stream starts there the first time.
+	StartT uint32 `json:"start_t"`
+	StartI uint32 `json:"start_i"`
+	// AppliedLSN is the cluster time of the last change applied, for display.
+	AppliedLSN     string    `json:"applied_lsn"`
+	LagSeconds     int64     `json:"lag_seconds"`
+	LagBytes       int64     `json:"lag_bytes"`
+	TxApplied      int64     `json:"tx_applied"`
+	RowsApplied    int64     `json:"rows_applied"`
+	Anomalies      int64     `json:"anomalies"`
+	LastCommitTime time.Time `json:"last_commit_time"`
+	SourceVersion  string    `json:"source_version"`
+	TargetVersion  string    `json:"target_version"`
+}
+
+// targetSchema is where the collections' tables are created.
+const targetSchema = "public"
+
+// metaSchema holds the checkpoint table on the target while a job runs.
+const metaSchema = "dedie"
+
+const checkpointDDL = `CREATE SCHEMA IF NOT EXISTS ` + metaSchema + `;
+CREATE TABLE IF NOT EXISTS ` + metaSchema + `.mongo_checkpoint (
+	job_id text PRIMARY KEY, resume_token bytea NOT NULL,
+	updated_at timestamptz NOT NULL DEFAULT now())`
+
+const checkpointUpsert = `INSERT INTO ` + metaSchema + `.mongo_checkpoint (job_id, resume_token) VALUES ($1, $2)
+	ON CONFLICT (job_id) DO UPDATE SET resume_token = excluded.resume_token, updated_at = now()`
+
+func qname(table string) string { return pgx.Identifier{targetSchema, table}.Sanitize() }
+
+func tableDDL(table string) string {
+	return `CREATE TABLE IF NOT EXISTS ` + qname(table) + ` (_id text PRIMARY KEY, doc jsonb NOT NULL)`
+}

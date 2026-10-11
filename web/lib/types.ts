@@ -203,6 +203,8 @@ export interface ReplicationSlot {
 export type Validation = "checksum" | "count" | "none";
 
 export interface MigrationConfig {
+  /** "sync" keeps the target following the source; anything else ends with a cutover. */
+  mode?: "migrate" | "sync" | "";
   schemas: string[] | null;
   tables?: string[] | null;
   exclude_tables: string[] | null;
@@ -215,6 +217,8 @@ export interface MigrationConfig {
 
 // The state object is empty until the job first runs, so every field is optional.
 export interface MigrationState {
+  /** Reported by sources that measure lag in time rather than bytes. */
+  lag_seconds?: number;
   slot?: string;
   publication?: string;
   schema_done?: boolean;

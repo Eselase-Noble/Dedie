@@ -7,7 +7,8 @@ import { Banner, Checkbox, Field, Modal } from "./ui";
 
 const SSL_MODES = ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"];
 const WEAK_SSL = ["disable", "allow", "prefer"];
-const DEFAULT_PORTS: Record<string, number> = { postgres: 5432, mysql: 3306 };
+const DEFAULT_PORTS: Record<string, number> = { postgres: 5432, mysql: 3306, mongodb: 27017 };
+const KIND_LABELS: Record<string, string> = { postgres: "PostgreSQL", mysql: "MySQL", mongodb: "MongoDB" };
 
 export function ServerInfoSummary({ info }: { info: ServerInfo }) {
   return (
@@ -24,9 +25,9 @@ export default function ConnectionForm({ existing, kinds, onClose, onSaved }: {
 }) {
   const [form, setForm] = useState<ConnectionInput>({
     name: existing?.name ?? "",
-    kind: existing?.kind ?? kinds[0] ?? "postgres",
+    kind: existing?.kind ?? (kinds.includes("postgres") ? "postgres" : kinds[0] ?? "postgres"),
     host: existing?.host ?? "",
-    port: existing?.port ?? DEFAULT_PORTS[kinds[0] ?? "postgres"] ?? 5432,
+    port: existing?.port ?? DEFAULT_PORTS[kinds.includes("postgres") ? "postgres" : kinds[0] ?? "postgres"] ?? 5432,
     database: existing?.database ?? "",
     username: existing?.username ?? "",
     password: "",
@@ -103,7 +104,7 @@ export default function ConnectionForm({ existing, kinds, onClose, onSaved }: {
           <Field label="Database type">
             <select className="select" value={form.kind} disabled={!!existing}
               onChange={(e) => setForm((f) => ({ ...f, kind: e.target.value, port: DEFAULT_PORTS[e.target.value] ?? f.port }))}>
-              {kinds.map((k) => <option key={k} value={k}>{k}</option>)}
+              {kinds.map((k) => <option key={k} value={k}>{KIND_LABELS[k] ?? k}</option>)}
             </select>
           </Field>
           <Field label="Host">
@@ -116,8 +117,8 @@ export default function ConnectionForm({ existing, kinds, onClose, onSaved }: {
           <Field label="Database">
             <input className="input" value={form.database} onChange={(e) => set("database", e.target.value)} required />
           </Field>
-          <Field label="Username">
-            <input className="input" value={form.username} onChange={(e) => set("username", e.target.value)} required autoComplete="off" />
+          <Field label="Username" hint={form.kind === "mongodb" ? "The account is looked up in the admin database. Leave empty for a server without access control." : undefined}>
+            <input className="input" value={form.username} onChange={(e) => set("username", e.target.value)} required={form.kind !== "mongodb"} autoComplete="off" />
           </Field>
           <Field label="Password" hint={existing ? "Leave blank to keep the stored password." : "Stored encrypted; never shown again."}>
             <input className="input" type="password" value={form.password} onChange={(e) => set("password", e.target.value)}
