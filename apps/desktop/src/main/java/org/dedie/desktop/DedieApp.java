@@ -3,6 +3,8 @@ package org.dedie.desktop;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.prefs.Preferences;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javafx.application.Application;
 import javafx.application.Platform;
@@ -37,6 +39,7 @@ public final class DedieApp extends Application {
 
     private static final String WEBSITE = "https://eselase-noble.github.io/Dedie/";
     private static final String GUIDES = "https://github.com/Eselase-Noble/Dedie/blob/main/docs/";
+    private static final Pattern UNREAD_TITLE = Pattern.compile("\\((\\d+\\+?)\\) (.+)");
 
     private final Engine engine = new Engine();
     private final Preferences prefs = Preferences.userNodeForPackage(DedieApp.class);
@@ -47,6 +50,7 @@ public final class DedieApp extends Application {
     private String url;
     // Held here because the page only keeps a weak reference to it.
     private Bridge bridge;
+    private final Notifier notifier = new Notifier(this::openFromTray);
 
     @Override
     public void start(Stage primaryStage) {
@@ -70,6 +74,11 @@ public final class DedieApp extends Application {
         }
         stage.setMaximized(prefs.getBoolean("maximized", false));
         stage.show();
+        // The smoke test must run on machines with no tray, and leaves
+        // nothing behind in one that is there.
+        if (!Boolean.getBoolean("dedie.smoke")) {
+            notifier.start();
+        }
         startEngine();
     }
 
@@ -85,6 +94,7 @@ public final class DedieApp extends Application {
         if (view != null) {
             prefs.putDouble("zoom", view.getZoom());
         }
+        notifier.close();
         engine.stop();
     }
 
@@ -135,6 +145,7 @@ public final class DedieApp extends Application {
                 item("Server Activity", "Shortcut+7", () -> page("server/")),
                 item("Database Users", "Shortcut+8", () -> page("dbusers/")),
                 new SeparatorMenuItem(),
+                item("Notifications", "Shortcut+Shift+N", () -> page("notifications/")),
                 item("Account", null, () -> page("account/")));
 
         Menu viewMenu = new Menu("View");
@@ -186,6 +197,36 @@ public final class DedieApp extends Application {
         if (view != null && url != null) {
             view.getEngine().load(url + path);
         }
+    }
+
+    /**
+     * Brings the window in front of whatever covers it and, when the user
+     * clicked a notification, shows the page it is about. Called from the
+     * tray, which lives on another toolkit's thread.
+     */
+    private void openFromTray(String link) {
+        Platform.runLater(() -> {
+            stage.setIconified(false);
+            stage.show();
+            stage.toFront();
+            stage.requestFocus();
+            if (link != null && link.startsWith("/")) {
+                page(link.substring(1));
+            }
+        });
+    }
+
+    /**
+     * The window's title for a page's title. The interface puts its count
+     * of unread notifications first, "(3) Dedie", where a browser tab has
+     * room for little else; a window reads better as "Dedie (3)".
+     */
+    static String windowTitle(String pageTitle) {
+        if (pageTitle == null || pageTitle.isBlank()) {
+            return "Dedie";
+        }
+        Matcher counted = UNREAD_TITLE.matcher(pageTitle);
+        return counted.matches() ? counted.group(2) + " (" + counted.group(1) + ")" : pageTitle;
     }
 
     private void history(int offset) {
@@ -255,7 +296,7 @@ public final class DedieApp extends Application {
         view.setContextMenuEnabled(false);
         view.setZoom(prefs.getDouble("zoom", 1));
         WebEngine web = view.getEngine();
-        bridge = new Bridge(stage, getHostServices(), url);
+        bridge = new Bridge(stage, getHostServices(), url, notifier);
 
         // Keeps the browser-side preferences (open tabs, query history)
         // between runs, alongside the rest of Dedie's data.
@@ -290,8 +331,7 @@ public final class DedieApp extends Application {
             alert.showAndWait();
         });
 
-        web.titleProperty().addListener((observable, previous, title) ->
-                stage.setTitle(title == null || title.isBlank() ? "Dedie" : title));
+        web.titleProperty().addListener((observable, previous, title) -> stage.setTitle(windowTitle(title)));
 
         web.getLoadWorker().stateProperty().addListener((observable, previous, state) -> {
             if (state == Worker.State.FAILED) {
@@ -324,9 +364,13 @@ public final class DedieApp extends Application {
             }
             Platform.runLater(() -> {
                 Object text = web.executeScript("document.title + ' | ' + location.pathname + ' | bridge:' + "
-                        + "(typeof window.dedieDesktop) + ' | ' + "
+                        + "(typeof window.dedieDesktop) + ' | notify:' + "
+                        + "(function () { try { window.dedieDesktop.notify('Smoke test', '', '/notifications/'); return 'callable'; }"
+                        + " catch (e) { return 'failed ' + e; } })() + ' | ' + "
                         + "document.body.innerText.replace(/\\s+/g, ' ').slice(0, 160)");
                 System.out.println("SMOKE " + text);
+                System.out.println("SMOKE window title: " + stage.getTitle() + " | (3) Dedie -> " + windowTitle("(3) Dedie")
+                        + " | tray started: " + notifier.available());
                 Platform.exit();
             });
         }, "dedie-smoke-test");

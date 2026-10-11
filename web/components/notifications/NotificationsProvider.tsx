@@ -89,9 +89,7 @@ export function NotificationsProvider({ paused, children }: { paused: boolean; c
       if (n.level !== "error") {
         timers.current.set(n.id, window.setTimeout(() => dismissToast(n.id), TOAST_MS));
       }
-      if (document.hidden || !document.hasFocus()) {
-        showSystemNotification(n, (clicked) => openRef.current(clicked));
-      }
+      showSystemNotification(n, (clicked) => openRef.current(clicked));
     }
   }, [dismissToast]);
 

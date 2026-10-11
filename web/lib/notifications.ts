@@ -87,7 +87,8 @@ export function systemNotificationsBlocked(): boolean {
 }
 
 /**
- * Shows a notification outside the page, if the user asked for that.
+ * Shows a notification outside the page, if the user asked for that and
+ * is not looking at the window, where the toast already tells them.
  * onOpen runs when the user clicks it in a browser; the desktop
  * application navigates by itself.
  */
@@ -96,9 +97,12 @@ export function showSystemNotification(n: AppNotification, onOpen: (n: AppNotifi
   try {
     const bridge = desktop();
     if (bridge?.notify) {
+      // The application knows better than its embedded page whether its
+      // window is in front, so the decision is left to it.
       bridge.notify(n.title, n.body, n.link);
       return;
     }
+    if (!document.hidden && document.hasFocus()) return;
     // The tag makes a second tab of the same browser replace the
     // notification instead of repeating it.
     const shown = new Notification(n.title, { body: n.body, tag: `dedie-${n.id}` });
