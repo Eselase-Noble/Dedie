@@ -9,8 +9,10 @@
   },
   "dependencies": {
     "@codemirror/lang-sql": "^6.10.0",
+    "@types/qrcode": "^1.5.5",
     "@uiw/react-codemirror": "^4.25.12",
     "next": "^16.4.0",
+    "qrcode": "^1.5.4",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
   },

@@ -343,3 +343,8 @@ body.dragging-y, body.dragging-y * { cursor: row-resize !important; }
 .picker-list { max-height: 180px; overflow-y: auto; padding: 4px 0; }
 .picker-item { display: flex; align-items: center; gap: 8px; padding: 4px 10px; cursor: pointer; }
 .picker-item:hover { background: var(--bg-subtle); }
+.input-group { display: flex; gap: 6px; }
+.input-group .input { flex: 1; min-width: 0; }
+.codes { font-family: var(--mono); background: var(--bg-subtle); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin: 0; column-count: 2; }
+.totp-setup { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.totp-setup img { border: 1px solid var(--border); border-radius: var(--radius); }

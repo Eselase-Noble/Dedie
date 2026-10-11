@@ -81,6 +81,18 @@ CREATE TABLE IF NOT EXISTS backup_schedules (
   last_run_at TEXT NOT NULL DEFAULT '', last_status TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '',
   next_run_at TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at TEXT NOT NULL,
   UNIQUE(org_id, name));
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id),
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, role TEXT NOT NULL,
+  expires_at TEXT NOT NULL DEFAULT '', last_used_at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS org_settings (
+  org_id TEXT NOT NULL REFERENCES orgs(id), key TEXT NOT NULL, value TEXT NOT NULL,
+  PRIMARY KEY (org_id, key));
+CREATE TABLE IF NOT EXISTS connection_grants (
+  connection_id TEXT NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  PRIMARY KEY (connection_id, user_id));
 `
 
 // columns lists columns added to existing tables after the first release.
@@ -92,6 +104,13 @@ var columns = []struct{ table, name, def string }{
 	{"backups", "schedule_id", "TEXT NOT NULL DEFAULT ''"},
 	{"backups", "verified_at", "TEXT NOT NULL DEFAULT ''"},
 	{"restores", "database", "TEXT NOT NULL DEFAULT ''"},
+	{"users", "totp_secret_enc", "BLOB"},
+	{"users", "totp_enabled", "INTEGER NOT NULL DEFAULT 0"},
+	{"users", "recovery_codes", "TEXT NOT NULL DEFAULT '[]'"},
+	{"sessions", "id", "TEXT NOT NULL DEFAULT ''"},
+	{"sessions", "user_agent", "TEXT NOT NULL DEFAULT ''"},
+	{"sessions", "last_seen_at", "TEXT NOT NULL DEFAULT ''"},
+	{"connections", "restricted", "INTEGER NOT NULL DEFAULT 0"},
 }
 
 // upgrade brings a database created by an older release up to date.

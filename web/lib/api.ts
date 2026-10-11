@@ -1,4 +1,5 @@
 import type {
+  ApiToken,
   AuditEntry,
   AuditVerification,
   Backup,
@@ -6,6 +7,7 @@ import type {
   Catalog,
   ColumnDef,
   Connection,
+  ConnectionAccess,
   ConnectionInput,
   ConnectionStatus,
   Migration,
@@ -19,8 +21,10 @@ import type {
   RestoreInput,
   Schedule,
   ScheduleInput,
+  SecurityPolicy,
   ServerInfo,
   Session,
+  SessionInfo,
   User,
   UserUpdate,
 } from "./types";
@@ -30,9 +34,12 @@ const BASE = "/api/v1";
 /** An error response from the API, carrying the HTTP status. */
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** A machine-readable reason, set for conditions the interface reacts to. */
+  code: string;
+  constructor(status: number, message: string, code = "") {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -72,8 +79,13 @@ async function request<T>(method: string, path: string, opts: RequestOptions = {
     if (res.status === 401 && !opts.noRedirect && typeof window !== "undefined") {
       window.location.href = "/login/";
     }
-    const message = (data as { error?: string } | null)?.error ?? `Request failed (${res.status})`;
-    throw new ApiError(res.status, message);
+    const body = data as { error?: string; code?: string } | null;
+    // An organization that requires two-factor sign-in confines a user
+    // who has not set it up to the account page.
+    if (body?.code === "totp_enrollment_required" && typeof window !== "undefined" && !window.location.pathname.startsWith("/account")) {
+      window.location.href = "/account/";
+    }
+    throw new ApiError(res.status, body?.error ?? `Request failed (${res.status})`, body?.code ?? "");
   }
   return data as T;
 }
@@ -88,9 +100,23 @@ export const api = {
   setupStatus: () => get<{ needs_setup: boolean }>("/setup", { noRedirect: true }),
   setup: (body: { organization: string; name: string; email: string; password: string }) =>
     post<Session>("/setup", body, { noRedirect: true }),
-  login: (email: string, password: string) => post<Session>("/auth/login", { email, password }, { noRedirect: true }),
+  login: (email: string, password: string, code = "") =>
+    post<Session>("/auth/login", { email, password, code }, { noRedirect: true }),
   logout: () => post<{ ok: boolean }>("/auth/logout"),
   me: (noRedirect = false) => get<Session>("/auth/me", { noRedirect }),
+
+  // The signed-in user's own account
+  changePassword: (current: string, next: string) => post<{ ok: boolean }>("/auth/password", { current, new: next }),
+  sessions: () => get<SessionInfo[]>("/auth/sessions"),
+  revokeSession: (sessionId: string) => request<{ ok: boolean }>("DELETE", `/auth/sessions/${id(sessionId)}`),
+  beginTotp: () => post<{ secret: string; uri: string }>("/auth/totp/begin"),
+  confirmTotp: (code: string) => post<{ recovery_codes: string[] }>("/auth/totp/confirm", { code }),
+  disableTotp: (password: string) => post<{ ok: boolean }>("/auth/totp/disable", { password }),
+  tokens: () => get<ApiToken[]>("/auth/tokens"),
+  createToken: (body: { name: string; role: string; days: number }) => post<ApiToken>("/auth/tokens", body),
+  revokeToken: (tokenId: string) => request<{ ok: boolean }>("DELETE", `/auth/tokens/${id(tokenId)}`),
+  policy: () => get<SecurityPolicy>("/auth/policy"),
+  setPolicy: (body: SecurityPolicy) => request<SecurityPolicy>("PUT", "/auth/policy", { body }),
 
   // Users
   users: () => get<User[]>("/users"),
@@ -105,6 +131,9 @@ export const api = {
   deleteConnection: (connId: string) => request<{ ok: boolean }>("DELETE", `/connections/${id(connId)}`),
   testConnection: (connId: string) => post<ServerInfo>(`/connections/${id(connId)}/test`),
   testConnectionInput: (body: ConnectionInput) => post<ServerInfo>("/connections/test", body),
+  connectionAccess: (connId: string) => get<ConnectionAccess>(`/connections/${id(connId)}/access`),
+  setConnectionAccess: (connId: string, body: ConnectionAccess) =>
+    request<{ ok: boolean }>("PUT", `/connections/${id(connId)}/access`, { body }),
   connectionStatuses: () => get<Record<string, ConnectionStatus>>("/connections/status"),
   createDatabase: (connId: string, name: string, addConnection: boolean) =>
     post<{ ok: boolean; connection: Connection | null }>(`/connections/${id(connId)}/databases`, { name, add_connection: addConnection }),

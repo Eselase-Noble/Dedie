@@ -1,6 +1,8 @@
-// Command dedie is the command-line interface to the dedie engine. It
-// works directly on the data directory, so it needs no running server; a
-// migration started here can be watched in the web interface and vice versa.
+// Command dedie is the command-line interface to Dedie. It works in two
+// modes. After `dedie login <server>` every command runs on that Dedie
+// server through its API, from any machine. Without a sign-in it works
+// directly on this machine's data directory, which is how the server host
+// itself is set up and administered.
 package main
 
 import (
@@ -17,10 +19,18 @@ import (
 const usage = `dedie - database migration and administration
 
 Usage:
-  dedie <command> [arguments]
+  dedie [--local] <command> [arguments]
+
+Where commands run
+  login <server address>       sign in to a Dedie server; later commands run there
+  logout                       sign out and revoke the saved token
+  status                       show the server and user in use
+  Without a sign-in, or with --local, commands work on this machine's data
+  directory: the folder where a Dedie server keeps its users, connections,
+  jobs and backups.
 
 Setup
-  init                         create the organization and its first owner
+  init                         create the organization and its first owner (local)
   user add                     add a user to the organization
 
 Connections
@@ -57,7 +67,11 @@ Audit
   audit verify                 verify the audit log has not been altered
 
 Environment
-  DEDIE_DATA_DIR     data directory (default ~/.dedie)
+  DEDIE_SERVER       server address, with DEDIE_TOKEN: run remotely without
+                     a saved sign-in (for CI)
+  DEDIE_TOKEN        API token created on the Account page
+  DEDIE_CA_CERT      PEM file for a server with a privately signed certificate
+  DEDIE_DATA_DIR     data directory in local mode (default ~/.dedie)
   DEDIE_MASTER_KEY   base64 32-byte master key (default: <data dir>/master.key)
   DEDIE_PASSWORD     password for commands that would otherwise prompt
 
@@ -65,34 +79,68 @@ Run "dedie <command> -h" for the flags of a command.
 `
 
 func main() {
-	if len(os.Args) < 2 || os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "help" {
+	args := os.Args[1:]
+	// --local ignores a saved sign-in and works on this machine's data
+	// directory.
+	forceLocal := false
+	if len(args) > 0 && args[0] == "--local" {
+		forceLocal, args = true, args[1:]
+	}
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 		fmt.Print(usage)
 		return
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	a, err := app.Open(app.DefaultDataDir())
-	if err != nil {
+	c := &cli{ctx: ctx}
+	if err := c.run(args, forceLocal); err != nil {
+		if c.app != nil {
+			c.app.Close()
+		}
 		fatal(err)
 	}
-	err = dispatch(ctx, a, os.Args[1:])
-	a.Close()
-	if err != nil {
-		fatal(err)
+	if c.app != nil {
+		c.app.Close()
 	}
 }
 
-func dispatch(ctx context.Context, a *app.App, args []string) error {
-	c := &cli{ctx: ctx, app: a}
-	cmd, rest := args[0], args[1:]
-	if cmd == "init" {
-		return c.initOrg(rest)
+// run picks where the command executes and dispatches it.
+func (c *cli) run(args []string, forceLocal bool) error {
+	switch args[0] {
+	case "login":
+		return c.login(args[1:])
+	case "logout":
+		return c.logout()
+	case "status":
+		return c.status(forceLocal)
 	}
-	var err error
-	if c.actor, err = a.LocalActor(ctx); err != nil {
+	p, err := loadProfile()
+	if err != nil {
 		return err
 	}
+	if p != nil && !forceLocal && args[0] != "init" {
+		if c.be, err = c.connect(p); err != nil {
+			return err
+		}
+		return c.dispatch(args)
+	}
+	if c.app, err = app.Open(dataDir()); err != nil {
+		return err
+	}
+	if args[0] == "init" {
+		return c.initOrg(args[1:])
+	}
+	actor, err := c.app.LocalActor(c.ctx)
+	if err != nil {
+		return err
+	}
+	c.be = &local{ctx: c.ctx, app: c.app, actor: actor}
+	return c.dispatch(args)
+}
+
+func (c *cli) dispatch(args []string) error {
+	cmd, rest := args[0], args[1:]
 	sub := ""
 	if len(rest) > 0 {
 		sub, rest = rest[0], rest[1:]

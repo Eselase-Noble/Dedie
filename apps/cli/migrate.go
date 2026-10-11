@@ -26,7 +26,7 @@ func (c *cli) migrateCreate(args []string) error {
 	fs.BoolVar(&in.Config.KeepSlot, "keep-slot", false, "keep the replication slot on the source after completion")
 	fs.Parse(args)
 	in.Config.Schemas, in.Config.Tables, in.Config.ExcludeTables = splitList(*schemas), splitList(*tables), splitList(*exclude)
-	j, err := c.app.CreateMigration(c.ctx, c.actor, in)
+	j, err := c.be.CreateMigration(in)
 	if err != nil {
 		return err
 	}
@@ -35,7 +35,7 @@ func (c *cli) migrateCreate(args []string) error {
 }
 
 func (c *cli) migrateList() error {
-	jobs, err := c.app.ListMigrations(c.ctx, c.actor)
+	jobs, err := c.be.ListMigrations()
 	if err != nil {
 		return err
 	}
@@ -52,7 +52,7 @@ func (c *cli) migratePreflight(args []string) error {
 	if err != nil {
 		return err
 	}
-	report, err := c.app.PreflightMigration(c.ctx, c.actor, id)
+	report, err := c.be.PreflightMigration(id)
 	if err != nil {
 		return err
 	}
@@ -73,36 +73,37 @@ func (c *cli) migrateAction(action string, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := c.app.MigrationAction(c.ctx, c.actor, id, action); err != nil {
+	if err := c.be.MigrationAction(id, action); err != nil {
 		return err
 	}
 	fmt.Printf("%s: %s requested\n", id, action)
 	return nil
 }
 
-// migrateRun executes a job in this process and prints progress until it
-// completes, pauses or fails. Ctrl+C hands the job back to the queue; it
-// resumes from its checkpoint on the next run.
+// migrateRun runs a job and prints progress until it completes, pauses or
+// fails. In local mode the job executes in this process, and Ctrl+C hands
+// it back to the queue to resume from its checkpoint. Against a server the
+// server executes it, and Ctrl+C only stops watching.
 func (c *cli) migrateRun(args []string) error {
 	id, err := oneArg(args, "migration id")
 	if err != nil {
 		return err
 	}
-	d, err := c.app.GetMigration(c.ctx, c.actor, id)
+	d, err := c.be.GetMigration(id)
 	if err != nil {
 		return err
 	}
 	if d.Status != app.StatusQueued {
-		if err := c.app.MigrationAction(c.ctx, c.actor, id, "start"); err != nil {
+		if err := c.be.MigrationAction(id, "start"); err != nil {
 			return err
 		}
 	}
 	done := make(chan error, 1)
-	go func() { done <- c.app.RunJobForeground(c.ctx, id) }()
+	go func() { done <- c.be.RunJob(id) }()
 
 	var lastEvent int64
 	show := func() {
-		d, err := c.app.GetMigration(c.ctx, c.actor, id)
+		d, err := c.be.GetMigration(id)
 		if err != nil {
 			return
 		}
@@ -122,7 +123,7 @@ func (c *cli) migrateRun(args []string) error {
 			if err != nil {
 				return err
 			}
-			d, err := c.app.GetMigration(c.ctx, c.actor, id)
+			d, err := c.be.GetMigration(id)
 			if err != nil {
 				return err
 			}
@@ -142,7 +143,7 @@ func (c *cli) migrateStatus(args []string) error {
 	if err != nil {
 		return err
 	}
-	d, err := c.app.GetMigration(c.ctx, c.actor, id)
+	d, err := c.be.GetMigration(id)
 	if err != nil {
 		return err
 	}

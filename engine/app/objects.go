@@ -17,14 +17,14 @@ func (a *App) writable(ctx context.Context, actor Actor, connID string) (store.C
 	if err := actor.require(PermQueryWrite); err != nil {
 		return store.Connection{}, nil, err
 	}
-	c, err := a.Store.GetConnection(ctx, actor.User.OrgID, connID)
+	c, err := a.conn(ctx, actor, connID)
 	if err != nil {
-		return c, nil, wrap(err)
+		return c, nil, err
 	}
 	if c.ReadOnly {
 		return c, nil, &Error{Status: 403, Message: "this connection is marked read-only"}
 	}
-	c, sess, err := a.open(ctx, actor.User.OrgID, connID)
+	c, sess, err := a.open(ctx, actor, connID)
 	return c, sess, err
 }
 
@@ -114,7 +114,7 @@ func (a *App) ConnectionStatuses(ctx context.Context, actor Actor) (map[string]C
 	if err := actor.require(PermViewConnections); err != nil {
 		return nil, err
 	}
-	conns, err := a.Store.ListConnections(ctx, actor.User.OrgID)
+	conns, err := a.visibleConnections(ctx, actor)
 	if err != nil {
 		return nil, err
 	}

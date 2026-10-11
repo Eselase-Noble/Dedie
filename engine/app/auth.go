@@ -14,21 +14,12 @@ import (
 )
 
 const (
-	sessionTTL     = 12 * time.Hour
-	maxLoginFails  = 5
-	lockoutPeriod  = 15 * time.Minute
-	minPasswordLen = 12
+	maxLoginFails = 5
+	lockoutPeriod = 15 * time.Minute
+	// tokenPrefix marks API tokens, so that one pasted into the wrong
+	// place, or found in a log, is recognizable for what it is.
+	tokenPrefix = "dedie_pat_"
 )
-
-// SessionTTL is how long a sign-in lasts.
-func SessionTTL() time.Duration { return sessionTTL }
-
-func checkPassword(pw string) error {
-	if len(pw) < minPasswordLen {
-		return invalid("password must be at least %d characters", minPasswordLen)
-	}
-	return nil
-}
 
 func checkEmail(email string) (string, error) {
 	addr, err := mail.ParseAddress(strings.TrimSpace(email))
@@ -59,7 +50,7 @@ func (a *App) Setup(ctx context.Context, orgName, name, email, password string) 
 	if email, err = checkEmail(email); err != nil {
 		return store.User{}, err
 	}
-	if err := checkPassword(password); err != nil {
+	if err := defaultPolicy.checkPassword(password); err != nil {
 		return store.User{}, err
 	}
 	hash, err := secure.HashPassword(password)
@@ -78,41 +69,102 @@ func (a *App) Setup(ctx context.Context, orgName, name, email, password string) 
 	return u, nil
 }
 
-// Login verifies credentials and returns a new session token. The response is
-// the same for an unknown email and a wrong password, and repeated failures
+// LoginInput is a sign-in attempt. Code is the authenticator or recovery
+// code, needed only when the account has two-factor sign-in.
+type LoginInput struct {
+	Email     string `json:"email"`
+	Password  string `json:"password"`
+	Code      string `json:"code"`
+	IP        string `json:"-"`
+	UserAgent string `json:"-"`
+}
+
+// LoginResult is a new session.
+type LoginResult struct {
+	Token string
+	User  store.User
+	TTL   time.Duration
+	// MustEnroll tells the client to send the user to two-factor setup.
+	MustEnroll bool
+}
+
+// Login verifies credentials and returns a new session. The response is the
+// same for an unknown email and a wrong password, and repeated failures
 // lock the account for a while to slow down guessing.
-func (a *App) Login(ctx context.Context, email, password, ip string) (string, store.User, error) {
+func (a *App) Login(ctx context.Context, in LoginInput) (LoginResult, error) {
 	bad := &Error{Status: 401, Message: "incorrect email or password"}
-	u, err := a.Store.UserByEmail(ctx, strings.TrimSpace(email))
+	u, err := a.Store.UserByEmail(ctx, strings.TrimSpace(in.Email))
 	if errors.Is(err, store.ErrNotFound) {
 		// Spend the same time as a real check so timing does not reveal
 		// which emails exist.
-		secure.VerifyPassword("$argon2id$v=19$m=65536,t=3,p=2$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", password)
-		return "", u, bad
+		secure.VerifyPassword("$argon2id$v=19$m=65536,t=3,p=2$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", in.Password)
+		return LoginResult{}, bad
 	}
 	if err != nil {
-		return "", u, err
+		return LoginResult{}, err
 	}
-	actor := Actor{User: u, IP: ip}
+	actor := Actor{User: u, IP: in.IP}
 	if time.Now().Before(u.LockedUntil) {
 		a.audit(ctx, actor, "auth.login_blocked", u.ID, nil)
-		return "", u, &Error{Status: 429, Message: "too many failed attempts; try again later"}
+		return LoginResult{}, &Error{Status: 429, Message: "too many failed attempts; try again later"}
 	}
-	if u.Disabled || !secure.VerifyPassword(u.PasswordHash, password) {
+	if u.Disabled || !secure.VerifyPassword(u.PasswordHash, in.Password) {
 		a.Store.RecordLogin(ctx, u.ID, false, maxLoginFails, lockoutPeriod)
 		a.audit(ctx, actor, "auth.login_failed", u.ID, nil)
-		return "", u, bad
+		return LoginResult{}, bad
+	}
+	if u.TOTPEnabled {
+		if strings.TrimSpace(in.Code) == "" {
+			// The password was right; ask for the second factor without
+			// counting this as a failure.
+			return LoginResult{}, &Error{Status: 401, Code: "totp_required", Message: "enter the code from your authenticator app"}
+		}
+		if !a.checkSecondFactor(ctx, &u, in.Code) {
+			a.Store.RecordLogin(ctx, u.ID, false, maxLoginFails, lockoutPeriod)
+			a.audit(ctx, actor, "auth.login_failed", u.ID, map[string]string{"reason": "second factor"})
+			return LoginResult{}, &Error{Status: 401, Code: "totp_invalid", Message: "that code is not valid; check the clock on your phone or use a recovery code"}
+		}
 	}
 	a.Store.RecordLogin(ctx, u.ID, true, maxLoginFails, lockoutPeriod)
 	a.Store.PurgeExpiredSessions(ctx)
+	policy := a.policy(ctx, u.OrgID)
 	token := secure.NewToken(32)
 	// Only a hash of the token is stored: a copy of the database does not
 	// yield usable sessions.
-	if err := a.Store.CreateSession(ctx, secure.HashToken(token), u.ID, ip, sessionTTL); err != nil {
-		return "", u, err
+	if err := a.Store.CreateSession(ctx, secure.NewID("ses"), secure.HashToken(token), u.ID, in.IP, clip(in.UserAgent, 300), policy.sessionTTL()); err != nil {
+		return LoginResult{}, err
 	}
 	a.audit(ctx, actor, "auth.login", u.ID, nil)
-	return token, u, nil
+	return LoginResult{Token: token, User: u, TTL: policy.sessionTTL(), MustEnroll: policy.RequireTOTP && !u.TOTPEnabled}, nil
+}
+
+// checkSecondFactor accepts the current authenticator code or an unused
+// recovery code, which it then consumes.
+func (a *App) checkSecondFactor(ctx context.Context, u *store.User, code string) bool {
+	secret, err := secure.Open(a.keyring, u.TOTPSecretEnc, totpAAD(u.ID))
+	if err != nil {
+		return false
+	}
+	if secure.VerifyTOTP(string(secret), code, time.Now()) {
+		return true
+	}
+	hash := secure.HashToken(strings.ToLower(strings.TrimSpace(code)))
+	for i, have := range u.RecoveryCodes {
+		if have == hash {
+			u.RecoveryCodes = append(u.RecoveryCodes[:i:i], u.RecoveryCodes[i+1:]...)
+			a.Store.SetTOTP(ctx, u.ID, u.TOTPSecretEnc, true, u.RecoveryCodes)
+			a.audit(ctx, Actor{User: *u}, "auth.recovery_code_used", u.ID, map[string]int{"remaining": len(u.RecoveryCodes)})
+			return true
+		}
+	}
+	return false
+}
+
+func clip(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
 }
 
 // Authenticate resolves a session token to its user.
@@ -120,11 +172,31 @@ func (a *App) Authenticate(ctx context.Context, token, ip string) (Actor, error)
 	if token == "" {
 		return Actor{}, ErrUnauthenticated
 	}
-	u, err := a.Store.SessionUser(ctx, secure.HashToken(token))
+	u, sessionID, err := a.Store.SessionUser(ctx, secure.HashToken(token))
 	if err != nil {
 		return Actor{}, ErrUnauthenticated
 	}
-	return Actor{User: u, IP: ip}, nil
+	return Actor{User: u, IP: ip, SessionID: sessionID, MustEnroll: a.policy(ctx, u.OrgID).RequireTOTP && !u.TOTPEnabled}, nil
+}
+
+// AuthenticateToken resolves an API token to its owner. The actor never
+// has more than the token's role, nor more than the owner has today.
+func (a *App) AuthenticateToken(ctx context.Context, token, ip string) (Actor, error) {
+	if !strings.HasPrefix(token, tokenPrefix) {
+		return Actor{}, ErrUnauthenticated
+	}
+	t, err := a.Store.TokenByHash(ctx, secure.HashToken(token))
+	if err != nil {
+		return Actor{}, ErrUnauthenticated
+	}
+	u, err := a.Store.UserByID(ctx, t.OrgID, t.UserID)
+	if err != nil || u.Disabled {
+		return Actor{}, ErrUnauthenticated
+	}
+	if roleRank[t.Role] < roleRank[u.Role] {
+		u.Role = t.Role
+	}
+	return Actor{User: u, IP: ip, Token: t.Name, TokenID: t.ID}, nil
 }
 
 func (a *App) Logout(ctx context.Context, actor Actor, token string) {
@@ -132,9 +204,10 @@ func (a *App) Logout(ctx context.Context, actor Actor, token string) {
 	a.audit(ctx, actor, "auth.logout", actor.User.ID, nil)
 }
 
-// LocalActor is the identity used by the CLI, which runs with direct access
-// to the data directory and master key and is therefore trusted as an owner.
-// Its actions are audited under the operating-system user name.
+// LocalActor is the identity used by the CLI in local mode, which runs
+// with direct access to the data directory and master key and is therefore
+// trusted as an owner. Its actions are audited under the operating-system
+// user name.
 func (a *App) LocalActor(ctx context.Context) (Actor, error) {
 	org, err := a.Store.FirstOrg(ctx)
 	if err != nil {
@@ -149,121 +222,4 @@ func (a *App) LocalActor(ctx context.Context) (Actor, error) {
 
 func (a *App) Organization(ctx context.Context, actor Actor) (store.Org, error) {
 	return a.Store.GetOrg(ctx, actor.User.OrgID)
-}
-
-// --- user management ---
-
-func (a *App) ListUsers(ctx context.Context, actor Actor) ([]store.User, error) {
-	if err := actor.require(PermManageUsers); err != nil {
-		return nil, err
-	}
-	return a.Store.ListUsers(ctx, actor.User.OrgID)
-}
-
-func (a *App) CreateUser(ctx context.Context, actor Actor, name, email, password, role string) (store.User, error) {
-	if err := actor.require(PermManageUsers); err != nil {
-		return store.User{}, err
-	}
-	if !validRole(role) {
-		return store.User{}, invalid("unknown role %q", role)
-	}
-	// Only an owner may create another owner.
-	if role == RoleOwner && actor.User.Role != RoleOwner {
-		return store.User{}, ErrForbidden
-	}
-	if strings.TrimSpace(name) == "" {
-		return store.User{}, invalid("name is required")
-	}
-	email, err := checkEmail(email)
-	if err != nil {
-		return store.User{}, err
-	}
-	if err := checkPassword(password); err != nil {
-		return store.User{}, err
-	}
-	hash, err := secure.HashPassword(password)
-	if err != nil {
-		return store.User{}, err
-	}
-	u := store.User{ID: secure.NewID("usr"), OrgID: actor.User.OrgID, Email: email, Name: strings.TrimSpace(name), PasswordHash: hash, Role: role}
-	if err := a.Store.CreateUser(ctx, u); err != nil {
-		return store.User{}, invalid("%s", err.Error())
-	}
-	a.audit(ctx, actor, "user.create", u.ID, map[string]string{"email": email, "role": role})
-	return u, nil
-}
-
-// UserUpdate holds the fields an administrator may change; nil means unchanged.
-type UserUpdate struct {
-	Name     *string `json:"name"`
-	Role     *string `json:"role"`
-	Disabled *bool   `json:"disabled"`
-	Password *string `json:"password"`
-}
-
-func (a *App) UpdateUser(ctx context.Context, actor Actor, id string, up UserUpdate) (store.User, error) {
-	if err := actor.require(PermManageUsers); err != nil {
-		return store.User{}, err
-	}
-	u, err := a.Store.UserByID(ctx, actor.User.OrgID, id)
-	if err != nil {
-		return u, wrap(err)
-	}
-	// Owners can only be changed by owners.
-	if u.Role == RoleOwner && actor.User.Role != RoleOwner {
-		return u, ErrForbidden
-	}
-	wasActiveOwner := u.Role == RoleOwner && !u.Disabled
-	changed := map[string]any{}
-	if up.Name != nil && strings.TrimSpace(*up.Name) != "" {
-		u.Name = strings.TrimSpace(*up.Name)
-		changed["name"] = u.Name
-	}
-	if up.Role != nil && *up.Role != u.Role {
-		if !validRole(*up.Role) {
-			return u, invalid("unknown role %q", *up.Role)
-		}
-		if *up.Role == RoleOwner && actor.User.Role != RoleOwner {
-			return u, ErrForbidden
-		}
-		u.Role = *up.Role
-		changed["role"] = u.Role
-	}
-	if up.Disabled != nil && *up.Disabled != u.Disabled {
-		if *up.Disabled && u.ID == actor.User.ID {
-			return u, invalid("you cannot disable your own account")
-		}
-		u.Disabled = *up.Disabled
-		changed["disabled"] = u.Disabled
-	}
-	if up.Password != nil && *up.Password != "" {
-		if err := checkPassword(*up.Password); err != nil {
-			return u, err
-		}
-		if u.PasswordHash, err = secure.HashPassword(*up.Password); err != nil {
-			return u, err
-		}
-		changed["password"] = "changed"
-	}
-	// An organization must always keep one owner who can sign in.
-	if wasActiveOwner && (u.Role != RoleOwner || u.Disabled) {
-		n, err := a.Store.CountActiveOwners(ctx, actor.User.OrgID)
-		if err != nil {
-			return u, err
-		}
-		if n <= 1 {
-			return u, conflict("the organization must keep at least one active owner")
-		}
-	}
-	if err := a.Store.UpdateUser(ctx, u); err != nil {
-		return u, err
-	}
-	// A changed password, role or status ends the user's existing sessions.
-	if len(changed) > 0 {
-		if _, onlyName := changed["name"]; !(onlyName && len(changed) == 1) {
-			a.Store.DeleteUserSessions(ctx, u.ID)
-		}
-	}
-	a.audit(ctx, actor, "user.update", u.ID, changed)
-	return u, nil
 }

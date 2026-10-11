@@ -15,10 +15,16 @@ import (
 )
 
 type cli struct {
-	ctx   context.Context
-	app   *app.App
-	actor app.Actor
+	ctx context.Context
+	// be runs the commands: on this machine's data directory, or on a
+	// Dedie server.
+	be backend
+	// app is set in local mode only, for the commands that need the data
+	// directory itself.
+	app *app.App
 }
+
+func dataDir() string { return app.DefaultDataDir() }
 
 // table prints aligned columns.
 func table(header string, rows [][]string) {
