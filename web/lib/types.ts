@@ -525,6 +525,10 @@ export interface DbAccount {
   /** -1 means no limit. */
   connection_limit: number;
   connections: number;
+  active: number;
+  idle: number;
+  idle_in_transaction: number;
+  oldest_idle_seconds: number;
   member_of: string[];
   valid_until?: string;
 }
@@ -565,6 +569,10 @@ export interface AccountChange {
 }
 
 export interface SessionFilter {
+  /** Only sessions that are not working: "idle" or "idle in transaction". */
+  state?: "" | "idle" | "idle in transaction";
+  /** With state: only sessions in that state at least this long. */
+  idle_seconds?: number;
   user?: string;
   application?: string;
   database?: string;

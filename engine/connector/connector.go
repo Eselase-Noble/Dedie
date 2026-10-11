@@ -119,8 +119,15 @@ type Account struct {
 	// ConnectionLimit is the most connections the account may hold at
 	// once; Unlimited when there is no cap.
 	ConnectionLimit int `json:"connection_limit"`
-	// Connections is how many it holds now.
-	Connections int `json:"connections"`
+	// Connections is how many it holds now, and of those how many are
+	// doing work, waiting for the application, or sitting inside an open
+	// transaction.
+	Connections       int `json:"connections"`
+	Active            int `json:"active"`
+	Idle              int `json:"idle"`
+	IdleInTransaction int `json:"idle_in_transaction"`
+	// OldestIdleSeconds is how long its longest-idle connection has been idle.
+	OldestIdleSeconds int64 `json:"oldest_idle_seconds"`
 	// MemberOf lists the roles granted to the account.
 	MemberOf   []string `json:"member_of"`
 	ValidUntil string   `json:"valid_until,omitempty"`
@@ -227,10 +234,35 @@ type SessionFilter struct {
 	Application string `json:"application"`
 	Database    string `json:"database"`
 	Client      string `json:"client"`
+	// State narrows the filter to sessions that are not working:
+	// StateIdle, or StateIdleInTransaction. Empty matches any state.
+	State string `json:"state"`
+	// IdleSeconds, with State, matches only sessions that have been in
+	// that state at least this long.
+	IdleSeconds int64 `json:"idle_seconds"`
 }
 
+// Session states a filter can select.
+const (
+	StateIdle              = "idle"
+	StateIdleInTransaction = "idle in transaction"
+)
+
 func (f SessionFilter) Empty() bool {
-	return f.User == "" && f.Application == "" && f.Database == "" && f.Client == ""
+	return f.User == "" && f.Application == "" && f.Database == "" && f.Client == "" && f.State == ""
+}
+
+// Validate rejects a filter that names an unknown state.
+func (f SessionFilter) Validate() error {
+	switch f.State {
+	case "", StateIdle, StateIdleInTransaction:
+	default:
+		return fmt.Errorf("unknown session state %q", f.State)
+	}
+	if f.IdleSeconds < 0 || (f.IdleSeconds > 0 && f.State == "") {
+		return errors.New("an idle time needs a state to apply to")
+	}
+	return nil
 }
 
 // Row actions.

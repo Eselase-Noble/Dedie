@@ -28,15 +28,21 @@ func (s *session) Accounts(ctx context.Context) (*connector.Accounts, error) {
 	rows, err := s.conn.Query(ctx, `SELECT r.rolname, r.rolcanlogin, r.rolsuper, r.rolcreatedb, r.rolcreaterole, r.rolreplication,
 			r.rolconnlimit, coalesce(to_char(r.rolvaliduntil, 'YYYY-MM-DD HH24:MI TZ'), ''),
 			ARRAY(SELECT b.rolname::text FROM pg_auth_members m JOIN pg_roles b ON b.oid = m.roleid WHERE m.member = r.oid ORDER BY 1),
-			(SELECT count(*) FROM pg_stat_activity a WHERE a.usename = r.rolname AND a.backend_type = 'client backend')
-		FROM pg_roles r WHERE r.rolname !~ '^pg_' ORDER BY r.rolcanlogin DESC, r.rolname`)
+			coalesce(a.total, 0), coalesce(a.active, 0), coalesce(a.idle, 0), coalesce(a.idle_tx, 0), coalesce(a.oldest, 0)
+		FROM pg_roles r LEFT JOIN (
+			SELECT usename, count(*) AS total, count(*) FILTER (WHERE state = 'active') AS active,
+				count(*) FILTER (WHERE state = 'idle') AS idle,
+				count(*) FILTER (WHERE state LIKE 'idle in transaction%') AS idle_tx,
+				coalesce(max(extract(epoch FROM now() - state_change)) FILTER (WHERE state LIKE 'idle%'), 0)::bigint AS oldest
+			FROM pg_stat_activity WHERE backend_type = 'client backend' GROUP BY usename) a ON a.usename = r.rolname
+		WHERE r.rolname !~ '^pg_' ORDER BY r.rolcanlogin DESC, r.rolname`)
 	if err != nil {
 		return nil, friendly(err)
 	}
 	for rows.Next() {
 		var a connector.Account
 		if err := rows.Scan(&a.Name, &a.CanLogin, &a.Superuser, &a.CreateDB, &a.CreateRole, &a.Replication,
-			&a.ConnectionLimit, &a.ValidUntil, &a.MemberOf, &a.Connections); err != nil {
+			&a.ConnectionLimit, &a.ValidUntil, &a.MemberOf, &a.Connections, &a.Active, &a.Idle, &a.IdleInTransaction, &a.OldestIdleSeconds); err != nil {
 			return nil, err
 		}
 		if a.MemberOf == nil {
@@ -296,12 +302,19 @@ func (s *session) TerminateSessions(ctx context.Context, f connector.SessionFilt
 	if f.Empty() {
 		return 0, errors.New("say whose sessions to disconnect")
 	}
+	if err := f.Validate(); err != nil {
+		return 0, err
+	}
+	// "idle in transaction (aborted)" is the same condition for this
+	// purpose, so the state is matched by prefix.
 	var n int
 	err := s.conn.QueryRow(ctx, `SELECT count(*) FROM (
 			SELECT pg_terminate_backend(pid) FROM pg_stat_activity
 			WHERE pid <> pg_backend_pid() AND backend_type = 'client backend'
 			  AND ($1 = '' OR usename = $1) AND ($2 = '' OR application_name = $2)
-			  AND ($3 = '' OR datname = $3) AND ($4 = '' OR coalesce(host(client_addr), 'local') = $4)) t`,
-		f.User, f.Application, f.Database, f.Client).Scan(&n)
+			  AND ($3 = '' OR datname = $3) AND ($4 = '' OR coalesce(host(client_addr), 'local') = $4)
+			  AND ($5 = '' OR state = $5 OR ($5 = 'idle in transaction' AND state LIKE 'idle in transaction%'))
+			  AND ($6 = 0 OR now() - state_change >= make_interval(secs => $6))) t`,
+		f.User, f.Application, f.Database, f.Client, f.State, f.IdleSeconds).Scan(&n)
 	return n, friendly(err)
 }

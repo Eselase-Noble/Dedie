@@ -387,3 +387,6 @@ body.dragging-y, body.dragging-y * { cursor: row-resize !important; }
 a.btn { color: var(--text); text-decoration: none; }
 a.btn.primary { color: #fff; }
 .segmented { align-self: flex-start; }
+.pool { display: flex; align-items: center; gap: 10px; }
+.pool .progress { flex: 1; min-width: 90px; }
+.pool .progress.done > span { background: var(--danger); }

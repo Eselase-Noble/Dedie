@@ -16,7 +16,11 @@ import (
 func (s *session) Accounts(ctx context.Context) (*connector.Accounts, error) {
 	out := &connector.Accounts{Accounts: []connector.Account{}, Roles: []string{}, Databases: []connector.DatabaseLimit{}, Usage: []connector.ConnectionUsage{}}
 
-	held := map[string]int{}
+	type held struct {
+		total, active, idle int
+		oldest              int64
+	}
+	byUser := map[string]*held{}
 	rows, err := s.conn.QueryContext(ctx, `SELECT user, SUBSTRING_INDEX(host, ':', 1), COALESCE(db, ''), command, time FROM information_schema.processlist`)
 	if err != nil {
 		return nil, Friendly(err)
@@ -30,7 +34,20 @@ func (s *session) Accounts(ctx context.Context) (*connector.Accounts, error) {
 			rows.Close()
 			return nil, err
 		}
-		held[user]++
+		h := byUser[user]
+		if h == nil {
+			h = &held{}
+			byUser[user] = h
+		}
+		h.total++
+		if command == "Sleep" {
+			h.idle++
+			if seconds > h.oldest {
+				h.oldest = seconds
+			}
+		} else {
+			h.active++
+		}
 		out.Used++
 		key := [3]string{user, client, db}
 		u := usage[key]
@@ -78,7 +95,10 @@ func (s *session) Accounts(ctx context.Context) (*connector.Accounts, error) {
 		if a.ConnectionLimit == 0 {
 			a.ConnectionLimit = connector.Unlimited
 		}
-		a.Connections, a.MemberOf = held[a.Name], []string{}
+		if h := byUser[a.Name]; h != nil {
+			a.Connections, a.Active, a.Idle, a.OldestIdleSeconds = h.total, h.active, h.idle, h.oldest
+		}
+		a.MemberOf = []string{}
 		index[a.Name+"@"+a.Host] = len(out.Accounts)
 		out.Accounts = append(out.Accounts, a)
 		if isRole {
@@ -198,12 +218,23 @@ func (s *session) SetConnectionLimit(ctx context.Context, l connector.LimitChang
 // this one. MySQL does not record an application name, so that part of
 // the filter is ignored.
 func (s *session) TerminateSessions(ctx context.Context, f connector.SessionFilter) (int, error) {
-	if f.User == "" && f.Database == "" && f.Client == "" {
+	if f.User == "" && f.Database == "" && f.Client == "" && f.State == "" {
 		return 0, errors.New("say whose sessions to disconnect")
 	}
+	if err := f.Validate(); err != nil {
+		return 0, err
+	}
+	if f.State == connector.StateIdleInTransaction {
+		return 0, errors.New("MySQL does not report sessions idle inside a transaction here; close idle sessions instead")
+	}
+	// An idle MySQL session is one whose command is Sleep; its time is
+	// how long it has been asleep. The server's own threads are never
+	// touched.
 	rows, err := s.conn.QueryContext(ctx, `SELECT id FROM information_schema.processlist
-		WHERE id <> CONNECTION_ID() AND (? = '' OR user = ?) AND (? = '' OR db = ?) AND (? = '' OR SUBSTRING_INDEX(host, ':', 1) = ?)`,
-		f.User, f.User, f.Database, f.Database, f.Client, f.Client)
+		WHERE id <> CONNECTION_ID() AND user NOT IN ('event_scheduler', 'system user')
+		  AND (? = '' OR user = ?) AND (? = '' OR db = ?) AND (? = '' OR SUBSTRING_INDEX(host, ':', 1) = ?)
+		  AND (? = '' OR (command = 'Sleep' AND time >= ?))`,
+		f.User, f.User, f.Database, f.Database, f.Client, f.Client, f.State, f.IdleSeconds)
 	if err != nil {
 		return 0, Friendly(err)
 	}
