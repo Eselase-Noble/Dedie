@@ -95,9 +95,9 @@
 
 <main id="top">
   <div class="wrap hero">
-    <span class="eyebrow">For PostgreSQL and MySQL</span>
+    <span class="eyebrow">For PostgreSQL, MySQL and MongoDB</span>
     <h1>Move a live database without taking it down</h1>
-    <p class="lead">Dedie upgrades a database to a new version, or moves it between MySQL and PostgreSQL, while the old one keeps serving your application. It also gives your team a query browser, encrypted backups and a full audit trail.</p>
+    <p class="lead">Dedie upgrades a database to a new version, or moves it to another engine, while the old one keeps serving your application. It also gives your team a query browser, scheduled encrypted backups, monitoring with alerts, database user management and a full audit trail.</p>
     <div class="cta">
       <a class="btn primary" href="https://github.com/Eselase-Noble/Dedie/releases/latest">Download the latest release</a>
       <a class="btn" href="https://github.com/Eselase-Noble/Dedie#readme">Read the documentation</a>
@@ -110,12 +110,15 @@
       <h2>One tool for the life of a database</h2>
       <p class="sub">Everything runs on the same engine, behind the same access rules, whether you use the web interface, the command line or the desktop application.</p>
       <div class="grid">
-        <div class="card"><h3>Online migration</h3><p>Copy a consistent snapshot, follow the replication log to stay in step, and switch over in a write pause measured in seconds. Pause and resume at any point.</p></div>
-        <div class="card"><h3>Database, schema or table level</h3><p>Migrate a whole database, selected schemas, or only the tables you name, with their indexes, constraints and triggers.</p></div>
-        <div class="card"><h3>Query browser</h3><p>A full-window workspace with a schema tree, a SQL editor that knows your tables, and a grid built for wide and long results. Read-only unless you say otherwise.</p></div>
-        <div class="card"><h3>Backup and recovery</h3><p>Logical backups encrypted before they reach disk, verified before every restore, and restored into any connection of the same kind.</p></div>
-        <div class="card"><h3>Server administration</h3><p>See which servers are online, who is connected and what they are running. Cancel a query, end a session, spot replication slots that hold WAL.</p></div>
-        <div class="card"><h3>Built for organizations</h3><p>Five roles, encrypted credentials, and a tamper-evident audit log that records every statement and every change.</p></div>
+        <div class="card"><h3>Online migration</h3><p>Copy a consistent snapshot, follow the replication log to stay in step, and switch over in a write pause measured in seconds. Pause and resume at any point, at database, schema or table level.</p></div>
+        <div class="card"><h3>Continuous sync</h3><p>Keep a second database following the first for as long as you like: a reporting copy on another engine, or MongoDB collections you can query in SQL.</p></div>
+        <div class="card"><h3>Query browser</h3><p>Tabs, a SQL editor that knows your tables, explain plans, saved queries, and a grid built for wide and long results. Open a table and edit its rows in place.</p></div>
+        <div class="card"><h3>Backup and recovery</h3><p>Full, structure-only, data-only, single-table and physical backups, encrypted before they reach disk. Schedules take them, verify them and delete old ones. Restore into a new database or one table at a time.</p></div>
+        <div class="card"><h3>Monitoring and alerts</h3><p>Every database is checked each minute. Uptime, response time and migration lag on one page and in Prometheus, with alerts to Slack, a webhook or email.</p></div>
+        <div class="card"><h3>Database users and connections</h3><p>Create database users, grant roles or a ready-made access level, cap connections per user or database, see which applications hold the connections, and disconnect them.</p></div>
+        <div class="card"><h3>Server administration</h3><p>Who is connected and what they are running. Cancel a query, end a session, change who owns a database, schema or table, and spot replication slots that hold WAL.</p></div>
+        <div class="card"><h3>Built for organizations</h3><p>Five roles, two-factor sign-in, API tokens, per-connection permissions, encrypted credentials, and a tamper-evident audit log of every statement and change.</p></div>
+        <div class="card"><h3>Web, command line and desktop</h3><p>One engine behind all three. Sign the command line in to your Dedie server and run migrations and backups from any machine or from CI.</p></div>
       </div>
     </div>
   </section>
@@ -131,10 +134,10 @@
           <tr><td>MySQL 5.6 or newer</td><td>Any newer MySQL</td><td>Tables, data, views, routines, triggers, events</td><td><span class="tag">Working</span></td></tr>
           <tr><td>MySQL</td><td>PostgreSQL</td><td>Tables, data, keys, indexes and foreign keys, translated to PostgreSQL types</td><td><span class="tag">Working</span></td></tr>
           <tr><td>PostgreSQL</td><td>MySQL 8.0 or newer</td><td>Tables, data, keys, indexes and foreign keys, translated to MySQL types</td><td><span class="tag">Working</span></td></tr>
-          <tr><td>MongoDB</td><td>PostgreSQL</td><td>Documents mapped to tables</td><td><span class="tag soon">Planned</span></td></tr>
+          <tr><td>MongoDB 4.0 or newer (replica set)</td><td>PostgreSQL</td><td>Every collection becomes a table that holds each document in full as <code>jsonb</code></td><td><span class="tag">Working</span></td></tr>
         </tbody>
       </table>
-      <p class="note">The PostgreSQL test runs version 16 to 18. The MySQL tests use MySQL 8.0; other MySQL versions have not been exercised yet. Moving between engines does not translate views, routines or triggers, and the preflight check lists every difference for your schema before anything is changed.</p>
+      <p class="note">Every path can also run as a continuous sync that never cuts over. The PostgreSQL test runs version 16 to 18; the MySQL tests use MySQL 8.0 and the MongoDB test 8.0, and other versions of those two have not been exercised yet. Moving between engines does not translate views, routines or triggers, MongoDB indexes are not translated, and the preflight check lists every difference before anything is changed.</p>
     </div>
   </section>
 
@@ -156,15 +159,47 @@
     <div class="wrap split">
       <div>
         <h2>A query browser with room to work</h2>
-        <p class="sub" style="margin-bottom:0">The editor and the results share the whole window, and you decide how much each one gets.</p>
+        <p class="sub" style="margin-bottom:0">Open as many tabs as you need. The editor and the results share the window, and you decide how much each one gets.</p>
         <ul class="checks">
-          <li><strong>Wide and long results.</strong> Scroll in both directions under a pinned header; thousands of rows stay smooth.</li>
-          <li><strong>Run what you select.</strong> Highlight one statement out of several and run just that.</li>
-          <li><strong>Completion from your schema.</strong> Table and column names for PostgreSQL and MySQL.</li>
-          <li><strong>Read-only by default.</strong> Writes need permission and a deliberate switch, and every statement is audited.</li>
+          <li><strong>Browse and edit tables.</strong> Page through any table, filter it, and change a cell or add a row. Every edit is one audited statement that must touch exactly one row.</li>
+          <li><strong>Understand a query.</strong> Explain shows the plan; Analyze shows where the time went. Format tidies the SQL, and Cancel stops a statement that runs too long.</li>
+          <li><strong>Work with results.</strong> Sort, filter, and export what you see as CSV, JSON or SQL.</li>
+          <li><strong>Save and share.</strong> Keep queries for yourself or for the whole team.</li>
+          <li><strong>Read-only by default.</strong> Writes need permission and a deliberate switch.</li>
         </ul>
       </div>
-      <div class="shot"><img src="img/query.png" alt="The Dedie query browser: schema tree on the left, SQL editor above, and a result grid with a pinned header below." width="1440" height="813" loading="lazy"></div>
+      <div class="shot"><img src="img/query.png" alt="The Dedie query browser: schema tree on the left, tabs for queries and tables, a formatted SQL statement and its results below." width="1500" height="863" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section class="alt">
+    <div class="wrap split flip">
+      <div>
+        <h2>Know when something needs you</h2>
+        <p class="sub" style="margin-bottom:0">Dedie checks every database once a minute and tells you when one stops answering, a migration falls behind or a backup fails.</p>
+        <ul class="checks">
+          <li><strong>Uptime and response time</strong> for every connection over the last day.</li>
+          <li><strong>Alerts where you already look.</strong> Slack, Teams, a signed webhook or email, with a test button.</li>
+          <li><strong>Prometheus metrics</strong> and a health endpoint for your own dashboards and load balancers.</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="img/monitoring.png" alt="The Dedie monitoring page: one database reported as not answering, the others online with uptime and response time, and an alert channel that delivered." width="1500" height="863" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap split">
+      <div>
+        <h2>Manage who uses the database</h2>
+        <p class="sub" style="margin-bottom:0">Database accounts and the connections they hold, without writing the SQL by hand.</p>
+        <ul class="checks">
+          <li><strong>Create users and roles</strong> with a generated password, read-only or read-write access, and role membership.</li>
+          <li><strong>Limit connections</strong> per user or per database, so one application cannot exhaust the server.</li>
+          <li><strong>See who is connected</strong> by user, application and address, including sessions idle inside a transaction, and disconnect them.</li>
+          <li><strong>Passwords stay private.</strong> PostgreSQL receives a SCRAM verifier, never the password, and Dedie does not store it.</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="img/dbusers.png" alt="The Dedie database users page: connections in use against the server limit, users and roles with their privileges and limits, and limits per database." width="1500" height="863" loading="lazy"></div>
     </div>
   </section>
 
@@ -175,7 +210,8 @@
         <p class="sub" style="margin-bottom:0">Connections show whether their server is answering and how quickly, and you can create what you need without leaving the page.</p>
         <ul class="checks">
           <li><strong>Live status.</strong> Online or offline, with response time, checked every thirty seconds.</li>
-          <li><strong>Create databases, schemas and tables.</strong> A small table designer; the database server decides whether your account may.</li>
+          <li><strong>Create databases, schemas and tables</strong> in any database on the server, and change who owns them.</li>
+          <li><strong>Restrict a connection</strong> to the people who should see it.</li>
           <li><strong>Weak encryption is flagged.</strong> Connections that do not require TLS are marked.</li>
         </ul>
       </div>
@@ -189,7 +225,9 @@
       <p class="sub">Dedie holds the keys to your databases, so it is built to be trusted with them.</p>
       <div class="grid">
         <div class="card"><h3>Encrypted at rest</h3><p>Database passwords are sealed with AES-256-GCM under a per-secret key, wrapped by a master key you control. Backups are encrypted as authenticated chunks.</p></div>
-        <div class="card"><h3>Roles</h3><p>Owner, admin, operator, analyst and viewer. The same rules apply to the web interface, the API and the desktop application.</p></div>
+        <div class="card"><h3>Roles and permissions</h3><p>Owner, admin, operator, analyst and viewer, with connections that can be restricted to chosen people. The same rules apply to the web interface, the API, the command line and the desktop application.</p></div>
+        <div class="card"><h3>Two-factor sign-in</h3><p>Authenticator codes with recovery codes, which an organization can require of everyone, alongside a password policy and a list of your signed-in sessions.</p></div>
+        <div class="card"><h3>API tokens</h3><p>For scripts and CI. A token never has more than its creator's role, can expire, is stored only as a hash, and cannot create further credentials.</p></div>
         <div class="card"><h3>Tamper-evident audit log</h3><p>Every sign-in, statement and change is recorded, and each entry is chained to the one before it. An edited or deleted entry is detected.</p></div>
         <div class="card"><h3>Safe by default</h3><p>The server refuses to serve plain HTTP beyond the local machine, new connections require TLS, and sessions end when a password or role changes.</p></div>
       </div>
@@ -199,22 +237,26 @@
   <section id="start" class="alt">
     <div class="wrap">
       <h2>Get started</h2>
-      <p class="sub">Download a release, or build from source. The server, the command line and the desktop application share one engine and one data directory.</p>
+      <p class="sub">Download a release, or build from source. The server, the command line and the desktop application share one engine.</p>
       <pre><span class="c"># build from source: Go 1.26+, Node 22+</span>
 git clone https://github.com/Eselase-Noble/Dedie.git
 cd Dedie
 make
 bin/dedie-server                 <span class="c"># http://127.0.0.1:8080</span>
 
-<span class="c"># or drive a migration from the command line</span>
+<span class="c"># from any machine: sign the command line in to your Dedie server</span>
+dedie login https://dedie.example.com
 dedie migrate create --name "shop 16 to 18" --source prod-16 --target prod-18 --fence
 dedie migrate preflight &lt;id&gt;
 dedie migrate run &lt;id&gt;
-dedie migrate cutover &lt;id&gt;</pre>
+dedie migrate cutover &lt;id&gt;
+
+<span class="c"># nightly backups, keeping the last fourteen</span>
+dedie backup schedule add --name nightly --connection prod-18 --cron "0 2 * * *" --keep-last 14</pre>
       <div class="grid" style="margin-top:22px">
-        <div class="card"><h3>dedie-server</h3><p>The web interface, the HTTP API and the worker that runs migrations. For teams.</p></div>
-        <div class="card"><h3>dedie</h3><p>The command line. Works directly on the data directory and needs no server.</p></div>
-        <div class="card"><h3>Dedie Desktop</h3><p>A JavaFX window around the same engine, for one person on their own machine.</p></div>
+        <div class="card"><h3>dedie-server</h3><p>The web interface, the HTTP API and the workers that run migrations, scheduled backups and health checks. For teams.</p></div>
+        <div class="card"><h3>dedie</h3><p>The command line. Sign in to a Dedie server and run everything from your own machine or from CI, or use it on the server host to set an installation up.</p></div>
+        <div class="card"><h3>Dedie Desktop</h3><p>A JavaFX application around the same engine, for one person on their own machine, with native menus, downloads and shortcuts.</p></div>
       </div>
       <p class="note">The full guide, including requirements for each database and everything that is not migrated, is in the <a href="https://github.com/Eselase-Noble/Dedie#readme">README</a>.</p>
     </div>

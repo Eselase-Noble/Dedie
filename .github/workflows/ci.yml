@@ -26,7 +26,8 @@ jobs:
       - name: Unit tests
         run: make test
 
-      # The end-to-end test migrates a live database from PostgreSQL 16 to 18.
+      # The end-to-end tests migrate a live database from PostgreSQL 16 to 18
+      # and from MongoDB to PostgreSQL 18.
       # Both servers are installed from the PostgreSQL apt repository and run
       # as plain local clusters on ports 54316 and 54318.
       - name: Start PostgreSQL 16 and 18
@@ -43,10 +44,21 @@ jobs:
             "/usr/lib/postgresql/$v/bin/pg_ctl" -D "$dir" -l "$dir/server.log" -w start
           done
 
-      - name: Integration test
+      # MongoDB is run from its release archive as a one-member replica set,
+      # which is what the change stream needs. The test initiates the set.
+      - name: Start MongoDB 8.0
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/mongodb.tgz" https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-ubuntu2404-8.0.4.tgz
+          mkdir -p "$RUNNER_TEMP/mongodb" "$RUNNER_TEMP/mongodb-data"
+          tar -xzf "$RUNNER_TEMP/mongodb.tgz" -C "$RUNNER_TEMP/mongodb" --strip-components=1
+          "$RUNNER_TEMP/mongodb/bin/mongod" --dbpath "$RUNNER_TEMP/mongodb-data" --port 27117 --bind_ip 127.0.0.1 \
+            --replSet rs0 --logpath "$RUNNER_TEMP/mongod.log" --fork
+
+      - name: Integration tests
         env:
           DEDIE_TEST_SOURCE: postgres://postgres@127.0.0.1:54316/postgres
           DEDIE_TEST_TARGET: postgres://postgres@127.0.0.1:54318/postgres
+          DEDIE_TEST_MONGO_SOURCE: mongodb://127.0.0.1:27117
         run: make test-integration
 
   build:
