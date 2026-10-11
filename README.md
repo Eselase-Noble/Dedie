@@ -504,6 +504,46 @@ What to know:
 - Column types that cannot be migrated yet (spatial, object and collection types, `BFILE`) fail preflight, which names the columns; exclude their tables.
 - The character `NUL`, which PostgreSQL text cannot hold, is removed from the strings that contain it.
 
+### Oracle to MySQL
+
+The source side is as described under [Oracle](#oracle). MySQL has no schemas inside a database, so every table goes into the target connection's database, with upper-case names in lower case. Preflight fails if two source schemas hold a table of the same name, or if names differ only in case on a server that ignores case.
+
+Requirements on the target: MySQL 8.0 or newer (MariaDB is refused), a connection that names a database, and `utf8mb4` as that database's character set.
+
+| Oracle | MySQL |
+|---|---|
+| `NUMBER(p)` up to 2, 4, 9, 18 digits | `tinyint`, `smallint`, `int`, `bigint` |
+| `NUMBER(p)` beyond 18 digits, `NUMBER(p,s)` | `decimal(p,s)` |
+| `NUMBER` without precision | `decimal(65,30)`: exact to 35 digits before the point and 30 after |
+| a `NUMBER` wider than `decimal` allows, `FLOAT`, `BINARY_DOUBLE` | `double` |
+| `BINARY_FLOAT` | `float` |
+| `VARCHAR2(n)`, `NVARCHAR2(n)` | `varchar(n)`; `text` beyond 16383 characters |
+| `CHAR(n)`, `NCHAR(n)` | `char(n)`; `varchar(n)` beyond 255 |
+| `CLOB`, `NCLOB`, `LONG`, `XMLTYPE` | `longtext` |
+| `RAW(n)` | `varbinary(n)` |
+| `BLOB`, `LONG RAW` | `longblob` |
+| `DATE` | `datetime` |
+| `TIMESTAMP(n)` | `datetime(n)`, at most 6 digits |
+| `TIMESTAMP WITH TIME ZONE`, `WITH LOCAL TIME ZONE` | `datetime(6)` holding UTC: the instant is kept, the zone is not |
+| `INTERVAL YEAR TO MONTH`, `DAY TO SECOND` | `varchar(64)` holding ISO 8601 text, such as `P2Y6M` |
+| `JSON`, `BOOLEAN` | `json`, `tinyint(1)` |
+| `ROWID`, `UROWID` | `varchar(18)`, `text` |
+
+Also carried over: identity columns as `AUTO_INCREMENT`, with the counter moved past the source's at the end; defaults that mean the same (literals, `SYSDATE`, `SYSTIMESTAMP`, `SYS_GUID()`, `USER`); indexes; check constraints, on MySQL 8.0.16 or newer; and foreign keys, added at the very end. A column that refers to a key takes the key's type.
+
+What to know:
+
+- **Sequences are not migrated**: MySQL has none. A default that calls `sequence.NEXTVAL` is dropped and listed by preflight; an identity column is the equivalent that does carry over.
+- Not translated: views, materialized views, PL/SQL, synonyms, database links and partitioning. Users, roles and grants are not copied.
+- A table whose declared column lengths pass MySQL's 65,535-byte row limit has its longest `varchar` and `varbinary` columns stored as `text` and `blob` instead, and preflight says which.
+- An index over a `text`, `blob` or `json` column, or with a key longer than 3072 bytes, is listed and left out. A primary key that long fails preflight. Function-based and descending indexes are not translated.
+- Tables are created with a binary `utf8mb4` collation, so text compares by exact value, as it does in Oracle, and not without regard to case as MySQL's default would.
+- `NaN` and infinity, which MySQL cannot store, stop the migration, as does a row larger than the server's `max_allowed_packet`.
+- A `NUMBER` without precision shows all 30 decimal places in MySQL (`5.000000000000000000000000000000`); it is the same number. Declare a precision on the source first if that matters to you.
+- A `CHAR` value comes back without its trailing blanks.
+- MySQL names foreign keys and check constraints per database, not per table, so one can clash with a constraint of an unrelated table already there; preflight lists such clashes with the other [objects that already exist](#when-the-target-already-has-some-of-the-objects).
+- Validation compares row counts and, where the primary key is a number, text or date, the set of keys.
+
 ### For all pipelines
 
 - Schema changes made on the source while a migration is running are not replicated. Freeze the schema until cutover. `TRUNCATE` is replicated.
