@@ -33,8 +33,8 @@ test:
 	go test -tags noui ./...
 
 # End-to-end migration tests. Each needs two database servers and skips
-# itself when its variables are not set; see the integration_test.go file in
-# engine/migrate/pgpg and engine/migrate/mymy.
+# itself when its variables are not set; see the integration_test.go file of
+# each pipeline under engine/migrate.
 test-integration:
 	go test -tags noui -count=1 -v -run TestMigration ./engine/migrate/...
 
