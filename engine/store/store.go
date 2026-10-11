@@ -93,6 +93,11 @@ CREATE TABLE IF NOT EXISTS connection_grants (
   connection_id TEXT NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   PRIMARY KEY (connection_id, user_id));
+CREATE TABLE IF NOT EXISTS saved_queries (
+  id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id),
+  user_id TEXT NOT NULL, owner TEXT NOT NULL, name TEXT NOT NULL, sql TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT '', shared INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS alert_channels (
   id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id),
   name TEXT NOT NULL, kind TEXT NOT NULL, config_enc BLOB NOT NULL, summary TEXT NOT NULL DEFAULT '',

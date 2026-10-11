@@ -96,7 +96,7 @@ export default function TwoFactor({ enabled, required, onChange }: {
                 <Field label="Confirm with your password">
                   <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required autoFocus autoComplete="current-password" />
                 </Field>
-                <div className="row-actions">
+                <div className="row-actions" style={{ justifyContent: "flex-start" }}>
                   <button className="btn" type="button" onClick={() => setDisabling(false)}>Cancel</button>
                   <button className="btn danger" type="submit" disabled={busy}>Turn off two-factor sign-in</button>
                 </div>
@@ -126,7 +126,7 @@ export default function TwoFactor({ enabled, required, onChange }: {
               <input className="input mono" style={{ maxWidth: 160 }} value={code} onChange={(e) => setCode(e.target.value)}
                 required inputMode="numeric" autoComplete="one-time-code" placeholder="123456" autoFocus />
             </Field>
-            <div className="row-actions">
+            <div className="row-actions" style={{ justifyContent: "flex-start" }}>
               <button className="btn" type="button" onClick={() => setSetup(null)}>Cancel</button>
               <button className="btn primary" type="submit" disabled={busy}>Turn on</button>
             </div>

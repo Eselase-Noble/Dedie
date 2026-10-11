@@ -22,6 +22,8 @@ import type {
   QueryResponse,
   Restore,
   RestoreInput,
+  RowChange,
+  SavedQuery,
   Schedule,
   ScheduleInput,
   SecurityPolicy,
@@ -51,6 +53,9 @@ interface RequestOptions {
   // The sign-in page handles 401 itself; everywhere else an expired session
   // sends the user back to it.
   noRedirect?: boolean;
+  // Aborting the signal abandons the request; the server then cancels the
+  // statement it was running for it.
+  signal?: AbortSignal;
 }
 
 async function request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<T> {
@@ -68,8 +73,10 @@ async function request<T>(method: string, path: string, opts: RequestOptions = {
       headers,
       credentials: "same-origin",
       body: method === "GET" ? undefined : JSON.stringify(opts.body ?? {}),
+      signal: opts.signal,
     });
-  } catch {
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") throw new ApiError(0, "Cancelled.", "cancelled");
     throw new ApiError(0, "The server could not be reached.");
   }
   let data: unknown = null;
@@ -144,8 +151,15 @@ export const api = {
   createTable: (connId: string, body: { schema: string; name: string; columns: ColumnDef[] }) =>
     post<{ ok: boolean }>(`/connections/${id(connId)}/tables`, body),
   catalog: (connId: string) => get<Catalog>(`/connections/${id(connId)}/catalog`),
-  query: (connId: string, body: { sql: string; write: boolean; max_rows: number }) =>
-    post<QueryResponse>(`/connections/${id(connId)}/query`, body),
+  query: (connId: string, body: { sql: string; write: boolean; max_rows: number }, signal?: AbortSignal) =>
+    post<QueryResponse>(`/connections/${id(connId)}/query`, body, { signal }),
+  changeRow: (connId: string, body: RowChange) => post<{ ok: boolean }>(`/connections/${id(connId)}/rows`, body),
+
+  // Saved queries
+  savedQueries: () => get<SavedQuery[]>("/queries"),
+  saveQuery: (queryId: string, body: { name: string; sql: string; kind: string; shared: boolean }) =>
+    queryId ? request<SavedQuery>("PUT", `/queries/${id(queryId)}`, { body }) : post<SavedQuery>("/queries", body),
+  deleteSavedQuery: (queryId: string) => request<{ ok: boolean }>("DELETE", `/queries/${id(queryId)}`),
   overview: (connId: string) => get<Overview>(`/connections/${id(connId)}/overview`),
   cancelBackend: (connId: string, pid: number, terminate: boolean) =>
     post<{ ok: boolean }>(`/connections/${id(connId)}/backends/${pid}/cancel${terminate ? "?terminate=1" : ""}`),

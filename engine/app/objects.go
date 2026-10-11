@@ -166,3 +166,23 @@ func (a *App) probe(ctx context.Context, c store.Connection) ConnectionStatus {
 	status.LatencyMS = time.Since(start).Milliseconds()
 	return status
 }
+
+// ChangeRow inserts, updates or deletes one row from the data browser. The
+// edit is audited with the row's key and the columns touched, not with the
+// values written, which may be sensitive.
+func (a *App) ChangeRow(ctx context.Context, actor Actor, connID string, change connector.RowChange) error {
+	c, sess, err := a.writable(ctx, actor, connID)
+	if err != nil {
+		return err
+	}
+	defer sess.Close(context.WithoutCancel(ctx))
+	detail := map[string]any{"connection": c.Name, "schema": change.Schema, "table": change.Table, "action": change.Action,
+		"key": change.Key, "columns": connector.Columns(change.Values)}
+	if err := sess.ChangeRow(ctx, change); err != nil {
+		detail["error"] = err.Error()
+		a.audit(ctx, actor, "data.change_row", c.ID, detail)
+		return &Error{Status: 422, Message: err.Error()}
+	}
+	a.audit(ctx, actor, "data.change_row", c.ID, detail)
+	return nil
+}

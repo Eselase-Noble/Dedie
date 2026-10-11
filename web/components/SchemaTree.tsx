@@ -4,12 +4,16 @@ import { useMemo, useState } from "react";
 import { formatNumber } from "@/lib/format";
 import type { Catalog, CatalogTable } from "@/lib/types";
 
+/** What can be done with a table from the tree. */
+export type TableAction = "browse" | "select" | "details";
+
 /**
- * The object tree of a database. Clicking a table or view name calls
- * onPick; the caret expands its columns.
+ * The object tree of a database. Clicking a table or view name browses its
+ * rows; the buttons beside it write a SELECT or show its structure, and
+ * the caret expands its columns.
  */
 export default function SchemaTree({ catalog, onPick }: {
-  catalog: Catalog; onPick: (schema: string, table: string) => void;
+  catalog: Catalog; onPick: (action: TableAction, schema: string, table: string) => void;
 }) {
   const [filter, setFilter] = useState("");
   const [open, setOpen] = useState<Record<string, boolean>>(() => {
@@ -42,10 +46,14 @@ export default function SchemaTree({ catalog, onPick }: {
           <button className="link-btn caret" onClick={() => toggle(key)} aria-label={open[key] ? "Collapse" : "Expand"}>
             {open[key] ? "▾" : "▸"}
           </button>
-          <button className="link-btn tname" style={{ color: "inherit" }} onClick={() => onPick(schema, t.name)}
-            title={`Insert a SELECT for ${schema}.${t.name}`}>
+          <button className="link-btn tname" style={{ color: "inherit" }} onClick={() => onPick("browse", schema, t.name)}
+            title={`Browse the rows of ${schema}.${t.name}`}>
             {t.name}
           </button>
+          <span className="tree-actions">
+            <button className="link-btn" onClick={() => onPick("select", schema, t.name)} title="Write a SELECT in a new query tab">SQL</button>
+            <button className="link-btn" onClick={() => onPick("details", schema, t.name)} title="Columns, keys and indexes">Info</button>
+          </span>
           {!isView && <span className="tmeta" title="Estimated rows">~{formatNumber(t.est_rows)}</span>}
         </div>
         {open[key] && t.columns.map((c) => (
