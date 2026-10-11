@@ -45,6 +45,31 @@ func OpenSnapshot(ctx context.Context, src *sql.DB, workers int) ([]*sql.Conn, P
 	if err != nil {
 		return nil, pos, err
 	}
+	conns, err := openReaders(ctx, src, workers)
+	return conns, pos, err
+}
+
+// OpenOfflineSnapshot opens the read connections for a job that follows no
+// changes. No binary log position is read, so the source needs neither
+// binary logging nor the replication privileges. The global read lock still
+// puts every worker on the same instant; where the account may not take it,
+// a single connection copies everything from its own consistent snapshot.
+func OpenOfflineSnapshot(ctx context.Context, src *sql.DB, workers int) ([]*sql.Conn, error) {
+	lock, err := src.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Close()
+	if _, err := lock.ExecContext(ctx, "FLUSH TABLES WITH READ LOCK"); err != nil {
+		return openReaders(ctx, src, 1)
+	}
+	defer lock.ExecContext(context.WithoutCancel(ctx), "UNLOCK TABLES")
+	return openReaders(ctx, src, workers)
+}
+
+// openReaders starts one consistent-snapshot transaction per worker. The
+// caller holds whatever keeps the source still while they open.
+func openReaders(ctx context.Context, src *sql.DB, workers int) ([]*sql.Conn, error) {
 	conns := make([]*sql.Conn, 0, workers)
 	for i := 0; i < workers; i++ {
 		c, err := src.Conn(ctx)
@@ -62,11 +87,11 @@ func OpenSnapshot(ctx context.Context, src *sql.DB, workers int) ([]*sql.Conn, P
 				open.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
 				open.Close()
 			}
-			return nil, pos, err
+			return nil, err
 		}
 		conns = append(conns, c)
 	}
-	return conns, pos, nil
+	return conns, nil
 }
 
 // copyTable streams one table from the source snapshot into the target in

@@ -107,6 +107,15 @@ func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 		r.save()
 	}
 
+	// An offline job has no stream to follow: the copy is the whole
+	// migration, and it finishes without waiting for the operator.
+	if r.cfg.Offline() {
+		if _, err := r.finalize(ctx); err != nil {
+			return "", err
+		}
+		return migrate.Completed, nil
+	}
+
 	retries := 0
 	for {
 		r.rep.SetPhase(migrate.PhaseStreaming)
@@ -258,7 +267,14 @@ func (r *runner) snapshotPhase(ctx context.Context) error {
 	if _, err := r.dst.Exec(ctx, `UPDATE `+metaSchema+`.mysql_checkpoint SET binlog_file = '', binlog_pos = 0 WHERE job_id = $1`, r.jobID); err != nil {
 		return err
 	}
-	conns, pos, err := mymy.OpenSnapshot(ctx, r.src, r.cfg.SnapshotWorkers)
+	var conns []*sql.Conn
+	var pos mymy.Position
+	var err error
+	if r.cfg.Offline() {
+		conns, err = mymy.OpenOfflineSnapshot(ctx, r.src, r.cfg.SnapshotWorkers)
+	} else {
+		conns, pos, err = mymy.OpenSnapshot(ctx, r.src, r.cfg.SnapshotWorkers)
+	}
 	if err != nil {
 		return err
 	}
@@ -270,9 +286,13 @@ func (r *runner) snapshotPhase(ctx context.Context) error {
 			c.Close()
 		}
 	}()
-	r.st.Start, r.st.ConsistentLSN = pos, pos.String()
-	r.save()
-	r.rep.Event("info", fmt.Sprintf("copying %d tables from a snapshot at %s with %d workers", len(r.plan.Tables), pos, len(conns)))
+	if r.cfg.Offline() {
+		r.rep.Event("info", fmt.Sprintf("copying %d tables from one snapshot of the source with %d workers", len(r.plan.Tables), len(conns)))
+	} else {
+		r.st.Start, r.st.ConsistentLSN = pos, pos.String()
+		r.save()
+		r.rep.Event("info", fmt.Sprintf("copying %d tables from a snapshot at %s with %d workers", len(r.plan.Tables), pos, len(conns)))
+	}
 	if err := snapshot(ctx, conns, r.dstCfg, r.plan, r.rep); err != nil {
 		return err
 	}
@@ -319,8 +339,10 @@ func (r *runner) syncIdentities(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// finalize runs once the stream has drained at cutover. It returns false
-// when validation fails, in which case the job goes back to streaming.
+// finalize runs once the stream has drained at cutover, or straight after
+// indexing in an offline job. It returns false when validation fails, in
+// which case the job goes back to streaming; an offline job has no stream to
+// go back to and fails instead.
 func (r *runner) finalize(ctx context.Context) (bool, error) {
 	r.rep.SetPhase(migrate.PhaseCutover)
 	if err := r.reconnect(ctx); err != nil {
@@ -337,6 +359,12 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 		why := fmt.Sprintf("%d table(s) differ between source and target", mismatches)
 		if err != nil {
 			why = err.Error()
+		}
+		if r.cfg.Offline() {
+			if err != nil {
+				return false, err
+			}
+			return false, fmt.Errorf("%s: the source was probably written to during the copy. Stop writes to the source and run the migration again", why)
 		}
 		if r.st.Fenced {
 			if uerr := mymy.Unfence(ctx, r.srcCfg); uerr != nil {
@@ -360,6 +388,9 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 	msg := "cutover complete: the target is ready for application traffic"
 	if r.st.Fenced {
 		msg += ". The source database was left read-only"
+	}
+	if r.cfg.Offline() {
+		msg = "offline copy complete: the target holds the source as of the snapshot"
 	}
 	r.rep.Event("info", msg)
 	r.save()

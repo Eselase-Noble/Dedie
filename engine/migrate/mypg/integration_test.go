@@ -347,3 +347,158 @@ func TestMigration(t *testing.T) {
 		t.Errorf("%d apply anomalies", st.Anomalies)
 	}
 }
+
+// TestMigrationOffline runs a one-time copy with a source account that may
+// only read: no replication privilege, and no RELOAD either, so the copy
+// falls back to a single snapshot connection. The job must finish by itself,
+// with no cutover requested.
+func TestMigrationOffline(t *testing.T) {
+	srcCfg, dstAdmin := testConfig(t, "DEDIE_TEST_MYSQL_SOURCE"), testConfig(t, "DEDIE_TEST_TARGET")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	db := fmt.Sprintf("dedie_x_%d", time.Now().UnixNano())
+	reader := fmt.Sprintf("dedie_r%d", time.Now().UnixNano()%1e9)
+	srcAdmin, err := mysql.Open(ctx, srcCfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srcAdmin.ExecContext(ctx, "CREATE DATABASE "+db+" CHARACTER SET utf8mb4"); err != nil {
+		t.Fatal(err)
+	}
+	pgAdmin, err := postgres.Connect(ctx, dstAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pgAdmin.Exec(ctx, "CREATE DATABASE "+db+" ENCODING 'UTF8' TEMPLATE template0"); err != nil {
+		t.Fatal(err)
+	}
+	pgAdmin.Close(ctx)
+	t.Cleanup(func() {
+		bg := context.Background()
+		srcAdmin.Exec("DROP USER IF EXISTS " + reader)
+		srcAdmin.Exec("DROP DATABASE IF EXISTS " + db)
+		srcAdmin.Close()
+		if c, err := postgres.Connect(bg, dstAdmin); err == nil {
+			c.Exec(bg, "DROP DATABASE IF EXISTS "+db+" WITH (FORCE)")
+			c.Close(bg)
+		}
+	})
+	dstCfg := dstAdmin
+	srcCfg.Database, dstCfg.Database = db, db
+
+	src, err := mysql.Open(ctx, srcCfg, map[string]string{"group_concat_max_len": "1000000000", "information_schema_stats_expiry": "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	setup, err := src.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range append(fixture[:len(fixture):len(fixture)],
+		"CREATE USER "+reader+" IDENTIFIED BY 'offline-only'",
+		"GRANT SELECT, SHOW VIEW ON *.* TO "+reader) {
+		if _, err := setup.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("fixture: %v\n%s", err, stmt)
+		}
+	}
+	setup.Close()
+	readCfg := srcCfg
+	readCfg.Username, readCfg.Password = reader, "offline-only"
+
+	cfg := migrate.Config{Mode: migrate.ModeOffline}
+	report, err := Preflight(ctx, readCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var noted bool
+	for _, c := range report.Checks {
+		switch c.Name {
+		case "Offline copy":
+			noted = c.Status == "warn"
+		case "Binary logging", "Binary log format", "Row images", "Replication privileges", "Tables without a primary key":
+			t.Errorf("offline preflight should not check %q", c.Name)
+		}
+		if c.Status == "fail" {
+			t.Errorf("preflight %s: %s", c.Name, c.Detail)
+		}
+	}
+	if !report.OK || !noted {
+		t.Fatalf("offline preflight: ok=%v, offline note=%v", report.OK, noted)
+	}
+
+	rep := &memReporter{t: t, desired: "run", tables: map[string]map[string]any{}}
+	out, err := Run(ctx, "mig_offline1", cfg, mymy.State{}, readCfg, dstCfg, rep)
+	if err != nil || out != migrate.Completed {
+		t.Fatalf("offline run: %v %v", out, err)
+	}
+	phase, st := rep.snapshot()
+	if phase != migrate.PhaseDone || rep.Desired() != "run" {
+		t.Errorf("finished in phase %q with the operator's instruction %q", phase, rep.Desired())
+	}
+	if st.Start.File != "" || st.Fenced {
+		t.Errorf("offline state holds binary log position %q, fenced %v", st.Start, st.Fenced)
+	}
+
+	dst, err := postgres.Connect(ctx, dstCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close(ctx)
+	check := func(what, my, pg string) {
+		t.Helper()
+		var a sql.NullString
+		var b *string
+		if err := src.QueryRowContext(ctx, my).Scan(&a); err != nil {
+			t.Fatalf("%s on source: %v", what, err)
+		}
+		if err := dst.QueryRow(ctx, pg).Scan(&b); err != nil {
+			t.Fatalf("%s on target: %v", what, err)
+		}
+		if b == nil || a.String != *b {
+			t.Errorf("%s: source %.80s, target %.80v", what, a.String, b)
+		}
+	}
+	check("customers", `SELECT COUNT(*) FROM customers`, `SELECT count(*)::text FROM customers`)
+	check("events", `SELECT COUNT(*) FROM events`, `SELECT count(*)::text FROM events`)
+	check("names", `SELECT MD5(GROUP_CONCAT(name ORDER BY id SEPARATOR ''))  FROM customers`, `SELECT md5(string_agg(name, '' ORDER BY id)) FROM customers`)
+	check("long text", `SELECT MD5(GROUP_CONCAT(MD5(bio) ORDER BY id SEPARATOR ''))  FROM customers`, `SELECT md5(string_agg(md5(bio), '' ORDER BY id)) FROM customers`)
+	check("unsigned bigint", `SELECT CAST(SUM(big) AS CHAR) FROM customers`, `SELECT sum(big)::text FROM customers`)
+	check("invoices", `SELECT CONCAT(SUM(customer_id), '/', SUM(amount)) FROM invoices`, `SELECT sum(customer_id)::text || '/' || sum(amount)::text FROM invoices`)
+
+	var fks int
+	dst.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE contype = 'f'`).Scan(&fks)
+	if fks != 1 {
+		t.Errorf("target has %d foreign keys", fks)
+	}
+	var newID, maxID int64
+	if err := dst.QueryRow(ctx, `INSERT INTO customers (name) VALUES ('after the copy') RETURNING id`).Scan(&newID); err != nil {
+		t.Errorf("insert on target after the copy: %v", err)
+	}
+	src.QueryRowContext(ctx, `SELECT MAX(id) FROM customers`).Scan(&maxID)
+	if newID <= maxID {
+		t.Errorf("identity restarted at %d, at or below the source's highest id %d", newID, maxID)
+	}
+	var leftover bool
+	dst.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'dedie')`).Scan(&leftover)
+	if leftover {
+		t.Error("checkpoint schema left on the target")
+	}
+	for name, tbl := range rep.tables {
+		if v, _ := tbl["validation"].(string); !strings.Contains(v, "match") || v == "mismatch" {
+			t.Errorf("table %s validation = %v", name, tbl["validation"])
+		}
+	}
+
+	// A job resumed after its copy goes straight to validation, which must
+	// now fail: the insert above made the two sides differ, and no stream
+	// reconciles them.
+	out, err = Run(ctx, "mig_offline1", cfg, st, readCfg, dstCfg, rep)
+	if err == nil || !strings.Contains(err.Error(), "differ") {
+		t.Errorf("resumed offline job over changed tables: %v %v", out, err)
+	}
+	if phase, _ := rep.snapshot(); phase == migrate.PhaseStreaming {
+		t.Error("offline job went to streaming")
+	}
+}

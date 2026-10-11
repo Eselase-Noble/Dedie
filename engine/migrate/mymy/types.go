@@ -11,7 +11,9 @@
 //
 // Requirements on the source: binary logging in ROW format with full row
 // images, and an account with SELECT, RELOAD, REPLICATION SLAVE and
-// REPLICATION CLIENT.
+// REPLICATION CLIENT. An offline job copies from the snapshot and finishes
+// without following the binary log: it needs neither binary logging nor the
+// replication privileges, and RELOAD only to copy with more than one worker.
 package mymy
 
 import (

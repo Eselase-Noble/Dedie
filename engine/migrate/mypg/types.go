@@ -6,7 +6,8 @@
 // events from that position onwards. What differs is the target. The schema
 // is translated rather than copied, values are converted between the two
 // type systems, and changes are applied to PostgreSQL together with a
-// checkpoint of the binary log position.
+// checkpoint of the binary log position. An offline job ends after the
+// snapshot and never reads the binary log.
 //
 // Translation is deliberately conservative: every type maps to one that can
 // hold all of its values, and anything that cannot be carried over (views,

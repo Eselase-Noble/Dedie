@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -316,5 +317,143 @@ func TestMigration(t *testing.T) {
 	t.Logf("applied %d transactions, %d row changes, %d anomalies", st.TxApplied, st.RowsApplied, st.Anomalies)
 	if st.Anomalies != 0 {
 		t.Errorf("%d apply anomalies", st.Anomalies)
+	}
+}
+
+// TestMigrationOffline runs a one-time copy with a source account that has
+// no replication privilege. The job must finish by itself, with no cutover
+// requested, and must never make the source read-only.
+func TestMigrationOffline(t *testing.T) {
+	srcCfg, dstCfg := testConfig(t, "DEDIE_TEST_MYSQL_SOURCE"), testConfig(t, "DEDIE_TEST_MYSQL_TARGET")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	db := fmt.Sprintf("dedie_test_%d", time.Now().UnixNano())
+	reader := fmt.Sprintf("dedie_r%d", time.Now().UnixNano()%1e9)
+	for i, admin := range []connector.Config{srcCfg, dstCfg} {
+		c, err := mysql.Open(ctx, admin, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.ExecContext(ctx, "CREATE DATABASE "+db+" CHARACTER SET utf8mb4"); err != nil {
+			t.Fatal(err)
+		}
+		source := i == 0
+		t.Cleanup(func() {
+			if source {
+				c.Exec("DROP USER IF EXISTS " + reader)
+			}
+			c.Exec("DROP DATABASE IF EXISTS " + db)
+			c.Close()
+		})
+	}
+	srcCfg.Database, dstCfg.Database = db, db
+
+	fresh := map[string]string{"information_schema_stats_expiry": "0"}
+	src, err := mysql.Open(ctx, srcCfg, fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	setup, err := src.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// RELOAD lets the copy line its workers up on one instant; nothing here
+	// allows reading the binary log.
+	for _, stmt := range append(fixture[:len(fixture):len(fixture)],
+		`INSERT INTO scratch SELECT id FROM customers WHERE id <= 100`,
+		"CREATE USER "+reader+" IDENTIFIED BY 'offline-only'",
+		"GRANT SELECT, SHOW VIEW, TRIGGER, EVENT, RELOAD ON *.* TO "+reader) {
+		if _, err := setup.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("fixture: %v\n%s", err, stmt)
+		}
+	}
+	setup.Close()
+	readCfg := srcCfg
+	readCfg.Username, readCfg.Password = reader, "offline-only"
+
+	// Fencing is asked for and must be ignored: an offline job has no cutover.
+	cfg := migrate.Config{Mode: migrate.ModeOffline, FenceSource: true}
+	report, err := Preflight(ctx, readCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var noted bool
+	for _, c := range report.Checks {
+		t.Logf("preflight %-28s %-4s %s", c.Name, c.Status, c.Detail)
+		switch c.Name {
+		case "Offline copy":
+			noted = c.Status == "warn"
+		case "Binary logging", "Binary log format", "Row images", "Replication privileges", "Tables without a primary key":
+			t.Errorf("offline preflight should not check %q", c.Name)
+		}
+	}
+	if !report.OK || !noted {
+		t.Fatalf("offline preflight: ok=%v, offline note=%v", report.OK, noted)
+	}
+
+	rep := &memReporter{t: t, desired: "run", tables: map[string]map[string]any{}}
+	out, err := Run(ctx, "mig_offline1", cfg, State{}, readCfg, dstCfg, rep)
+	if err != nil || out != migrate.Completed {
+		t.Fatalf("offline run: %v %v", out, err)
+	}
+	phase, st := rep.snapshot()
+	if phase != migrate.PhaseDone || rep.Desired() != "run" {
+		t.Errorf("finished in phase %q with the operator's instruction %q", phase, rep.Desired())
+	}
+	if st.Start.File != "" || st.Fenced {
+		t.Errorf("offline state holds binary log position %q, fenced %v", st.Start, st.Fenced)
+	}
+
+	dst, err := mysql.Open(ctx, dstCfg, fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close()
+	check := func(query string) {
+		t.Helper()
+		var a, b sql.NullString
+		if err := src.QueryRowContext(ctx, query).Scan(&a); err != nil {
+			t.Fatalf("%s on source: %v", query, err)
+		}
+		if err := dst.QueryRowContext(ctx, query).Scan(&b); err != nil {
+			t.Fatalf("%s on target: %v", query, err)
+		}
+		if a != b {
+			t.Errorf("%s: source %s, target %s", query, a.String, b.String)
+		}
+	}
+	check(`SELECT COUNT(*) FROM customers`)
+	check(`SELECT BIT_XOR(CRC32(CONCAT_WS('|', id, name, IFNULL(HEX(legacy_name), '~'), feeling, profile, IFNULL(HEX(avatar), '~'), IFNULL(big, '~'), balance, MD5(bio), name_upper, updated))) FROM customers`)
+	check(`SELECT BIT_XOR(CRC32(CONCAT_WS('|', id, customer_id, amount))) FROM invoices`)
+	check(`SELECT BIT_XOR(CRC32(CONCAT_WS('|', kind, payload))) FROM events`)
+	check(`SELECT SUM(v) FROM scratch`)
+	check(`SELECT auto_increment FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'customers'`)
+	check(`SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_schema = DATABASE()`)
+	check(`SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema = DATABASE() AND constraint_type = 'FOREIGN KEY'`)
+	check(`SELECT SUM(total) FROM customer_totals`)
+	for name, tbl := range rep.tables {
+		if tbl["validation"] != "match" {
+			t.Errorf("table %s validation = %v", name, tbl["validation"])
+		}
+	}
+	var leftover int
+	dst.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?`, checkpointTable).Scan(&leftover)
+	if leftover != 0 {
+		t.Error("checkpoint table left on the target")
+	}
+
+	// The source stays writable. A job resumed after its copy goes straight
+	// to validation, which must now fail: nothing carries this row over.
+	if _, err := src.ExecContext(ctx, `INSERT INTO events VALUES ('late', 'write')`); err != nil {
+		t.Fatalf("source refused a write after an offline job: %v", err)
+	}
+	out, err = Run(ctx, "mig_offline1", cfg, st, readCfg, dstCfg, rep)
+	if err == nil || !strings.Contains(err.Error(), "differ") {
+		t.Errorf("resumed offline job over a changed source: %v %v", out, err)
+	}
+	if phase, _ := rep.snapshot(); phase == migrate.PhaseStreaming {
+		t.Error("offline job went to streaming")
 	}
 }
