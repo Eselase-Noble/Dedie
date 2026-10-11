@@ -12,6 +12,7 @@ import (
 	"dedie/engine/connector/mysql"
 	"dedie/engine/connector/postgres"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/mymy"
 	"dedie/engine/migrate/pgpg"
 )
 
@@ -64,38 +65,13 @@ func preflight(ctx context.Context, src *pgx.Conn, dst *sql.DB, plan *Plan, cfg 
 		r.Add("Table names", "fail", "MySQL has no schemas inside a database, and these tables would get the same name: "+
 			strings.Join(plan.Collisions, "; ")+". Migrate the schemas separately, or exclude one of each pair")
 	}
-	var dstDB sql.NullString
-	if err := dst.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&dstDB); err != nil {
+	// The target database must not already hold the tables being migrated,
+	// nor anything else under a name the plan is going to take.
+	found, err := mymy.FindExisting(ctx, dst, plan.objects())
+	if err != nil {
 		return nil, err
 	}
-	args := []any{dstDB.String}
-	var marks []string
-	for _, t := range plan.Tables {
-		args = append(args, t.Target)
-		marks = append(marks, "?")
-	}
-	if len(marks) > 0 {
-		rows, err := dst.QueryContext(ctx, `SELECT table_name FROM information_schema.tables
-			WHERE table_schema = ? AND table_name IN (`+strings.Join(marks, ",")+`) ORDER BY 1`, args...)
-		if err != nil {
-			return nil, err
-		}
-		var existing []string
-		for rows.Next() {
-			var name string
-			if err := rows.Scan(&name); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			existing = append(existing, name)
-		}
-		rows.Close()
-		if len(existing) > 0 {
-			r.Add("Target is empty", "fail", "these tables already exist in the target database: "+strings.Join(existing, ", "))
-		} else {
-			r.Add("Target is empty", "ok", "no conflicting tables in target database "+dstDB.String)
-		}
-	}
+	mymy.ReportExisting(r, found, cfg.Existing())
 
 	if len(plan.Notes) > 0 {
 		r.Add("Translated with changes", "warn", strings.Join(plan.Notes, "\n"))

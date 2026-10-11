@@ -15,6 +15,7 @@ import (
 	"dedie/engine/connector/mysql"
 	"dedie/engine/connector/postgres"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/mymy"
 	"dedie/engine/migrate/pgpg"
 )
 
@@ -61,6 +62,19 @@ func Run(ctx context.Context, jobID string, cfg migrate.Config, st pgpg.State, s
 
 func (r *runner) save() { r.rep.SaveState(*r.st) }
 
+// buildPlan reads the source catalog and takes out of the plan what the job
+// leaves as the target has it: the kept tables, and the statements of the
+// kept objects.
+func (r *runner) buildPlan(ctx context.Context) error {
+	plan, err := buildPlan(ctx, r.src, r.cfg, r.st.SkippedTables)
+	if err != nil {
+		return err
+	}
+	plan.keep(r.st.KeptObjects)
+	r.plan = plan
+	return nil
+}
+
 func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 	if r.rep.Desired() == "abort" {
 		return r.abort(ctx), nil
@@ -74,7 +88,7 @@ func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 		return "", fmt.Errorf("target: %w", err)
 	}
 	defer r.dst.Close()
-	if r.plan, err = BuildPlan(ctx, r.src, r.cfg); err != nil {
+	if err := r.buildPlan(ctx); err != nil {
 		return "", err
 	}
 
@@ -214,18 +228,40 @@ func (r *runner) schemaPhase(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// A retry after an interrupted schema phase finds its own tables on the
-	// target; that is the one failed check it may ignore.
+	// A retry after an interrupted schema phase finds its own leftovers on
+	// the target. The two checks on what the target already holds are the
+	// ones it may ignore.
 	var ours bool
 	_ = r.dst.QueryRowContext(ctx, "SELECT COUNT(*) > 0 FROM `"+checkpointTable+"` WHERE job_id = ?", r.jobID).Scan(&ours)
 	var blocking []string
 	for _, c := range report.Checks {
-		if c.Status == "fail" && !(ours && c.Name == "Target is empty") {
+		if c.Status == "fail" && !(ours && (c.Name == "Target is empty" || c.Name == "Existing objects")) {
 			blocking = append(blocking, c.Name+": "+c.Detail)
 		}
 	}
 	if len(blocking) > 0 {
 		return fmt.Errorf("preflight failed: %s", strings.Join(blocking, "; "))
+	}
+	// What was on the target before the job is settled now, while it can
+	// still be told from what the job creates, and remembered from here on.
+	if !ours {
+		found, err := mymy.FindExisting(ctx, r.dst, r.plan.objects())
+		if err != nil {
+			return err
+		}
+		var skipped []string
+		skipped, r.st.KeptObjects, r.st.DropFirst = mymy.Decide(r.cfg.Existing(), found)
+		r.st.SkippedTables = r.plan.sources(skipped)
+		r.save()
+		if n, m := len(r.st.SkippedTables), len(r.st.KeptObjects); n+m > 0 {
+			if err := r.buildPlan(ctx); err != nil {
+				return err
+			}
+			r.rep.Event("warn", fmt.Sprintf("kept %d existing table(s) and %d other object(s) on the target as they are, as chosen; they are left out of the migration", n, m))
+			if len(r.plan.Tables) == 0 {
+				return errors.New("every table to be migrated already exists on the target and is kept; nothing is left to migrate")
+			}
+		}
 	}
 	var srcVer, dstVer string
 	_ = r.src.QueryRow(ctx, `SELECT current_setting('server_version')`).Scan(&srcVer)
@@ -241,6 +277,9 @@ func (r *runner) schemaPhase(ctx context.Context) error {
 		return err
 	}
 
+	if err := mymy.DropExisting(ctx, r.dst, r.st.DropFirst, r.rep); err != nil {
+		return err
+	}
 	r.rep.Event("info", fmt.Sprintf("creating %d translated tables on the target", len(r.plan.Tables)))
 	if _, err := applyStmts(ctx, r.dst, r.plan.Pre); err != nil {
 		return err
