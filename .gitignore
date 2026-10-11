@@ -1,0 +1,21 @@
+# Build output
+/bin/
+/dist/
+
+# Web interface
+/web/node_modules/
+/web/.next/
+/web/out/
+
+# Local state: never commit a data directory or a master key
+.dedie/
+*.dediebak
+master.key
+*.db
+*.db-wal
+*.db-shm
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
