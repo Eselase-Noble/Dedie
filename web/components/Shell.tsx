@@ -5,6 +5,9 @@ import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { api, errorMessage } from "@/lib/api";
 import type { Permission, Session } from "@/lib/types";
+import Bell from "./notifications/Bell";
+import { NotificationsProvider } from "./notifications/NotificationsProvider";
+import Toasts from "./notifications/Toasts";
 import { SessionContext } from "./session";
 
 interface NavItem {
@@ -101,44 +104,48 @@ export default function Shell({ children }: { children: ReactNode }) {
 
   return (
     <SessionContext.Provider value={value}>
-      <div className="shell">
-        <aside className={`sidebar ${menuOpen ? "" : "closed"} ${collapsed ? "collapsed" : ""}`}>
-          <div className="brand">
-            <button className="btn small ghost collapse-toggle" onClick={toggleSidebar}
-              aria-label={collapsed ? "Show navigation" : "Hide navigation"} title={collapsed ? "Show navigation" : "Hide navigation"}>
-              {collapsed ? "»" : "«"}
-            </button>
-            <div className="brand-text" style={{ minWidth: 0 }}>
-              <div className="brand-name">Dedie</div>
-              <div className="brand-org" title={session.organization}>{session.organization}</div>
-            </div>
-            <button className="btn small menu-toggle" onClick={() => setMenuOpen((v) => !v)} aria-expanded={menuOpen}>
-              Menu
-            </button>
-          </div>
-          <nav className="nav" aria-label="Main">
-            {sections.map((section) => (
-              <div key={section}>
-                <div className="nav-section">{section}</div>
-                {items.filter((i) => i.section === section).map((item) => (
-                  <Link key={item.href} href={item.href} className={isActive(pathname, item.href) ? "active" : ""}>
-                    {item.label}
-                  </Link>
-                ))}
+      <NotificationsProvider paused={confined}>
+        <div className="shell">
+          <aside className={`sidebar ${menuOpen ? "" : "closed"} ${collapsed ? "collapsed" : ""}`}>
+            <div className="brand">
+              <button className="btn small ghost collapse-toggle" onClick={toggleSidebar}
+                aria-label={collapsed ? "Show navigation" : "Hide navigation"} title={collapsed ? "Show navigation" : "Hide navigation"}>
+                {collapsed ? "»" : "«"}
+              </button>
+              <div className="brand-text" style={{ minWidth: 0 }}>
+                <div className="brand-name">Dedie</div>
+                <div className="brand-org" title={session.organization}>{session.organization}</div>
               </div>
-            ))}
-          </nav>
-          <div className="sidebar-user">
-            <div className="name" title={session.user.name}>{session.user.name}</div>
-            <div className="meta" title={session.user.email}>{session.user.email} · {session.user.role}</div>
-            <div className="row-actions" style={{ justifyContent: "flex-start" }}>
-              <Link className={`btn small ${isActive(pathname, "/account/") ? "primary" : ""}`} href="/account/">Account</Link>
-              <button className="btn small" onClick={signOut}>Sign out</button>
+              {!confined && <Bell />}
+              <button className="btn small menu-toggle" onClick={() => setMenuOpen((v) => !v)} aria-expanded={menuOpen}>
+                Menu
+              </button>
             </div>
-          </div>
-        </aside>
-        <main className="main">{children}</main>
-      </div>
+            <nav className="nav" aria-label="Main">
+              {sections.map((section) => (
+                <div key={section}>
+                  <div className="nav-section">{section}</div>
+                  {items.filter((i) => i.section === section).map((item) => (
+                    <Link key={item.href} href={item.href} className={isActive(pathname, item.href) ? "active" : ""}>
+                      {item.label}
+                    </Link>
+                  ))}
+                </div>
+              ))}
+            </nav>
+            <div className="sidebar-user">
+              <div className="name" title={session.user.name}>{session.user.name}</div>
+              <div className="meta" title={session.user.email}>{session.user.email} · {session.user.role}</div>
+              <div className="row-actions" style={{ justifyContent: "flex-start" }}>
+                <Link className={`btn small ${isActive(pathname, "/account/") ? "primary" : ""}`} href="/account/">Account</Link>
+                <button className="btn small" onClick={signOut}>Sign out</button>
+              </div>
+            </div>
+          </aside>
+          <main className="main">{children}</main>
+        </div>
+        <Toasts />
+      </NotificationsProvider>
     </SessionContext.Provider>
   );
 }

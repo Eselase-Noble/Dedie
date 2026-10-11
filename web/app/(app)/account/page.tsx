@@ -4,6 +4,7 @@ import { api } from "@/lib/api";
 import { useLoad } from "@/lib/hooks";
 import Password from "@/components/account/Password";
 import Sessions from "@/components/account/Sessions";
+import SystemNotifications from "@/components/account/SystemNotifications";
 import Tokens from "@/components/account/Tokens";
 import TwoFactor from "@/components/account/TwoFactor";
 import { useSession } from "@/components/session";
@@ -38,6 +39,7 @@ export default function AccountPage() {
       <Password policy={data?.policy ?? null} />
       {!session.must_enroll_totp && <Sessions />}
       {!session.must_enroll_totp && <Tokens />}
+      {!session.must_enroll_totp && <SystemNotifications />}
     </div>
   );
 }

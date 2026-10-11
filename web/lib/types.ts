@@ -676,3 +676,35 @@ export interface ColumnSpec {
   name?: string;
   type: string;
 }
+
+export type NotificationLevel = "info" | "success" | "warning" | "error";
+export type NotificationTopic = "migration" | "backup" | "monitoring" | "security";
+
+/** Something that happened which the signed-in user should know about. */
+export interface AppNotification {
+  id: number;
+  topic: NotificationTopic;
+  /** What happened, for example "migration.completed". */
+  kind: string;
+  level: NotificationLevel;
+  title: string;
+  body: string;
+  /** The page inside the application where the user can act. */
+  link: string;
+  created_at: string;
+  /** Whether this user has read it; others have their own state. */
+  read: boolean;
+}
+
+export interface NotificationList {
+  unread: number;
+  items: AppNotification[];
+}
+
+export interface NotificationQuery {
+  unread?: boolean;
+  topic?: NotificationTopic | "";
+  /** Returns notifications older than this id. */
+  before?: number;
+  limit?: number;
+}
