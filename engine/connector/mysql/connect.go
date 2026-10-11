@@ -30,7 +30,7 @@ func (mysqlDriver) Kind() string     { return Kind }
 func (mysqlDriver) DefaultPort() int { return 3306 }
 
 func (mysqlDriver) Open(ctx context.Context, cfg connector.Config) (connector.Session, error) {
-	db, err := Open(ctx, cfg, nil)
+	db, err := Open(ctx, cfg, nil, FoundRows)
 	if err != nil {
 		return nil, err
 	}

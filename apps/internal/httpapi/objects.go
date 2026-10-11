@@ -57,3 +57,47 @@ func (s *Server) createTable(w http.ResponseWriter, r *http.Request, actor app.A
 	}
 	writeJSON(w, http.StatusCreated, map[string]bool{"ok": true})
 }
+
+func (s *Server) changeRow(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	var in connector.RowChange
+	if !decode(w, r, &in) {
+		return
+	}
+	if err := s.app.ChangeRow(r.Context(), actor, r.PathValue("id"), in); err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// --- saved queries ---
+
+func (s *Server) listSavedQueries(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	list, err := s.app.ListSavedQueries(r.Context(), actor)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) saveQuery(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	var in app.SavedQueryInput
+	if !decode(w, r, &in) {
+		return
+	}
+	q, err := s.app.SaveQuery(r.Context(), actor, r.PathValue("id"), in)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, q)
+}
+
+func (s *Server) deleteSavedQuery(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	if err := s.app.DeleteSavedQuery(r.Context(), actor, r.PathValue("id")); err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}

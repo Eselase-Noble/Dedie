@@ -48,7 +48,83 @@ type Session interface {
 	CreateDatabase(ctx context.Context, name string) error
 	CreateSchema(ctx context.Context, name string) error
 	CreateTable(ctx context.Context, def TableDef) error
+	// ChangeRow inserts, updates or deletes exactly one row. Values are
+	// bound as parameters, never spliced into the statement.
+	ChangeRow(ctx context.Context, change RowChange) error
 	Close(ctx context.Context) error
+}
+
+// Row actions.
+const (
+	RowInsert = "insert"
+	RowUpdate = "update"
+	RowDelete = "delete"
+)
+
+// RowChange is one edit made in the data browser. Values are in the text
+// form the database prints; nil means NULL.
+type RowChange struct {
+	Schema string `json:"schema"`
+	Table  string `json:"table"`
+	Action string `json:"action"`
+	// Key identifies the row to update or delete: its primary key columns
+	// and their current values.
+	Key map[string]*string `json:"key"`
+	// Values holds the columns to set. A column left out of an insert
+	// takes its default.
+	Values map[string]*string `json:"values"`
+}
+
+// Validate checks that a change says enough to be applied safely.
+func (c RowChange) Validate() error {
+	if err := CheckName("table", c.Table); err != nil {
+		return err
+	}
+	switch c.Action {
+	case RowInsert:
+	case RowUpdate:
+		if len(c.Values) == 0 {
+			return errors.New("nothing to change")
+		}
+		fallthrough
+	case RowDelete:
+		if len(c.Key) == 0 {
+			return errors.New("the row cannot be identified: the table has no primary key")
+		}
+		for col, v := range c.Key {
+			if v == nil {
+				return fmt.Errorf("the key column %s is NULL, so the row cannot be identified", col)
+			}
+		}
+	default:
+		return fmt.Errorf("unknown row action %q", c.Action)
+	}
+	for col := range c.Values {
+		if err := CheckName("column", col); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Columns returns the names of a column map in a stable order, so the
+// statement built from it is the same every time.
+func Columns(m map[string]*string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ErrRowCount is returned when an update or delete would not touch exactly
+// one row; the change is rolled back.
+func ErrRowCount(n int64) error {
+	if n == 0 {
+		return errors.New("the row no longer exists or has changed; reload the table. Nothing was changed")
+	}
+	return fmt.Errorf("the key matches %d rows instead of one; nothing was changed", n)
 }
 
 // TableDef describes a table to create.
