@@ -119,7 +119,22 @@ func (a *App) ListMigrations(ctx context.Context, actor Actor) ([]store.Job, err
 	if err := actor.require(PermViewMigrations); err != nil {
 		return nil, err
 	}
-	return a.Store.ListJobs(ctx, actor.User.OrgID)
+	jobs, err := a.Store.ListJobs(ctx, actor.User.OrgID)
+	if err != nil {
+		return nil, err
+	}
+	// A job in its initial copy carries a summary of it. The other phases
+	// have nothing to count, and the detail of a job lists its tables.
+	copying, err := a.Store.CopyProgress(ctx, actor.User.OrgID, migrate.PhaseSnapshot)
+	if err != nil {
+		return nil, err
+	}
+	for i := range jobs {
+		if p, ok := copying[jobs[i].ID]; ok {
+			jobs[i].Copy = &p
+		}
+	}
+	return jobs, nil
 }
 
 func (a *App) GetMigration(ctx context.Context, actor Actor, id string) (MigrationDetail, error) {
