@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"dedie/engine/app"
 	"dedie/engine/backup"
@@ -236,5 +237,44 @@ func (c *cli) locationRemove(args []string) error {
 		return err
 	}
 	fmt.Println("Removed", name, "(its directory and files were left as they are)")
+	return nil
+}
+
+// backupRecover prepares a data directory that recovers a PostgreSQL
+// server to a moment in time. It reads the log archive from this
+// machine's data directory, so it runs on the Dedie server host.
+func (c *cli) backupRecover(args []string) error {
+	fs := flag.NewFlagSet("backup recover", flag.ExitOnError)
+	to := fs.String("to", "", `moment to recover to, in local time: "2026-10-11 15:04:05" (default: the latest change archived)`)
+	dir := fs.String("dir", "", "empty directory to build the recovered data directory in")
+	pos := parse(fs, args)
+	if len(pos) != 1 || *dir == "" {
+		return errors.New(`usage: dedie backup recover <connection> --dir <directory> [--to "YYYY-MM-DD HH:MM:SS"]`)
+	}
+	if c.app == nil {
+		return errors.New("recovery reads the log archive from the Dedie server's own disk; run this command on that machine (with --local if you are signed in to a server)")
+	}
+	var target time.Time
+	if *to != "" {
+		var err error
+		if target, err = time.ParseInLocation("2006-01-02 15:04:05", *to, time.Local); err != nil {
+			return errors.New(`write the moment as "YYYY-MM-DD HH:MM:SS"`)
+		}
+	}
+	actor, err := c.app.LocalActor(c.ctx)
+	if err != nil {
+		return err
+	}
+	r, err := c.app.RecoverToTime(c.ctx, actor, pos[0], target, *dir)
+	if err != nil {
+		return err
+	}
+	moment := "the latest change archived"
+	if !target.IsZero() {
+		moment = target.Format("2006-01-02 15:04:05")
+	}
+	fmt.Printf("Prepared %s from the %s backup of %s (%d files).\n", r.Dir, r.Backup.Level, r.Backup.CreatedAt.Local().Format("2006-01-02 15:04:05"), r.Files)
+	fmt.Printf("Start PostgreSQL of the same major version on it, on a free port:\n  pg_ctl -D %s -o \"-p 5433\" start\n", r.Dir)
+	fmt.Printf("It replays the archived log up to %s and then opens for use. The original server is not touched.\n", moment)
 	return nil
 }

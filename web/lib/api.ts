@@ -41,6 +41,7 @@ import type {
   SessionInfo,
   User,
   UserUpdate,
+  WalArchive,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -207,6 +208,9 @@ export const api = {
   createBackup: (body: BackupInput) => post<Backup>("/backups", body),
   // A plain link: the browser downloads the decrypted archive as a file.
   backupDownloadUrl: (backupId: string) => `${BASE}/backups/${id(backupId)}/download`,
+  walArchives: () => get<WalArchive[]>("/wal-archives"),
+  setWalArchive: (connId: string, enabled: boolean, retention_days: number) =>
+    request<WalArchive>("PUT", `/connections/${id(connId)}/wal-archive`, { body: { enabled, retention_days } }),
   backupLocations: () => get<BackupLocations>("/backup-locations"),
   createBackupLocation: (body: LocationInput) => post<BackupLocation>("/backup-locations", body),
   deleteBackupLocation: (locationId: string) => request<{ ok: boolean }>("DELETE", `/backup-locations/${id(locationId)}`),

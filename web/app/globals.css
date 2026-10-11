@@ -397,3 +397,5 @@ a.btn.primary { color: #fff; }
 .pool .progress.done > span { background: var(--danger); }
 .link-btn.path { font-family: var(--mono); font-size: 12px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; text-align: left; }
 .segmented button:disabled { color: var(--text-faint); cursor: not-allowed; background: var(--bg-subtle); }
+ul.plain { margin: 0 0 12px; padding-left: 20px; color: var(--text-muted); }
+ul.plain li { margin-bottom: 6px; }

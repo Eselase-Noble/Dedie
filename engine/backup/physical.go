@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"dedie/engine/connector"
 )
@@ -166,4 +167,65 @@ func ExtractPhysical(r io.Reader, dir string) (files int, err error) {
 			return files, fmt.Errorf("the archive contains a link (%s), which is not restored", hdr.Name)
 		}
 	}
+}
+
+// ReceiveWAL starts pg_receivewal, which streams the server's write-ahead
+// log into dir as it is written, through a replication slot so that
+// nothing is discarded before it arrives. The command runs until ctx is
+// cancelled; the caller waits for it. cleanup removes temporary files.
+func ReceiveWAL(ctx context.Context, cfg connector.Config, dir, slot string, stderr io.Writer) (cmd *exec.Cmd, cleanup func(), err error) {
+	path, err := findTool("pg_receivewal", 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, nil, err
+	}
+	// The slot is created on the first run and reused afterwards.
+	if cmd, cleanup, err = pgCommand(ctx, path, cfg, "--directory="+dir, "--slot="+slot, "--create-slot", "--if-not-exists", "--no-password"); err == nil {
+		cmd.Stderr = stderr
+		if err = cmd.Run(); err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("could not create the replication slot (the account needs the REPLICATION attribute)")
+		}
+		cleanup()
+	}
+	cmd, cleanup, err = pgCommand(ctx, path, cfg, "--directory="+dir, "--slot="+slot, "--no-password", "--no-loop", "--status-interval=5")
+	if err != nil {
+		return nil, nil, err
+	}
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	return cmd, cleanup, nil
+}
+
+// PrepareRecovery turns an extracted physical backup into a server that,
+// when started, replays the archived write-ahead log in walDir and stops
+// at target. A zero target replays everything there is.
+func PrepareRecovery(dataDir, walDir string, target time.Time) error {
+	// The segment still being written is kept by the receiver under a
+	// .partial name; it holds the most recent changes.
+	quote := func(s string) string { return strings.ReplaceAll(s, "'", "'\\''") }
+	restore := fmt.Sprintf(`cp '%s'/%%f "%%p" 2>/dev/null || cp '%s'/%%f.partial "%%p"`, quote(walDir), quote(walDir))
+	conf := "\n# Added by Dedie for point-in-time recovery.\nrestore_command = '" + strings.ReplaceAll(restore, "'", "''") + "'\n"
+	if !target.IsZero() {
+		conf += "recovery_target_time = '" + target.UTC().Format("2006-01-02 15:04:05.000000") + "+00'\n"
+		// The server opens for use as soon as it reaches the moment.
+		conf += "recovery_target_action = 'promote'\n"
+	}
+	f, err := os.OpenFile(filepath.Join(dataDir, "postgresql.auto.conf"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(conf); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dataDir, "recovery.signal"), nil, 0o600)
 }

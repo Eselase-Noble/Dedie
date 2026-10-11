@@ -12,6 +12,7 @@ import CreateBackup from "@/components/backups/CreateBackup";
 import RestoreDialog from "@/components/backups/RestoreDialog";
 import Schedules from "@/components/backups/Schedules";
 import Locations from "@/components/backups/Locations";
+import Recovery from "@/components/backups/Recovery";
 import { METHODS, levelLabel, methodOf, typeLabel } from "@/components/backups/options";
 
 export default function BackupsPage() {
@@ -19,10 +20,10 @@ export default function BackupsPage() {
   const mayRestore = can("backups.restore");
   const { data, error, loading, reload } = useLoad(
     async () => {
-      const [backups, restores, schedules, locations, connections] = await Promise.all([
-        api.backups(), api.restores(), api.schedules(), api.backupLocations(), can("connections.view") ? api.connections() : [],
+      const [backups, restores, schedules, locations, archives, connections] = await Promise.all([
+        api.backups(), api.restores(), api.schedules(), api.backupLocations(), api.walArchives(), can("connections.view") ? api.connections() : [],
       ]);
-      return { backups, restores, schedules, locations, connections };
+      return { backups, restores, schedules, locations, archives, connections };
     },
     [],
     2000,
@@ -103,7 +104,7 @@ export default function BackupsPage() {
                     <td>
                       {b.path && (
                         <button className="link-btn path" title={`${b.path}\nClick to copy the path`} onClick={() => copyText(b.path)}>
-                          {b.path.split(/[\\/]/).pop()}
+                          {b.path.startsWith("s3://") ? b.path : b.path.split(/[\\/]/).pop()}
                         </button>
                       )}
                       <div className="muted">{b.encrypted ? "encrypted" : "plain file"}</div>
@@ -143,6 +144,7 @@ export default function BackupsPage() {
       </div>
 
       {data && <Schedules schedules={data.schedules} connections={data.connections} locations={data.locations} mayManage={mayRestore} reload={reload} />}
+      {data && <Recovery archives={data.archives} mayManage={mayRestore} reload={reload} />}
       {data && <Locations locations={data.locations} mayManage={can("users.manage")} reload={reload} />}
 
       <div className="card">
