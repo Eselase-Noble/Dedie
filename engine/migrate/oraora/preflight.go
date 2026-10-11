@@ -85,23 +85,6 @@ func preflight(ctx context.Context, src, dst *sql.DB, plan *Plan, cfg migrate.Co
 	orasrc.CheckConsistentRead(ctx, src, plan.Catalog, r)
 	orasrc.CheckChanges(ctx, src, plan.Catalog, cfg, r)
 
-	if !cfg.Offline() {
-		// LogMiner reports a change to a row of such a table as one it
-		// cannot describe, so the row cannot be found again.
-		var unmined []string
-		for _, t := range plan.Tables {
-			for _, c := range t.Cols {
-				if c.Kind == orasrc.KindJSON || c.Kind == orasrc.KindBool {
-					unmined = append(unmined, t.Label())
-					break
-				}
-			}
-		}
-		if len(unmined) > 0 {
-			r.Add("Tables LogMiner cannot follow", "warn", "these tables have a JSON or BOOLEAN column. They are copied, but LogMiner does not describe changes to such tables, so changes made to them after the copy are reported and not carried over; stop writes to them before the job starts, or migrate offline: "+strings.Join(unmined, ", "))
-		}
-	}
-
 	srcText, srcNational := charset(ctx, src)
 	dstText, dstNational := charset(ctx, dst)
 	if srcText != dstText || srcNational != dstNational {

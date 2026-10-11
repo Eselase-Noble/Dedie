@@ -25,7 +25,15 @@ func SelectExpr(c Column) string {
 	col := oracle.Quote(c.Name)
 	switch c.Kind {
 	case KindNumber:
-		return "TO_CHAR(" + col + ", " + numberFormat + ")"
+		number := "TO_CHAR(" + col + ", " + numberFormat + ")"
+		if c.DataType == "BINARY_FLOAT" || c.DataType == "BINARY_DOUBLE" {
+			// The number format cannot print the three values that are
+			// not numbers and fills the field with '#' instead. Without
+			// a format they come out as Inf, -Inf and Nan, which Oracle
+			// and PostgreSQL both read back.
+			return "CASE WHEN " + col + " IS NAN OR " + col + " IS INFINITE THEN TO_CHAR(" + col + ") ELSE " + number + " END"
+		}
+		return number
 	case KindDate:
 		return "TO_CHAR(" + col + ", 'YYYY-MM-DD HH24:MI:SS')"
 	case KindTimestamp:

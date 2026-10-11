@@ -136,6 +136,9 @@ var fixture = []string{
 			TIMESTAMP '2024-02-29 13:14:15', INTERVAL '2-6' YEAR TO MONTH, INTERVAL '-1 02:03:04.5' DAY TO SECOND,
 			'tab' || CHR(9) || 'here, backslash \ and' || CHR(10) || 'newline ' || RPAD('x', 3000, 'x'), HEXTORAW('00FF10') FROM dual CONNECT BY LEVEL <= 3000`,
 	`UPDATE dedie_it_customers SET bio = bio || RPAD('y', 4000, 'y') || RPAD('z', 4000, 'z'), small = NULL, name = NULL WHERE MOD(id, 100) = 0`,
+	`UPDATE dedie_it_customers SET ratio = BINARY_DOUBLE_INFINITY WHERE code = 'c11'`,
+	`UPDATE dedie_it_customers SET ratio = -BINARY_DOUBLE_INFINITY WHERE code = 'c12'`,
+	`UPDATE dedie_it_customers SET ratio = BINARY_DOUBLE_NAN WHERE code = 'c13'`,
 	`INSERT INTO dedie_it_invoices SELECT id, 1 + MOD(id * 7, 3000), id * 1.5, 'l' || id FROM dedie_it_customers`,
 	`INSERT INTO dedie_it_events SELECT 'k' || MOD(id, 10), 'payload ' || id, DATE '2024-01-01' FROM dedie_it_customers WHERE id <= 1000`,
 	`INSERT INTO "Dedie_It_Mixed" VALUES (1, 'kept as written')`,
@@ -255,6 +258,11 @@ func checkValues(t *testing.T, ctx context.Context, dst *pgx.Conn) {
 		"1990-05-24 00:00:00|2024-02-29 13:14:15.123457|2024-02-29 07:44:15.5|t|2 years 6 mons|-1 days -02:03:04.5|3034|t|t|t|00ff10|16|t|C7"
 	if got != want {
 		t.Errorf("row c7:\n got %s\nwant %s", got, want)
+	}
+	// The values of a binary double that are not numbers.
+	var special string
+	if err := dst.QueryRow(ctx, `SELECT string_agg(ratio::text, ',' ORDER BY id) FROM dedie_test.dedie_it_customers WHERE code IN ('c11', 'c12', 'c13')`).Scan(&special); err != nil || special != "Infinity,-Infinity,NaN" {
+		t.Errorf("infinities and NaN arrived as %q (%v)", special, err)
 	}
 	var types string
 	err = dst.QueryRow(ctx, `SELECT string_agg(column_name || ' ' || CASE WHEN data_type IN ('numeric', 'character varying', 'character')

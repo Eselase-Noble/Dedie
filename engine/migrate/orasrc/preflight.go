@@ -130,8 +130,17 @@ func checkMining(ctx context.Context, src *sql.DB, cat *Catalog, cfg migrate.Con
 	var mode sql.NullString
 	_ = src.QueryRowContext(ctx, `SELECT log_mode FROM v$database`).Scan(&mode)
 	if mode.String == "NOARCHIVELOG" {
-		r.Add("Redo retention", "warn", "the source runs in NOARCHIVELOG mode, so only its online redo logs exist and they are reused once full. "+
-			"The job keeps up while it runs, but if it is paused or falls behind for longer than the logs last it cannot continue and must start over. Run the source in ARCHIVELOG mode for a migration that matters")
+		detail := "the source runs in NOARCHIVELOG mode, so only its online redo logs exist and they are reused once full. " +
+			"If the job is paused or falls behind for longer than the logs last it cannot continue and must start over. "
+		var container int
+		_ = src.QueryRowContext(ctx, `SELECT TO_NUMBER(SYS_CONTEXT('USERENV','CON_ID')) FROM dual`).Scan(&container)
+		if container > 1 {
+			// Measured, not assumed: from inside a pluggable database
+			// LogMiner refuses any range before the current log.
+			detail = "the source runs in NOARCHIVELOG mode, and from inside a pluggable database LogMiner can then read only the current online redo log. " +
+				"The job follows changes until a log switch happens while it still has earlier changes to read; on a busy database that is minutes, and the job then stops for good and must start over. "
+		}
+		r.Add("Redo retention", "warn", detail+"Run the source in ARCHIVELOG mode for any online migration that matters, or migrate offline")
 	} else if mode.Valid {
 		r.Add("Redo retention", "ok", "the source archives its redo logs; keep the archived logs until the migration has read them")
 	}
@@ -145,6 +154,20 @@ func checkMining(ctx context.Context, src *sql.DB, cat *Catalog, cfg migrate.Con
 		case !everywhere && !logged[t.Label()]:
 			toLog = append(toLog, t.Label())
 		}
+	}
+	// LogMiner reports a change to a row of such a table as one it cannot
+	// describe, so the row cannot be found again.
+	var unmined []string
+	for _, t := range cat.Tables {
+		for _, c := range t.Cols {
+			if c.Kind == KindJSON || c.Kind == KindBool {
+				unmined = append(unmined, t.Label())
+				break
+			}
+		}
+	}
+	if len(unmined) > 0 {
+		r.Add("Tables LogMiner cannot follow", "warn", "these tables have a JSON or BOOLEAN column. They are copied, but LogMiner does not describe changes to such tables, so changes made to them after the copy are reported and not carried over; stop writes to them before the job starts, or migrate offline: "+strings.Join(unmined, ", "))
 	}
 	if len(keyless) > 0 {
 		r.Add("Tables without a primary key", "warn", "these tables are copied, but changes made to them after the copy cannot be followed: "+strings.Join(keyless, ", "))
