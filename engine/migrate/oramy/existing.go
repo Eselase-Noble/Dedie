@@ -229,26 +229,49 @@ func (r *runner) settleExisting(ctx context.Context, ours bool) error {
 				return err
 			}
 		} else {
-			var kept int
-			for _, f := range objects {
-				if f.isTable() {
-					r.st.SkippedTables = append(r.st.SkippedTables, f.Label)
-				} else {
-					r.st.SkippedObjects = append(r.st.SkippedObjects, f.Kind+" "+f.Name)
-				}
-				kept++
+			if err := r.keepExisting(objects); err != nil {
+				return err
 			}
-			if kept > 0 {
+			if kept := len(objects); kept > 0 {
 				r.rep.Event("info", fmt.Sprintf("left %d existing object(s) on the target as they are, as chosen: %s", kept, listed(objects, true)))
-			}
-			if len(r.st.SkippedTables) == len(r.plan.Tables) {
-				return fmt.Errorf("every table of the migration already exists on the target and existing tables are skipped, so there is nothing to migrate")
 			}
 		}
 	}
 	r.st.ExistingDecided = true
 	r.save()
 	return nil
+}
+
+// keepExisting records in the job's state what it leaves out because the
+// target's own is to stay: the tables whose names are taken, and the
+// constraints. It fails when that leaves no table to migrate.
+func (r *runner) keepExisting(objects []found) error {
+	for _, f := range objects {
+		if f.isTable() {
+			r.st.SkippedTables = append(r.st.SkippedTables, f.Label)
+		} else {
+			r.st.SkippedObjects = append(r.st.SkippedObjects, f.Kind+" "+f.Name)
+		}
+	}
+	if len(r.st.SkippedTables) == len(r.plan.Tables) {
+		return fmt.Errorf("every table of the migration already exists on the target and existing tables are skipped, so there is nothing to migrate")
+	}
+	return nil
+}
+
+// drop is the statement that removes the object.
+func (f found) drop() string {
+	switch f.Kind {
+	case kindTable:
+		return "DROP TABLE " + mysql.Quote(f.Name)
+	case kindView:
+		return "DROP VIEW " + mysql.Quote(f.Name)
+	case kindForeignKey:
+		return "ALTER TABLE " + mysql.Quote(f.Holder) + " DROP FOREIGN KEY " + mysql.Quote(f.Name)
+	case kindCheck:
+		return "ALTER TABLE " + mysql.Quote(f.Holder) + " DROP CHECK " + mysql.Quote(f.Name)
+	}
+	return ""
 }
 
 // dropExisting removes the objects in the way, for a job told to replace
@@ -270,22 +293,12 @@ func (r *runner) dropExisting(ctx context.Context, objects []found) error {
 	defer conn.ExecContext(context.WithoutCancel(ctx), "SET foreign_key_checks = 1")
 	tables, others := 0, 0
 	for _, f := range objects {
-		var stmt string
-		switch f.Kind {
-		case kindTable:
-			stmt = "DROP TABLE " + mysql.Quote(f.Name)
+		if f.Kind == kindTable {
 			tables++
-		case kindView:
-			stmt = "DROP VIEW " + mysql.Quote(f.Name)
-			others++
-		case kindForeignKey:
-			stmt = "ALTER TABLE " + mysql.Quote(f.Holder) + " DROP FOREIGN KEY " + mysql.Quote(f.Name)
-			others++
-		case kindCheck:
-			stmt = "ALTER TABLE " + mysql.Quote(f.Holder) + " DROP CHECK " + mysql.Quote(f.Name)
+		} else {
 			others++
 		}
-		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+		if _, err := conn.ExecContext(ctx, f.drop()); err != nil {
 			return fmt.Errorf("drop existing %s %s: %s", f.Kind, f, message(err))
 		}
 	}
