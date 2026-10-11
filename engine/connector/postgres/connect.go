@@ -90,6 +90,13 @@ func ConnectReplication(ctx context.Context, cfg connector.Config) (*pgconn.PgCo
 		return nil, err
 	}
 	pc.RuntimeParams["replication"] = "database"
+	// The stream carries values as text, rendered with this session's
+	// settings. Fixing them makes the text the same on every server:
+	// ISO dates, timestamps in UTC and floats at full precision.
+	pc.RuntimeParams["datestyle"] = "ISO"
+	pc.RuntimeParams["intervalstyle"] = "postgres"
+	pc.RuntimeParams["extra_float_digits"] = "3"
+	pc.RuntimeParams["timezone"] = "UTC"
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	conn, err := pgconn.ConnectConfig(ctx, &pc.Config)
