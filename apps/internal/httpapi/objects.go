@@ -39,7 +39,7 @@ func (s *Server) createSchema(w http.ResponseWriter, r *http.Request, actor app.
 	if !decode(w, r, &in) {
 		return
 	}
-	if err := s.app.CreateSchema(r.Context(), actor, r.PathValue("id"), in.Name); err != nil {
+	if err := s.app.CreateSchema(r.Context(), actor, r.PathValue("id"), r.URL.Query().Get("database"), in.Name); err != nil {
 		fail(w, err)
 		return
 	}
@@ -51,7 +51,7 @@ func (s *Server) createTable(w http.ResponseWriter, r *http.Request, actor app.A
 	if !decode(w, r, &in) {
 		return
 	}
-	if err := s.app.CreateTable(r.Context(), actor, r.PathValue("id"), in); err != nil {
+	if err := s.app.CreateTable(r.Context(), actor, r.PathValue("id"), r.URL.Query().Get("database"), in); err != nil {
 		fail(w, err)
 		return
 	}
@@ -96,6 +96,27 @@ func (s *Server) saveQuery(w http.ResponseWriter, r *http.Request, actor app.Act
 
 func (s *Server) deleteSavedQuery(w http.ResponseWriter, r *http.Request, actor app.Actor) {
 	if err := s.app.DeleteSavedQuery(r.Context(), actor, r.PathValue("id")); err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) serverObjects(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	out, err := s.app.ServerObjects(r.Context(), actor, r.PathValue("id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) setOwner(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	var in connector.OwnerChange
+	if !decode(w, r, &in) {
+		return
+	}
+	if err := s.app.SetOwner(r.Context(), actor, r.PathValue("id"), r.URL.Query().Get("database"), in); err != nil {
 		fail(w, err)
 		return
 	}

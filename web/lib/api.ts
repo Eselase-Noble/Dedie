@@ -18,6 +18,7 @@ import type {
   MigrationInput,
   Monitoring,
   Overview,
+  OwnerChange,
   PreflightReport,
   QueryResponse,
   Restore,
@@ -28,6 +29,7 @@ import type {
   ScheduleInput,
   SecurityPolicy,
   ServerInfo,
+  ServerObjects,
   Session,
   SessionInfo,
   User,
@@ -104,6 +106,7 @@ const get = <T>(path: string, opts?: RequestOptions) => request<T>("GET", path, 
 const post = <T>(path: string, body?: unknown, opts?: RequestOptions) => request<T>("POST", path, { ...opts, body });
 
 const id = encodeURIComponent;
+const inDatabase = (database: string) => (database ? `?database=${encodeURIComponent(database)}` : "");
 
 export const api = {
   // Setup and session
@@ -147,9 +150,15 @@ export const api = {
   connectionStatuses: () => get<Record<string, ConnectionStatus>>("/connections/status"),
   createDatabase: (connId: string, name: string, addConnection: boolean) =>
     post<{ ok: boolean; connection: Connection | null }>(`/connections/${id(connId)}/databases`, { name, add_connection: addConnection }),
-  createSchema: (connId: string, name: string) => post<{ ok: boolean }>(`/connections/${id(connId)}/schemas`, { name }),
-  createTable: (connId: string, body: { schema: string; name: string; columns: ColumnDef[] }) =>
-    post<{ ok: boolean }>(`/connections/${id(connId)}/tables`, body),
+  // `database` names another database on the same server; empty means the
+  // connection's own.
+  createSchema: (connId: string, name: string, database = "") =>
+    post<{ ok: boolean }>(`/connections/${id(connId)}/schemas${inDatabase(database)}`, { name }),
+  createTable: (connId: string, body: { schema: string; name: string; columns: ColumnDef[] }, database = "") =>
+    post<{ ok: boolean }>(`/connections/${id(connId)}/tables${inDatabase(database)}`, body),
+  serverObjects: (connId: string) => get<ServerObjects>(`/connections/${id(connId)}/server-objects`),
+  setOwner: (connId: string, body: OwnerChange, database = "") =>
+    post<{ ok: boolean }>(`/connections/${id(connId)}/owner${inDatabase(database)}`, body),
   catalog: (connId: string) => get<Catalog>(`/connections/${id(connId)}/catalog`),
   query: (connId: string, body: { sql: string; write: boolean; max_rows: number }, signal?: AbortSignal) =>
     post<QueryResponse>(`/connections/${id(connId)}/query`, body, { signal }),

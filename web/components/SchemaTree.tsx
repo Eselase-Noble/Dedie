@@ -80,7 +80,7 @@ export default function SchemaTree({ catalog, onPick }: {
           <div key={s.name}>
             <button className="tree-row" onClick={() => toggle(key)}>
               <span className="caret">{expanded ? "▾" : "▸"}</span>
-              <strong className="tname">{s.name}</strong>
+              <strong className="tname" title={s.owner ? `Owned by ${s.owner}` : undefined}>{s.name}</strong>
               <span className="tmeta">{s.tables.length + s.views.length}</span>
             </button>
             {expanded && (

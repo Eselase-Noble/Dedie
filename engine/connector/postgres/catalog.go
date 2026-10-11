@@ -23,16 +23,16 @@ func (s *session) Catalog(ctx context.Context) (*connector.Catalog, error) {
 		return sc
 	}
 
-	rows, err := s.conn.Query(ctx, `SELECT n.nspname FROM pg_namespace n WHERE `+userSchemas+` ORDER BY 1`)
+	rows, err := s.conn.Query(ctx, `SELECT n.nspname, pg_get_userbyid(n.nspowner) FROM pg_namespace n WHERE `+userSchemas+` ORDER BY 1`)
 	if err != nil {
 		return nil, friendly(err)
 	}
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var name, owner string
+		if err := rows.Scan(&name, &owner); err != nil {
 			return nil, err
 		}
-		get(name)
+		get(name).Owner = owner
 	}
 	if err := rows.Err(); err != nil {
 		return nil, friendly(err)
@@ -43,7 +43,8 @@ func (s *session) Catalog(ctx context.Context) (*connector.Catalog, error) {
 	var relOrder []relKey
 	relKind := map[relKey]string{}
 	rows, err = s.conn.Query(ctx, `SELECT n.nspname, c.relname, c.relkind::text, greatest(c.reltuples,0)::bigint,
-			CASE WHEN c.relkind IN ('r','m','p') THEN pg_total_relation_size(c.oid) ELSE 0 END
+			CASE WHEN c.relkind IN ('r','m','p') THEN pg_total_relation_size(c.oid) ELSE 0 END,
+			pg_get_userbyid(c.relowner)
 		FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
 		WHERE c.relkind IN ('r','p','v','m') AND `+userSchemas+` ORDER BY 1,2`)
 	if err != nil {
@@ -53,7 +54,7 @@ func (s *session) Catalog(ctx context.Context) (*connector.Catalog, error) {
 		var k relKey
 		var kind string
 		t := &connector.Table{Columns: []connector.TableColumn{}, Indexes: []string{}}
-		if err := rows.Scan(&k.schema, &k.name, &kind, &t.EstRows, &t.Size); err != nil {
+		if err := rows.Scan(&k.schema, &k.name, &kind, &t.EstRows, &t.Size, &t.Owner); err != nil {
 			return nil, err
 		}
 		t.Name = k.name

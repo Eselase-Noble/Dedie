@@ -8,6 +8,7 @@ import { beginDrag, useStoredSize } from "@/lib/resize";
 import { loadTabs, newId, newQueryTab, saveTabs, type Tab } from "@/lib/tabs";
 import type { Catalog, CatalogTable, SavedQuery } from "@/lib/types";
 import CreateObject from "@/components/CreateObjects";
+import OwnershipDialog from "@/components/query/OwnershipDialog";
 import QueryTab from "@/components/query/QueryTab";
 import SavedQueries, { SaveQueryDialog } from "@/components/query/SavedQueries";
 import TableDetails from "@/components/query/TableDetails";
@@ -38,6 +39,7 @@ export default function QueryPage() {
   const [creating, setCreating] = useState<"database" | "schema" | "table" | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showSaved, setShowSaved] = useState(false);
+  const [showOwner, setShowOwner] = useState(false);
   const [saving, setSaving] = useState<Tab | null>(null);
   const [details, setDetails] = useState<{ schema: string; table: CatalogTable } | null>(null);
   const [notice, setNotice] = useState("");
@@ -171,6 +173,10 @@ export default function QueryPage() {
             )}
           </div>
         )}
+        {/* MySQL objects have no owner, so the option is PostgreSQL only. */}
+        {mayWrite && can("server.admin") && connection?.kind === "postgres" && (
+          <button className="btn small" onClick={() => setShowOwner(true)}>Change owner…</button>
+        )}
         <button className="btn small" onClick={() => setShowTree((v) => !v)} aria-pressed={showTree}>
           {showTree ? "Hide schema" : "Show schema"}
         </button>
@@ -232,6 +238,10 @@ export default function QueryPage() {
         </div>
       </div>
 
+      {showOwner && connection && (
+        <OwnershipDialog connection={connection} catalog={catalog} onClose={() => setShowOwner(false)}
+          onChanged={(message) => { setNotice(message); void loadCatalog(connId); }} />
+      )}
       {details && <TableDetails schema={details.schema} table={details.table} onClose={() => setDetails(null)} />}
       {showSaved && (
         <SavedQueries queries={saved ?? []} onClose={() => setShowSaved(false)} onDeleted={() => void reloadSaved()}

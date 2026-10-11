@@ -140,6 +140,7 @@ export interface TableColumn {
 
 export interface CatalogTable {
   name: string;
+  owner?: string;
   est_rows: number;
   size_bytes: number;
   columns: TableColumn[];
@@ -148,6 +149,7 @@ export interface CatalogTable {
 
 export interface CatalogSchema {
   name: string;
+  owner?: string;
   tables: CatalogTable[];
   views: CatalogTable[];
   functions: string[];
@@ -491,4 +493,18 @@ export interface SavedQuery {
   shared: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface ServerObjects {
+  databases: { name: string; owner?: string }[];
+  roles: string[];
+  /** Whether objects have owners on this kind of server. */
+  ownership: boolean;
+}
+
+export interface OwnerChange {
+  kind: "database" | "schema" | "table";
+  schema: string;
+  name: string;
+  owner: string;
 }
