@@ -105,7 +105,7 @@ func (p *Plan) indexes() {
 			unique = "UNIQUE "
 		}
 		name := clip(pgName(index))
-		p.Post = append(p.Post, Stmt{Kind: "index", Name: t.Schema + "." + name, Soft: true,
+		p.Post = append(p.Post, Stmt{Kind: "index", Name: t.Schema + "." + name, Soft: true, ident: pgx.Identifier{t.Schema, name}.Sanitize(),
 			SQL: "CREATE " + unique + "INDEX " + qident(name) + " ON " + t.QName() + " (" + cols + ")"})
 	}
 }

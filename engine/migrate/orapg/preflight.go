@@ -13,6 +13,7 @@ import (
 	"dedie/engine/connector/postgres"
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/orasrc"
+	"dedie/engine/migrate/pgpg"
 )
 
 // Preflight inspects both databases without changing either and reports
@@ -72,22 +73,13 @@ func preflight(ctx context.Context, src *sql.DB, dst *pgx.Conn, plan *Plan, cfg 
 		r.Add("Target encoding", "fail", "the target database uses "+encoding+"; create it with ENCODING 'UTF8' so it can hold any text from the source")
 	}
 
-	var existing []string
-	for _, t := range plan.Tables {
-		var found bool
-		if err := dst.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-			WHERE n.nspname = $1 AND c.relname = $2)`, t.Schema, t.Target).Scan(&found); err != nil {
-			return nil, err
-		}
-		if found {
-			existing = append(existing, t.Schema+"."+t.Target)
-		}
+	// The target must not already hold the tables being migrated, nor
+	// anything else under a name the plan is going to take.
+	found, err := pgpg.FindExisting(ctx, dst, plan.claims())
+	if err != nil {
+		return nil, err
 	}
-	if len(existing) > 0 {
-		r.Add("Target is empty", "fail", "these tables already exist on the target: "+strings.Join(existing, ", "))
-	} else {
-		r.Add("Target is empty", "ok", "no conflicting tables on the target")
-	}
+	pgpg.ReportExisting(r, found, cfg.Existing(), "on the target")
 	var canCreate bool
 	if err := dst.QueryRow(ctx, `SELECT has_database_privilege(current_database(), 'CREATE')`).Scan(&canCreate); err != nil {
 		return nil, err

@@ -15,6 +15,7 @@ import (
 	"dedie/engine/connector/postgres"
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/orasrc"
+	"dedie/engine/migrate/pgpg"
 )
 
 // maxStreamRetries is how many times in a row the stream is restarted
@@ -48,6 +49,21 @@ func Run(ctx context.Context, jobID string, cfg migrate.Config, st State, srcCfg
 
 func (r *runner) save() { r.rep.SaveState(*r.st) }
 
+// buildPlan reads the source catalog and takes out of the plan what the
+// job leaves as the target has it: a kept table is excluded like any table
+// the operator excluded, and a kept object loses its statement.
+func (r *runner) buildPlan(ctx context.Context) error {
+	cfg := r.cfg
+	cfg.ExcludeTables = append(cfg.ExcludeTables[:len(cfg.ExcludeTables):len(cfg.ExcludeTables)], r.st.SkippedTables...)
+	plan, err := BuildPlan(ctx, r.src, cfg)
+	if err != nil {
+		return err
+	}
+	plan.keep(r.st.KeptObjects)
+	r.plan = plan
+	return nil
+}
+
 func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 	var err error
 	if r.src, err = oracle.Open(ctx, r.srcCfg); err != nil {
@@ -61,7 +77,7 @@ func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 		return "", fmt.Errorf("target: %w", err)
 	}
 	defer func() { r.dst.Close(context.WithoutCancel(ctx)) }()
-	if r.plan, err = BuildPlan(ctx, r.src, r.cfg); err != nil {
+	if err := r.buildPlan(ctx); err != nil {
 		return "", err
 	}
 
@@ -187,18 +203,40 @@ func (r *runner) schemaPhase(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// A retry after an interrupted schema phase finds its own tables on
-	// the target; that is the one failed check it may ignore.
+	// A retry after an interrupted schema phase finds its own sequences
+	// and tables on the target. The two checks on what the target already
+	// holds are the ones it may ignore.
 	var ours bool
 	_ = r.dst.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM `+metaSchema+`.oracle_checkpoint WHERE job_id = $1)`, r.jobID).Scan(&ours)
 	var blocking []string
 	for _, c := range report.Checks {
-		if c.Status == "fail" && !(ours && c.Name == "Target is empty") {
+		if c.Status == "fail" && !(ours && (c.Name == "Target is empty" || c.Name == "Existing objects")) {
 			blocking = append(blocking, c.Name+": "+c.Detail)
 		}
 	}
 	if len(blocking) > 0 {
 		return fmt.Errorf("preflight failed: %s", strings.Join(blocking, "; "))
+	}
+	// What was on the target before the job is settled now, while it can
+	// still be told from what the job creates, and remembered from here on.
+	if !ours {
+		found, err := pgpg.FindExisting(ctx, r.dst, r.plan.claims())
+		if err != nil {
+			return err
+		}
+		var skipped []string
+		skipped, r.st.KeptObjects, r.st.DropFirst = pgpg.Decide(r.cfg.Existing(), found)
+		r.st.SkippedTables = r.plan.sources(skipped)
+		r.save()
+		if n, m := len(r.st.SkippedTables), len(r.st.KeptObjects); n+m > 0 {
+			if err := r.buildPlan(ctx); err != nil {
+				return err
+			}
+			r.rep.Event("warn", fmt.Sprintf("kept %d existing table(s) and %d other object(s) on the target as they are, as chosen; they are left out of the migration", n, m))
+			if len(r.plan.Tables) == 0 {
+				return errors.New("every table to be migrated already exists on the target and is kept; nothing is left to migrate")
+			}
+		}
 	}
 	_, srcVer, _ := oracle.Version(ctx, r.src)
 	var dstVer string
@@ -212,6 +250,9 @@ func (r *runner) schemaPhase(ctx context.Context) error {
 		return fmt.Errorf("prepare target: %s", pgMessage(err))
 	}
 	if _, err := r.dst.Exec(ctx, `INSERT INTO `+metaSchema+`.oracle_checkpoint (job_id, scn) VALUES ($1, 0) ON CONFLICT DO NOTHING`, r.jobID); err != nil {
+		return err
+	}
+	if err := pgpg.DropExisting(ctx, r.dst, r.st.DropFirst, r.rep); err != nil {
 		return err
 	}
 	if !r.cfg.Offline() {

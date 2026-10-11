@@ -10,6 +10,7 @@ import (
 	"dedie/engine/connector/oracle"
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/orasrc"
+	"dedie/engine/migrate/pgpg"
 )
 
 // Column is a source column with its translation.
@@ -45,6 +46,9 @@ type Stmt struct {
 	SQL  string
 	Soft bool
 	err  error
+	// ident is the quoted name of a sequence or index the statement
+	// creates, for the preflight to look up on the target; see claims.
+	ident string
 }
 
 // Plan is what will be migrated and how it is translated.
@@ -225,7 +229,8 @@ func (p *Plan) sequences() {
 			ddl += " CYCLE"
 		}
 		p.Sequences = append(p.Sequences, s)
-		p.Pre = append(p.Pre, Stmt{Kind: "sequence", Name: s.Schema + "." + s.Target, SQL: ddl, Soft: true})
+		p.Pre = append(p.Pre, Stmt{Kind: "sequence", Name: s.Schema + "." + s.Target, SQL: ddl, Soft: true,
+			ident: pgx.Identifier{s.Schema, s.Target}.Sanitize()})
 	}
 }
 
@@ -275,4 +280,68 @@ func (p *Plan) buildTables() {
 		p.Pre = append(p.Pre, Stmt{Kind: "table", Name: t.Schema + "." + t.Target,
 			SQL: "CREATE TABLE " + t.QName() + " (\n  " + strings.Join(defs, ",\n  ") + "\n)"})
 	}
+}
+
+// claims lists every name the plan takes on the target, for the preflight
+// to look up there. Apart from the tables these are the sequences and the
+// indexes, read off the statements that create them, so what is checked
+// and what is created cannot drift apart. Check constraints and foreign
+// keys are named within their table, and a primary key's index gets a free
+// name from PostgreSQL.
+func (p *Plan) claims() []pgpg.Claim {
+	var out []pgpg.Claim
+	for _, t := range p.Tables {
+		out = append(out, pgpg.Claim{Kind: "table", Name: t.Schema + "." + t.Target, Ident: t.QName()})
+	}
+	for _, list := range [][]Stmt{p.Pre, p.Post, p.Final} {
+		for _, s := range list {
+			if s.ident != "" {
+				out = append(out, pgpg.Claim{Kind: s.Kind, Name: s.Name, Ident: s.ident})
+			}
+		}
+	}
+	return out
+}
+
+// keep removes from the plan every statement that would create an object
+// the job was told to leave as it is on the target, and takes a kept
+// sequence off the list of those whose position is set at the end.
+func (p *Plan) keep(kept []string) {
+	if len(kept) == 0 {
+		return
+	}
+	is := map[string]bool{}
+	for _, k := range kept {
+		is[k] = true
+	}
+	for _, list := range []*[]Stmt{&p.Pre, &p.Post, &p.Final} {
+		out := (*list)[:0:0]
+		for _, s := range *list {
+			if s.ident == "" || !is[pgpg.KeptKey(s.Kind, s.Name)] {
+				out = append(out, s)
+			}
+		}
+		*list = out
+	}
+	sequences := p.Sequences[:0:0]
+	for _, s := range p.Sequences {
+		if !is[pgpg.KeptKey("sequence", s.Schema+"."+s.Target)] {
+			sequences = append(sequences, s)
+		}
+	}
+	p.Sequences = sequences
+}
+
+// sources translates the names tables have on the target into the names
+// the job's table selection knows them by on the source.
+func (p *Plan) sources(targets []string) []string {
+	var out []string
+	for _, target := range targets {
+		for _, t := range p.Tables {
+			if t.Schema+"."+t.Target == target {
+				out = append(out, t.Label())
+			}
+		}
+	}
+	return out
 }
