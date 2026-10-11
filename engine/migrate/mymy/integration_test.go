@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -456,4 +457,329 @@ func TestMigrationOffline(t *testing.T) {
 	if phase, _ := rep.snapshot(); phase == migrate.PhaseStreaming {
 		t.Error("offline job went to streaming")
 	}
+}
+
+// existingObjects prepares a source and a target database in which every
+// kind of object the plan creates already exists under a name the migration
+// wants. None is what the source has under that name. The trigger sits on a
+// table the migration does not touch: trigger names belong to the database.
+// One of the source's views finds its name held by a table.
+func existingObjects(t *testing.T, ctx context.Context) (srcCfg, dstCfg connector.Config, src, dst *sql.DB) {
+	t.Helper()
+	srcCfg, dstCfg = testConfig(t, "DEDIE_TEST_MYSQL_SOURCE"), testConfig(t, "DEDIE_TEST_MYSQL_TARGET")
+	db := fmt.Sprintf("dedie_test_%d", time.Now().UnixNano())
+	for _, admin := range []connector.Config{srcCfg, dstCfg} {
+		c, err := mysql.Open(ctx, admin, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.ExecContext(ctx, "CREATE DATABASE "+db+" CHARACTER SET utf8mb4"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			c.Exec("DROP DATABASE IF EXISTS " + db)
+			c.Close()
+		})
+	}
+	srcCfg.Database, dstCfg.Database = db, db
+	load := func(cfg connector.Config, stmts ...string) *sql.DB {
+		t.Helper()
+		c, err := mysql.Open(ctx, cfg, map[string]string{"information_schema_stats_expiry": "0"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { c.Close() })
+		for _, stmt := range stmts {
+			if _, err := c.ExecContext(ctx, stmt); err != nil {
+				t.Fatalf("%v\n%s", err, stmt)
+			}
+		}
+		return c
+	}
+	src = load(srcCfg,
+		`CREATE TABLE customers (id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100) NOT NULL) ENGINE=InnoDB`,
+		`CREATE TABLE change_log (id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, note VARCHAR(100)) ENGINE=InnoDB`,
+		`CREATE TRIGGER customers_log AFTER INSERT ON customers FOR EACH ROW INSERT INTO change_log (note) VALUES (CONCAT('insert ', NEW.id))`,
+		`CREATE VIEW customer_names AS SELECT name FROM customers`,
+		`CREATE VIEW customer_count AS SELECT COUNT(*) AS n FROM customers`,
+		`CREATE PROCEDURE touch(IN cid INT) UPDATE customers SET name = UPPER(name) WHERE id = cid`,
+		`CREATE FUNCTION twice(x INT) RETURNS INT DETERMINISTIC NO SQL RETURN x * 2`,
+		`CREATE EVENT prune ON SCHEDULE EVERY 1 DAY DISABLE DO DELETE FROM change_log WHERE id < 0`,
+		`INSERT INTO customers (name) VALUES ('one'), ('two')`)
+
+	// A target that holds none of the names passes, and lists nothing.
+	report, err := Preflight(ctx, srcCfg, dstCfg, migrate.Config{Mode: migrate.ModeOffline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := findCheck(t, report, "Existing objects"); c.Status != "ok" || !report.OK || len(report.Existing) != 0 {
+		t.Fatalf("clean target: ok=%v, existing objects %s: %s, listed %v", report.OK, c.Status, c.Detail, report.Existing)
+	}
+
+	dst = load(dstCfg,
+		`CREATE TABLE change_log (other INT) ENGINE=InnoDB`,
+		`INSERT INTO change_log VALUES (42)`,
+		`CREATE TABLE unrelated (id INT) ENGINE=InnoDB`,
+		`CREATE TRIGGER customers_log BEFORE DELETE ON unrelated FOR EACH ROW SET @dedie_unrelated = 1`,
+		`CREATE VIEW customer_names AS SELECT 1 AS one`,
+		`CREATE TABLE customer_count (n INT) ENGINE=InnoDB`,
+		`CREATE PROCEDURE touch() SELECT 2`,
+		`CREATE FUNCTION twice(x INT) RETURNS INT DETERMINISTIC NO SQL RETURN x * 3`,
+		`CREATE EVENT prune ON SCHEDULE EVERY 1 YEAR DISABLE DO SET @dedie_unrelated = 4`)
+	return srcCfg, dstCfg, src, dst
+}
+
+func findCheck(t *testing.T, r *migrate.Report, name string) migrate.Check {
+	t.Helper()
+	for _, c := range r.Checks {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("preflight has no %q check", name)
+	return migrate.Check{}
+}
+
+// existingList is the preflight's list of what the target already has.
+func existingList(r *migrate.Report) string {
+	var out []string
+	for _, e := range r.Existing {
+		out = append(out, e.Kind+" "+e.Name)
+	}
+	sort.Strings(out)
+	return strings.Join(out, "; ")
+}
+
+// wantExisting is what the preflight must list on the target existingObjects
+// prepares, each object under the kind and name the target has it by.
+const wantExisting = "event prune; function twice; procedure touch; table change_log; table customer_count; trigger customers_log; view customer_names"
+
+// definitions describes the objects of a database that carry the names
+// existingObjects took on the target, with what tells one definition of
+// each from another.
+func definitions(t *testing.T, ctx context.Context, db *sql.DB) string {
+	t.Helper()
+	rows, err := QueryStrings(ctx, db, `SELECT CONCAT('table ', table_name, ' ', table_type) FROM information_schema.tables
+			WHERE table_schema = DATABASE() AND table_name IN ('change_log', 'customer_count', 'customer_names', 'unrelated')
+		UNION ALL SELECT CONCAT('column ', table_name, '.', column_name) FROM information_schema.columns
+			WHERE table_schema = DATABASE() AND table_name IN ('change_log', 'customer_count', 'customer_names')
+		UNION ALL SELECT CONCAT(routine_type, ' ', routine_name, ' ', routine_definition) FROM information_schema.routines WHERE routine_schema = DATABASE()
+		UNION ALL SELECT CONCAT('trigger ', trigger_name, ' on ', event_object_table, ' ', action_statement) FROM information_schema.triggers WHERE trigger_schema = DATABASE()
+		UNION ALL SELECT CONCAT('event ', event_name, ' ', event_definition) FROM information_schema.events WHERE event_schema = DATABASE()
+		ORDER BY 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := make([]string, len(rows))
+	for i, r := range rows {
+		lines[i] = r[0]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// kept is definitions together with the rows of the table that was there.
+func kept(t *testing.T, ctx context.Context, dst *sql.DB) string {
+	t.Helper()
+	var rows, view string
+	if err := dst.QueryRowContext(ctx, `SELECT GROUP_CONCAT(other) FROM change_log`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := dst.QueryRowContext(ctx, `SELECT view_definition FROM information_schema.views WHERE table_schema = DATABASE() AND table_name = 'customer_names'`).Scan(&view); err != nil {
+		t.Fatal(err)
+	}
+	return definitions(t, ctx, dst) + "\nchange_log holds " + rows + "\ncustomer_names is " + view
+}
+
+// TestMigrationExistingObjects is the default policy: preflight names every
+// object that is in the way, and the job refuses to start and leaves them
+// as they were.
+func TestMigrationExistingObjects(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	srcCfg, dstCfg, _, dst := existingObjects(t, ctx)
+	cfg := migrate.Config{Mode: migrate.ModeOffline}
+	before := kept(t, ctx, dst)
+
+	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range report.Checks {
+		t.Logf("preflight %-28s %-4s %s", c.Name, c.Status, c.Detail)
+	}
+	if report.OK {
+		t.Error("preflight passed over a target that has the migration's names taken")
+	}
+	if got := existingList(report); got != wantExisting {
+		t.Errorf("existing objects listed:\n got %s\nwant %s", got, wantExisting)
+	}
+	if c := findCheck(t, report, "Target is empty"); c.Status != "fail" || !strings.Contains(c.Detail, "change_log") {
+		t.Errorf("target is empty: %s: %s", c.Status, c.Detail)
+	}
+	existing := findCheck(t, report, "Existing objects")
+	if existing.Status != "fail" {
+		t.Errorf("existing objects: %s", existing.Status)
+	}
+	for _, want := range []string{
+		"views: customer_count (the name of a table), customer_names", "procedures: touch", "functions: twice",
+		"triggers: customers_log", "events: prune", "never replaces or merges",
+	} {
+		if !strings.Contains(existing.Detail, want) {
+			t.Errorf("existing objects does not mention %q", want)
+		}
+	}
+	if strings.Contains(existing.Detail, "unrelated") || strings.Contains(existing.Detail, "change_log") {
+		t.Errorf("existing objects names a table: %s", existing.Detail)
+	}
+
+	rep := &memReporter{t: t, desired: "run", tables: map[string]map[string]any{}}
+	out, err := Run(ctx, "mig_exist1", cfg, State{}, srcCfg, dstCfg, rep)
+	if err == nil || !strings.Contains(err.Error(), "preflight failed") ||
+		!strings.Contains(err.Error(), "Existing objects") || !strings.Contains(err.Error(), "Target is empty") {
+		t.Fatalf("run over existing objects: %v %v", out, err)
+	}
+	if after := kept(t, ctx, dst); after != before {
+		t.Errorf("the refused job changed the target:\nbefore\n%s\nafter\n%s", before, after)
+	}
+	var created int
+	dst.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('customers', ?)`, checkpointTable).Scan(&created)
+	if created != 0 {
+		t.Error("the refused job created tables on the target")
+	}
+}
+
+// TestMigrationExistingSkip keeps what the target has. The table that was
+// there is left out of the migration, the other objects are not created,
+// and the rest arrives.
+func TestMigrationExistingSkip(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	srcCfg, dstCfg, _, dst := existingObjects(t, ctx)
+	cfg := migrate.Config{Mode: migrate.ModeOffline, OnExisting: migrate.ExistingSkip}
+	before := kept(t, ctx, dst)
+
+	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.OK {
+		t.Error("preflight failed although the job keeps what is there")
+	}
+	if got := existingList(report); got != wantExisting {
+		t.Errorf("existing objects listed:\n got %s\nwant %s", got, wantExisting)
+	}
+	for _, name := range []string{"Target is empty", "Existing objects"} {
+		c := findCheck(t, report, name)
+		t.Logf("preflight %-28s %-4s %s", c.Name, c.Status, c.Detail)
+		if c.Status != "warn" || !strings.Contains(c.Detail, "kept exactly as they are") || !strings.Contains(c.Detail, "left out of the migration") {
+			t.Errorf("%s: %s: %s", name, c.Status, c.Detail)
+		}
+	}
+
+	rep := &memReporter{t: t, desired: "run", tables: map[string]map[string]any{}}
+	out, err := Run(ctx, "mig_skip1", cfg, State{}, srcCfg, dstCfg, rep)
+	if err != nil || out != migrate.Completed {
+		t.Fatalf("run: %v %v", out, err)
+	}
+	if after := kept(t, ctx, dst); after != before {
+		t.Errorf("the job changed what it was told to keep:\nbefore\n%s\nafter\n%s", before, after)
+	}
+	_, st := rep.snapshot()
+	if strings.Join(st.SkippedTables, ",") != "change_log" || len(st.KeptObjects) != 6 || len(st.DropFirst) != 0 {
+		t.Errorf("remembered: skipped %v, kept %v, drop %v", st.SkippedTables, st.KeptObjects, st.DropFirst)
+	}
+	if _, touched := rep.tables["change_log"]; touched {
+		t.Error("the kept table was copied or validated")
+	}
+	var names string
+	if err := dst.QueryRowContext(ctx, `SELECT GROUP_CONCAT(name ORDER BY id) FROM customers`).Scan(&names); err != nil || names != "one,two" {
+		t.Errorf("the table that was not there did not arrive: %q %v", names, err)
+	}
+	if v := rep.tables["customers"]["validation"]; v != "match" {
+		t.Errorf("customers validation = %v", v)
+	}
+
+	// A resumed job still knows what it left out, now that its own table
+	// exists as well.
+	out, err = Run(ctx, "mig_skip1", cfg, st, srcCfg, dstCfg, rep)
+	if err != nil || out != migrate.Completed {
+		t.Fatalf("resumed run: %v %v", out, err)
+	}
+	if after := kept(t, ctx, dst); after != before {
+		t.Errorf("the resumed job changed what it was told to keep:\nbefore\n%s\nafter\n%s", before, after)
+	}
+}
+
+// TestMigrationExistingReplace drops what the target has under the
+// migration's names and puts the source's objects in their place.
+func TestMigrationExistingReplace(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	srcCfg, dstCfg, src, dst := existingObjects(t, ctx)
+	cfg := migrate.Config{Mode: migrate.ModeOffline, OnExisting: migrate.ExistingReplace}
+
+	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.OK {
+		t.Error("preflight failed although the job replaces what is there")
+	}
+	if got := existingList(report); got != wantExisting {
+		t.Errorf("existing objects listed:\n got %s\nwant %s", got, wantExisting)
+	}
+	for name, object := range map[string]string{"Target is empty": "change_log", "Existing objects": "procedures: touch"} {
+		c := findCheck(t, report, name)
+		t.Logf("preflight %-28s %-4s %s", c.Name, c.Status, c.Detail)
+		if c.Status != "warn" || !strings.Contains(c.Detail, "DROPPED") || !strings.Contains(c.Detail, object) {
+			t.Errorf("%s: %s: %s", name, c.Status, c.Detail)
+		}
+	}
+
+	var dropped bool
+	rep := &eventReporter{memReporter: &memReporter{t: t, desired: "run", tables: map[string]map[string]any{}}, on: func(msg string) {
+		dropped = dropped || strings.Contains(msg, "dropped 2 existing table(s) and 5 other object(s) on the target, as chosen")
+	}}
+	out, err := Run(ctx, "mig_replace1", cfg, State{}, srcCfg, dstCfg, rep)
+	if err != nil || out != migrate.Completed {
+		t.Fatalf("run: %v %v", out, err)
+	}
+	if !dropped {
+		t.Error("the job did not report what it dropped")
+	}
+	// The target now has what the source has under every one of the names;
+	// the table nobody asked to replace is still there.
+	const untouched = "table unrelated BASE TABLE\n"
+	got, want := definitions(t, ctx, dst), definitions(t, ctx, src)
+	if !strings.Contains(got, untouched) || strings.Replace(got, untouched, "", 1) != want {
+		t.Errorf("after replacing:\nsource\n%s\ntarget\n%s", want, got)
+	}
+	for _, sql := range []string{`SELECT GROUP_CONCAT(name ORDER BY name) FROM customer_names`, `SELECT n FROM customer_count`, `SELECT COUNT(*) FROM change_log`} {
+		var a, b string
+		if err := src.QueryRowContext(ctx, sql).Scan(&a); err != nil {
+			t.Fatalf("%s on source: %v", sql, err)
+		}
+		if err := dst.QueryRowContext(ctx, sql).Scan(&b); err != nil {
+			t.Fatalf("%s on target: %v", sql, err)
+		}
+		if a != b {
+			t.Errorf("%s: source %s, target %s", sql, a, b)
+		}
+	}
+	for name, tbl := range rep.tables {
+		if tbl["validation"] != "match" {
+			t.Errorf("table %s validation = %v", name, tbl["validation"])
+		}
+	}
+}
+
+// eventReporter lets a test see the events of a job.
+type eventReporter struct {
+	*memReporter
+	on func(msg string)
+}
+
+func (e *eventReporter) Event(level, msg string) {
+	e.on(msg)
+	e.memReporter.Event(level, msg)
 }

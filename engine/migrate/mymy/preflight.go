@@ -142,33 +142,13 @@ func preflight(ctx context.Context, src, dst *sql.DB, plan *Plan, cfg migrate.Co
 		r.Add("Versions", "ok", srcVer+" → "+dstVer)
 	}
 
-	var dstDB sql.NullString
-	if err := dst.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&dstDB); err != nil {
+	// The target database must not already hold the tables being migrated,
+	// nor anything else under a name the plan is going to take.
+	found, err := FindExisting(ctx, dst, plan.objects())
+	if err != nil {
 		return nil, err
 	}
-	names := make([]any, 0, len(plan.Tables)+1)
-	names = append(names, dstDB.String)
-	marks := make([]string, 0, len(plan.Tables))
-	for _, t := range plan.Tables {
-		names = append(names, t.Name)
-		marks = append(marks, "?")
-	}
-	if len(marks) > 0 {
-		existing, err := QueryStrings(ctx, dst, `SELECT table_name FROM information_schema.tables
-			WHERE table_schema = ? AND table_name IN (`+strings.Join(marks, ",")+`) ORDER BY 1`, names...)
-		if err != nil {
-			return nil, err
-		}
-		if len(existing) > 0 {
-			list := make([]string, len(existing))
-			for i, e := range existing {
-				list[i] = e[0]
-			}
-			r.Add("Target is empty", "fail", "these tables already exist in the target database: "+strings.Join(list, ", "))
-		} else {
-			r.Add("Target is empty", "ok", "no conflicting tables in target database "+dstDB.String)
-		}
-	}
+	ReportExisting(r, found, cfg.Existing())
 
 	// Objects the pipeline does not carry over. Reported, never silently dropped.
 	r.Add("Not migrated", "warn", "recreate these on the target yourself: user accounts and privileges. Views, routines, triggers and events are created under the migrating account, not their original DEFINER")

@@ -10,6 +10,7 @@ import (
 
 	"dedie/engine/connector/mysql"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/pgpg"
 )
 
 var errNoBinlog = errors.New("binary logging is not enabled on the source")
@@ -313,4 +314,45 @@ func (p *Plan) loadTriggersAndEvents(ctx context.Context, src Querier, tableScop
 		p.Final = append(p.Final, Stmt{Kind: "event", Name: r[0], Soft: true, SQL: p.portable(ddl)})
 	}
 	return nil
+}
+
+// objects lists every name the plan takes in the target database, for the
+// preflight to look up there. Apart from the tables they are read off the
+// statements themselves, so what is checked and what is created cannot
+// drift apart. A statement without SQL is a definition the source would not
+// show; it is reported and never run.
+func (p *Plan) objects() []Object {
+	var out []Object
+	for _, t := range p.Tables {
+		out = append(out, Object{Kind: "table", Name: t.Name})
+	}
+	for _, list := range [][]Stmt{p.Post, p.Final} {
+		for _, s := range list {
+			if s.SQL != "" {
+				out = append(out, Object{Kind: s.Kind, Name: s.Name})
+			}
+		}
+	}
+	return out
+}
+
+// keep removes from the plan every statement that would create an object
+// the job was told to leave as it is on the target.
+func (p *Plan) keep(kept []string) {
+	if len(kept) == 0 {
+		return
+	}
+	is := map[string]bool{}
+	for _, k := range kept {
+		is[k] = true
+	}
+	for _, list := range []*[]Stmt{&p.Post, &p.Final} {
+		out := (*list)[:0:0]
+		for _, s := range *list {
+			if !is[pgpg.KeptKey(s.Kind, s.Name)] {
+				out = append(out, s)
+			}
+		}
+		*list = out
+	}
 }

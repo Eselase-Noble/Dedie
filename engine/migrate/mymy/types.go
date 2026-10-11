@@ -85,6 +85,20 @@ type State struct {
 	LastCommitTime time.Time `json:"last_commit_time"`
 	SourceVersion  string    `json:"source_version"`
 	TargetVersion  string    `json:"target_version"`
+
+	// What the job does about objects that were on the target before it
+	// started. It is decided once, in the schema phase, from the policy
+	// chosen for the job: later the job's own objects exist as well, and
+	// nothing on the target tells the two apart.
+	//
+	// SkippedTables are the tables left out of the migration because the
+	// target's are kept, named as the job's table selection names them.
+	SkippedTables []string `json:"skipped_tables,omitempty"`
+	// KeptObjects are the other objects that are kept: the plan does not
+	// create them.
+	KeptObjects []string `json:"kept_objects,omitempty"`
+	// DropFirst are the statements that remove what the job replaces.
+	DropFirst []string `json:"drop_first,omitempty"`
 }
 
 // checkpointTable lives in the target database while a job runs.
