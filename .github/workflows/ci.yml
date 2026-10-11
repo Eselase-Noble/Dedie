@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Lint
+        run: make lint
+
+      - name: Unit tests
+        run: make test
+
+      # The end-to-end test migrates a live database from PostgreSQL 16 to 18.
+      # Both servers are installed from the PostgreSQL apt repository and run
+      # as plain local clusters on ports 54316 and 54318.
+      - name: Start PostgreSQL 16 and 18
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y -qq postgresql-16 postgresql-18
+          sudo systemctl stop postgresql || true
+          for v in 16 18; do
+            dir="$RUNNER_TEMP/pg$v"
+            "/usr/lib/postgresql/$v/bin/initdb" -D "$dir" -U postgres -A trust >/dev/null
+            printf "port = 543%s\nlisten_addresses = '127.0.0.1'\nunix_socket_directories = ''\nwal_level = logical\n" "$v" >> "$dir/postgresql.conf"
+            "/usr/lib/postgresql/$v/bin/pg_ctl" -D "$dir" -l "$dir/server.log" -w start
+          done
+
+      - name: Integration test
+        env:
+          DEDIE_TEST_SOURCE: postgres://postgres@127.0.0.1:54316/postgres
+          DEDIE_TEST_TARGET: postgres://postgres@127.0.0.1:54318/postgres
+        run: make test-integration
+
+  build:
+    name: Build
+    needs: test
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web interface
+        run: make web
+
+      - name: Build binaries
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          make build
+          tar -C bin -czf "dedie-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dedie-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dedie-*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Checksums
+        run: sha256sum dedie-*.tar.gz > SHA256SUMS
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dedie-*.tar.gz SHA256SUMS --repo "$GITHUB_REPOSITORY" --generate-notes
