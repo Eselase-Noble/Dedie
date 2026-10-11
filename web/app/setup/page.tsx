@@ -62,7 +62,7 @@ export default function SetupPage() {
         {needsSetup === false && (
           <Banner tone="info">
             This installation already has an organization. To get an account, ask one of its owners or
-            admins to add you from the Users page.
+            admins to add you from the Dedie users page.
           </Banner>
         )}
 
