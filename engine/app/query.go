@@ -36,7 +36,7 @@ func (a *App) Query(ctx context.Context, actor Actor, connID string, req QueryRe
 	if req.MaxRows <= 0 || req.MaxRows > 10000 {
 		req.MaxRows = 1000
 	}
-	c, sess, err := a.open(ctx, actor.User.OrgID, connID)
+	c, sess, err := a.open(ctx, actor, connID)
 	if err != nil {
 		return resp, err
 	}
@@ -77,7 +77,7 @@ func (a *App) Catalog(ctx context.Context, actor Actor, connID string) (*connect
 	if err := actor.require(PermQueryRead); err != nil {
 		return nil, err
 	}
-	_, sess, err := a.open(ctx, actor.User.OrgID, connID)
+	_, sess, err := a.open(ctx, actor, connID)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +90,7 @@ func (a *App) ServerOverview(ctx context.Context, actor Actor, connID string) (*
 	if err := actor.require(PermServerAdmin); err != nil {
 		return nil, err
 	}
-	_, sess, err := a.open(ctx, actor.User.OrgID, connID)
+	_, sess, err := a.open(ctx, actor, connID)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +104,7 @@ func (a *App) CancelBackend(ctx context.Context, actor Actor, connID string, pid
 	if err := actor.require(PermServerAdmin); err != nil {
 		return err
 	}
-	c, sess, err := a.open(ctx, actor.User.OrgID, connID)
+	c, sess, err := a.open(ctx, actor, connID)
 	if err != nil {
 		return err
 	}

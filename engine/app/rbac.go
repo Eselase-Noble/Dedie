@@ -50,6 +50,25 @@ func validRole(role string) bool {
 type Actor struct {
 	User store.User
 	IP   string
+	// SessionID identifies the browser session the request came through.
+	SessionID string
+	// Token names the API token used instead of a session, if any.
+	Token string
+	// MustEnroll is set when the organization requires two-factor sign-in
+	// and this user has not set it up yet.
+	MustEnroll bool
+}
+
+// roleRank orders roles so that one can be compared with another.
+var roleRank = map[string]int{RoleViewer: 1, RoleAnalyst: 2, RoleOperator: 3, RoleAdmin: 4, RoleOwner: 5}
+
+// interactive rejects API tokens for actions that manage the account
+// itself: a leaked token must not be able to mint more credentials.
+func (a Actor) interactive() error {
+	if a.Token != "" {
+		return &Error{Status: 403, Message: "this action needs an interactive sign-in, not an API token"}
+	}
+	return nil
 }
 
 func (a Actor) Can(p Permission) bool {

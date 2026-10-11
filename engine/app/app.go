@@ -73,6 +73,9 @@ func (a *App) Close() error { return a.Store.Close() }
 type Error struct {
 	Status  int
 	Message string
+	// Code, when set, lets a client react to a specific condition without
+	// matching on the message text.
+	Code string
 }
 
 func (e *Error) Error() string { return e.Message }

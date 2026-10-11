@@ -64,11 +64,31 @@ func (a *App) config(c store.Connection) (connector.Config, error) {
 		Password: string(pw), SSLMode: c.SSLMode, SSLRootCert: c.SSLRootCert}, nil
 }
 
-// open loads a saved connection and opens a session on it.
-func (a *App) open(ctx context.Context, orgID, connID string) (store.Connection, connector.Session, error) {
-	c, err := a.Store.GetConnection(ctx, orgID, connID)
+// conn loads a saved connection the actor may use. A restricted connection
+// the actor has not been granted is reported as not found, so its existence
+// is not revealed.
+func (a *App) conn(ctx context.Context, actor Actor, connID string) (store.Connection, error) {
+	c, err := a.Store.GetConnection(ctx, actor.User.OrgID, connID)
 	if err != nil {
-		return c, nil, wrap(err)
+		return c, wrap(err)
+	}
+	if c.Restricted && !actor.Can(PermManageUsers) {
+		grants, err := a.Store.UserGrants(ctx, actor.User.ID)
+		if err != nil {
+			return c, err
+		}
+		if !grants[c.ID] {
+			return store.Connection{}, ErrNotFound
+		}
+	}
+	return c, nil
+}
+
+// open loads a saved connection and opens a session on it.
+func (a *App) open(ctx context.Context, actor Actor, connID string) (store.Connection, connector.Session, error) {
+	c, err := a.conn(ctx, actor, connID)
+	if err != nil {
+		return c, nil, err
 	}
 	cfg, err := a.config(c)
 	if err != nil {
@@ -89,15 +109,34 @@ func (a *App) ListConnections(ctx context.Context, actor Actor) ([]store.Connect
 	if err := actor.require(PermViewConnections); err != nil {
 		return nil, err
 	}
-	return a.Store.ListConnections(ctx, actor.User.OrgID)
+	return a.visibleConnections(ctx, actor)
+}
+
+// visibleConnections lists the organization's connections, leaving out
+// restricted ones the actor has not been granted.
+func (a *App) visibleConnections(ctx context.Context, actor Actor) ([]store.Connection, error) {
+	all, err := a.Store.ListConnections(ctx, actor.User.OrgID)
+	if err != nil || actor.Can(PermManageUsers) {
+		return all, err
+	}
+	grants, err := a.Store.UserGrants(ctx, actor.User.ID)
+	if err != nil {
+		return nil, err
+	}
+	out := []store.Connection{}
+	for _, c := range all {
+		if !c.Restricted || grants[c.ID] {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 func (a *App) GetConnection(ctx context.Context, actor Actor, id string) (store.Connection, error) {
 	if err := actor.require(PermViewConnections); err != nil {
 		return store.Connection{}, err
 	}
-	c, err := a.Store.GetConnection(ctx, actor.User.OrgID, id)
-	return c, wrap(err)
+	return a.conn(ctx, actor, id)
 }
 
 // SaveConnection creates a connection, or updates the one named by id.
@@ -111,9 +150,9 @@ func (a *App) SaveConnection(ctx context.Context, actor Actor, id string, in Con
 	c := store.Connection{ID: secure.NewID("con"), OrgID: actor.User.OrgID, CreatedBy: actor.User.Email}
 	action := "connection.create"
 	if id != "" {
-		existing, err := a.Store.GetConnection(ctx, actor.User.OrgID, id)
+		existing, err := a.conn(ctx, actor, id)
 		if err != nil {
-			return c, wrap(err)
+			return c, err
 		}
 		if existing.Kind != in.Kind {
 			return c, invalid("the database kind of a connection cannot be changed")
@@ -140,9 +179,9 @@ func (a *App) DeleteConnection(ctx context.Context, actor Actor, id string) erro
 	if err := actor.require(PermManageConnections); err != nil {
 		return err
 	}
-	c, err := a.Store.GetConnection(ctx, actor.User.OrgID, id)
+	c, err := a.conn(ctx, actor, id)
 	if err != nil {
-		return wrap(err)
+		return err
 	}
 	if err := a.Store.DeleteConnection(ctx, actor.User.OrgID, c.ID); err != nil {
 		return conflict("%s", err.Error())
@@ -156,7 +195,7 @@ func (a *App) TestConnection(ctx context.Context, actor Actor, id string) (conne
 	if err := actor.require(PermViewConnections); err != nil {
 		return connector.ServerInfo{}, err
 	}
-	_, sess, err := a.open(ctx, actor.User.OrgID, id)
+	_, sess, err := a.open(ctx, actor, id)
 	if err != nil {
 		return connector.ServerInfo{}, err
 	}
@@ -180,4 +219,50 @@ func (a *App) TestInput(ctx context.Context, actor Actor, in ConnectionInput) (c
 	}
 	defer sess.Close(context.WithoutCancel(ctx))
 	return sess.Info(ctx)
+}
+
+// ConnectionAccess says who may use a connection.
+type ConnectionAccess struct {
+	// Restricted limits the connection to administrators and UserIDs.
+	// Unrestricted connections are open to everyone whose role allows
+	// working with connections.
+	Restricted bool     `json:"restricted"`
+	UserIDs    []string `json:"user_ids"`
+}
+
+func (a *App) GetConnectionAccess(ctx context.Context, actor Actor, id string) (ConnectionAccess, error) {
+	if err := actor.require(PermManageUsers); err != nil {
+		return ConnectionAccess{}, err
+	}
+	c, err := a.conn(ctx, actor, id)
+	if err != nil {
+		return ConnectionAccess{}, err
+	}
+	users, err := a.Store.ConnectionGrants(ctx, c.ID)
+	return ConnectionAccess{Restricted: c.Restricted, UserIDs: users}, err
+}
+
+// SetConnectionAccess restricts a connection to chosen users, or opens it
+// again. Administrators always keep access.
+func (a *App) SetConnectionAccess(ctx context.Context, actor Actor, id string, in ConnectionAccess) error {
+	if err := actor.require(PermManageUsers); err != nil {
+		return err
+	}
+	c, err := a.conn(ctx, actor, id)
+	if err != nil {
+		return err
+	}
+	var emails []string
+	for _, uid := range in.UserIDs {
+		u, err := a.Store.UserByID(ctx, actor.User.OrgID, uid)
+		if err != nil {
+			return invalid("user %s does not belong to this organization", uid)
+		}
+		emails = append(emails, u.Email)
+	}
+	if err := a.Store.SetConnectionAccess(ctx, c.ID, in.Restricted, in.UserIDs); err != nil {
+		return err
+	}
+	a.audit(ctx, actor, "connection.access", c.ID, map[string]any{"name": c.Name, "restricted": in.Restricted, "users": emails})
+	return nil
 }

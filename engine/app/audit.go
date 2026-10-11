@@ -17,7 +17,11 @@ func (a *App) audit(ctx context.Context, actor Actor, action, target string, det
 			text = string(b)
 		}
 	}
-	err := a.Store.Audit(context.WithoutCancel(ctx), actor.User.OrgID, actor.User.Email, action, target, text, actor.IP)
+	who := actor.User.Email
+	if actor.Token != "" {
+		who += " (token " + actor.Token + ")"
+	}
+	err := a.Store.Audit(context.WithoutCancel(ctx), actor.User.OrgID, who, action, target, text, actor.IP)
 	if err != nil {
 		log.Printf("audit write failed for %s by %s: %v", action, actor.User.Email, err)
 	}

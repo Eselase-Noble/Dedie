@@ -38,7 +38,10 @@ func (s *Server) guard(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			h.Set("Cache-Control", "no-store")
 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
-				if r.Header.Get(csrfHeader) == "" || !sameOrigin(r) {
+				// A request that carries an API token does not use the
+				// session cookie, so there is nothing for another site to
+				// ride on and the cross-site checks do not apply.
+				if bearerToken(r) == "" && (r.Header.Get(csrfHeader) == "" || !sameOrigin(r)) {
 					writeError(w, http.StatusForbidden, "cross-site request rejected")
 					return
 				}
@@ -79,14 +82,36 @@ func sessionToken(r *http.Request) string {
 	return ""
 }
 
+// bearerToken returns the API token of a request, if it carries one.
+func bearerToken(r *http.Request) string {
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimSpace(auth[len("Bearer "):])
+	}
+	return ""
+}
+
 type handler func(w http.ResponseWriter, r *http.Request, actor app.Actor)
 
-// authed resolves the session cookie to an actor before calling h.
+// authed resolves the API token or session cookie to an actor before
+// calling h. A request with a token is judged by the token alone.
 func (s *Server) authed(h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		actor, err := s.app.Authenticate(r.Context(), sessionToken(r), s.clientIP(r))
+		var actor app.Actor
+		var err error
+		if token := bearerToken(r); token != "" {
+			actor, err = s.app.AuthenticateToken(r.Context(), token, s.clientIP(r))
+		} else {
+			actor, err = s.app.Authenticate(r.Context(), sessionToken(r), s.clientIP(r))
+		}
 		if err != nil {
 			fail(w, err)
+			return
+		}
+		// Until two-factor sign-in is set up, only the account endpoints
+		// that set it up are reachable.
+		if actor.MustEnroll && !strings.HasPrefix(r.URL.Path, "/api/v1/auth/") {
+			fail(w, &app.Error{Status: http.StatusForbidden, Code: "totp_enrollment_required",
+				Message: "your organization requires two-factor sign-in; set it up on the Account page first"})
 			return
 		}
 		h(w, r, actor)
@@ -115,7 +140,11 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 func fail(w http.ResponseWriter, err error) {
 	var appErr *app.Error
 	if errors.As(err, &appErr) {
-		writeError(w, appErr.Status, appErr.Message)
+		body := map[string]string{"error": appErr.Message}
+		if appErr.Code != "" {
+			body["code"] = appErr.Code
+		}
+		writeJSON(w, appErr.Status, body)
 		return
 	}
 	log.Printf("internal error: %v", err)

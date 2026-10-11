@@ -58,7 +58,7 @@ func (a *App) SaveSchedule(ctx context.Context, actor Actor, id string, in Sched
 	if in.KeepLast < 0 || in.KeepDays < 0 {
 		return store.Schedule{}, invalid("retention values cannot be negative")
 	}
-	c, err := a.Store.GetConnection(ctx, actor.User.OrgID, in.ConnectionID)
+	c, err := a.conn(ctx, actor, in.ConnectionID)
 	if err != nil {
 		return store.Schedule{}, invalid("connection not found")
 	}

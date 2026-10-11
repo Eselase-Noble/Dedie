@@ -55,7 +55,7 @@ func (a *App) startBackup(ctx context.Context, actor Actor, in BackupInput, sche
 	if in.Type == "" {
 		in.Type = backup.TypeFull
 	}
-	c, sess, err := a.open(ctx, actor.User.OrgID, in.ConnectionID)
+	c, sess, err := a.open(ctx, actor, in.ConnectionID)
 	if err != nil {
 		return store.Backup{}, err
 	}
@@ -309,7 +309,7 @@ func (a *App) RestoreBackup(ctx context.Context, actor Actor, backupID string, i
 	if b.Format == backup.FormatPGBase {
 		return store.Restore{}, invalid("a physical backup is a copy of the server's data files and is not restored into a running database; extract it with `dedie backup extract %s <directory>` and start PostgreSQL on that directory", b.ID)
 	}
-	target, err := a.Store.GetConnection(ctx, actor.User.OrgID, in.TargetID)
+	target, err := a.conn(ctx, actor, in.TargetID)
 	if err != nil {
 		return store.Restore{}, invalid("target connection not found")
 	}
@@ -338,7 +338,7 @@ func (a *App) RestoreBackup(ctx context.Context, actor Actor, backupID string, i
 		return store.Restore{}, err
 	}
 	if in.NewDatabase != "" {
-		_, sess, err := a.open(ctx, target.OrgID, target.ID)
+		_, sess, err := a.open(ctx, actor, target.ID)
 		if err != nil {
 			return store.Restore{}, err
 		}

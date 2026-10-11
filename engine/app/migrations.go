@@ -78,8 +78,14 @@ func (a *App) CreateMigration(ctx context.Context, actor Actor, in MigrationInpu
 		return store.Job{}, err
 	}
 	// Store ids, not names, so renaming a connection does not break the job.
-	sc, _ := a.Store.GetConnection(ctx, actor.User.OrgID, in.SourceID)
-	tc, _ := a.Store.GetConnection(ctx, actor.User.OrgID, in.TargetID)
+	sc, err := a.conn(ctx, actor, in.SourceID)
+	if err != nil {
+		return store.Job{}, invalid("source connection not found")
+	}
+	tc, err := a.conn(ctx, actor, in.TargetID)
+	if err != nil {
+		return store.Job{}, invalid("target connection not found")
+	}
 	cfg, _ := json.Marshal(in.Config)
 	j := store.Job{ID: secure.NewID("mig"), OrgID: actor.User.OrgID, Name: strings.TrimSpace(in.Name), Kind: kind,
 		SourceID: sc.ID, TargetID: tc.ID, Config: cfg, CreatedBy: actor.User.Email}
