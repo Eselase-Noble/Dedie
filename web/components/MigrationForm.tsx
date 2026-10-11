@@ -12,15 +12,15 @@ function parseList(text: string): string[] {
 
 /** Which kinds of target each kind of source can be migrated to. */
 const TARGET_KINDS: Record<string, string[]> = {
-  postgres: ["postgres"],
+  postgres: ["postgres", "mysql"],
   mysql: ["mysql", "postgres"],
 };
 
 export default function MigrationForm({ connections, onClose, onCreated }: {
   connections: Connection[]; onClose: () => void; onCreated: (job: Migration) => void;
 }) {
-  // Migrations run between two databases of the same kind, or from MySQL
-  // to PostgreSQL.
+  // Migrations run between two databases of the same kind, or across the
+  // two engines in either direction.
   const candidates = connections.filter((c) => c.kind === "postgres" || c.kind === "mysql");
   const [name, setName] = useState("");
   const [sourceId, setSourceId] = useState(candidates[0]?.id ?? "");
@@ -88,13 +88,13 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
       <form id="migration-form" onSubmit={submit}>
         {error && <Banner tone="error">{error}</Banner>}
         {!targetId && (
-          <Banner tone="warn">A migration needs a source and an empty target: two PostgreSQL connections, two MySQL connections, or MySQL to PostgreSQL.</Banner>
+          <Banner tone="warn">A migration needs a source and an empty target. PostgreSQL and MySQL can each be migrated to either engine.</Banner>
         )}
         {crossEngine && (
           <Banner tone="info">
-            MySQL to PostgreSQL translates the schema: tables, keys, indexes and foreign keys are recreated with
-            equivalent types in the target&apos;s <span className="mono">public</span> schema. Views, routines and triggers are not
-            translated. The preflight check lists every difference before anything is changed.
+            Moving between engines translates the schema: tables, keys, indexes and foreign keys are recreated
+            with equivalent types on the target. Views, routines and triggers are not translated. The preflight
+            check lists every difference before anything is changed.
           </Banner>
         )}
         <p className="hint" style={{ marginBottom: 12 }}>

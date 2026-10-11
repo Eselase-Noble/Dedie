@@ -28,7 +28,7 @@ Dedie moves a production database to a newer server version while the old one st
 
 ## What it does
 
-**Online migration.** Upgrade PostgreSQL or MySQL to a newer version, or move a MySQL database to PostgreSQL, with the source in service throughout. A migration can cover a whole database, selected schemas, or selected tables. It can be paused and resumed, survives a crash without losing or repeating a change, and refuses to complete a cutover if source and target differ.
+**Online migration.** Upgrade PostgreSQL or MySQL to a newer version, or move a database between MySQL and PostgreSQL in either direction, with the source in service throughout. A migration can cover a whole database, selected schemas, or selected tables. It can be paused and resumed, survives a crash without losing or repeating a change, and refuses to complete a cutover if source and target differ.
 
 **Query browser.** A full-window workspace with a schema tree, a SQL editor and a result grid, each resizable. The editor follows the connection's SQL dialect, completes table and column names and can run just the selected text. The grid handles wide and long results: it scrolls in both directions under a pinned header, and a click on a cell shows its full value. Statements run read-only unless a permitted user explicitly allows writes.
 
@@ -57,11 +57,11 @@ Dedie moves a production database to a newer server version while the old one st
 | PostgreSQL → PostgreSQL | Working |
 | MySQL → MySQL | Working |
 | MySQL → PostgreSQL | Working: tables, keys, indexes and foreign keys are translated; views, routines and triggers are not |
-| PostgreSQL → MySQL | Not built yet |
+| PostgreSQL → MySQL | Working: tables, keys, indexes and foreign keys are translated; views, functions and triggers are not |
 
-All three pipelines are covered by end-to-end tests that migrate a database under write load, pause and resume mid-stream, cut over with a read-only fence and compare the result. The PostgreSQL test runs 16 → 18. The MySQL tests use MySQL 8.0 (to MySQL 8.0, and to PostgreSQL 18); other MySQL versions have not been exercised yet.
+All four pipelines are covered by end-to-end tests that migrate a database under write load, pause and resume mid-stream, cut over with a read-only fence and compare the result. The PostgreSQL test runs 16 → 18. The cross-engine tests run MySQL 8.0 → PostgreSQL 18 and PostgreSQL 16 → MySQL 8.0. MySQL versions other than 8.0 have not been exercised yet.
 
-Not built yet: PostgreSQL → MySQL, document stores to relational (MongoDB → PostgreSQL), continuous two-way sync, scheduled backups, point-in-time recovery, single sign-on, and external key management. See the [roadmap](#roadmap).
+Not built yet: document stores to relational (MongoDB → PostgreSQL), continuous two-way sync, scheduled backups, point-in-time recovery, single sign-on, and external key management. See the [roadmap](#roadmap).
 
 ## Programs
 
@@ -158,7 +158,7 @@ dedie migrate status <id>
 dedie migrate cutover <id>       # when lag is near zero and you are ready to switch
 ```
 
-Supported pairs are PostgreSQL → PostgreSQL, MySQL → MySQL and MySQL → PostgreSQL. The target must not already contain the tables being migrated.
+Supported pairs are PostgreSQL → PostgreSQL, MySQL → MySQL, MySQL → PostgreSQL and PostgreSQL → MySQL. The target must not already contain the tables being migrated.
 
 ### Levels
 
@@ -257,6 +257,43 @@ What changes in meaning, all of it listed by preflight for your schema before an
 
 Validation at cutover compares row counts and, for tables with an integer or UTF-8 text primary key, the set of key values. Whole rows cannot be checksummed across the two engines, because they print many types differently.
 
+### PostgreSQL to MySQL
+
+The source side is read exactly as for PostgreSQL → PostgreSQL, so the same source requirements apply. The target must be MySQL 8.0 or newer. Tables are created in the target connection's database with the `utf8mb4_bin` collation, so text compares by exact bytes as it does in PostgreSQL.
+
+MySQL has no schemas inside a database. With one source schema, tables keep their names; with several, tables outside `public` are named `schema_table`. Two tables that would end up with the same name fail preflight.
+
+How the schema is translated:
+
+| PostgreSQL | MySQL |
+|---|---|
+| `smallint`, `integer`, `bigint` | `SMALLINT`, `INT`, `BIGINT` |
+| `numeric(p,s)`, `numeric` | `DECIMAL(p,s)`, `DECIMAL(65,20)` |
+| `real`, `double precision` | `FLOAT`, `DOUBLE` |
+| `boolean` | `TINYINT(1)` holding 0 or 1 |
+| `varchar(n)`, `char(n)` | `VARCHAR(n)`, `CHAR(n)` |
+| `text` | `LONGTEXT`, or `VARCHAR(255)` when the column is part of a key or index |
+| `bytea` | `LONGBLOB` |
+| `date`, `time`, `timestamp` | `DATE`, `TIME(6)`, `DATETIME(6)` |
+| `timestamptz` | `DATETIME(6)` holding UTC |
+| `uuid` | `CHAR(36)` |
+| `json`, `jsonb` | `JSON` |
+| enum types | `ENUM` with the same labels |
+| arrays | `JSON` arrays |
+| serial and identity columns | `AUTO_INCREMENT`, continued past the source sequence at cutover |
+
+Primary keys, unique and secondary indexes, and foreign keys with their rules are recreated. Foreign-key checks are off on the connection that applies changes, because PostgreSQL replicates the rows changed by a cascade itself.
+
+What changes or is left out, all of it listed by preflight for your schema:
+
+- Generated columns are not migrated; their values are not part of PostgreSQL's replication stream.
+- Partial, expression, GIN and GiST indexes, check constraints, and defaults that are expressions are not translated.
+- Values MySQL cannot store stop the migration rather than being altered: infinite dates, `NaN`, and text longer than 255 characters in a key column.
+- Views, functions, triggers and custom types are not migrated.
+- `TRUNCATE` commits on its own in MySQL, so a source transaction that truncates one table and changes others is not applied atomically.
+
+Validation at cutover compares row counts and, for tables with an integer, text or UUID primary key, the set of key values.
+
 ### For all pipelines
 
 - Schema changes made on the source while a migration is running are not replicated. Freeze the schema until cutover. `TRUNCATE` is replicated.
@@ -343,9 +380,10 @@ engine/
     postgres/        connection, query execution, catalog, administration
     mysql/           the same for MySQL
   migrate/           options, phases, reporting and the pipeline registry
-    pgpg/            PostgreSQL → PostgreSQL, one file per phase
+    pgpg/            PostgreSQL → PostgreSQL, one file per phase; also the replication reader other pipelines reuse
     mymy/            MySQL → MySQL, one file per phase; also the binary log reader other pipelines reuse
     mypg/            MySQL → PostgreSQL: schema translation, value conversion, PostgreSQL applier
+    pgmy/            PostgreSQL → MySQL: the same in the other direction
   backup/            pg_dump / pg_restore and mysqldump / mysql drivers
   secure/            envelope and stream encryption, password hashing, tokens
   store/             metadata database (SQLite), one file per entity
@@ -384,8 +422,10 @@ The end-to-end tests need two servers of the same kind and create and drop their
 export DEDIE_TEST_SOURCE=postgres://postgres@127.0.0.1:54316/postgres
 export DEDIE_TEST_TARGET=postgres://postgres@127.0.0.1:54318/postgres
 
-# MySQL: the source needs binary logging in ROW format. The MySQL to
-# PostgreSQL test uses DEDIE_TEST_MYSQL_SOURCE and DEDIE_TEST_TARGET.
+# MySQL: the source needs binary logging in ROW format. The cross-engine
+# tests reuse these: MySQL to PostgreSQL reads DEDIE_TEST_MYSQL_SOURCE and
+# DEDIE_TEST_TARGET, PostgreSQL to MySQL reads DEDIE_TEST_SOURCE and
+# DEDIE_TEST_MYSQL_TARGET.
 export DEDIE_TEST_MYSQL_SOURCE=mysql://root@127.0.0.1:33161
 export DEDIE_TEST_MYSQL_TARGET=mysql://root@127.0.0.1:33162
 
@@ -428,7 +468,7 @@ What the data directory holds:
 
 ## Roadmap
 
-1. **PostgreSQL → MySQL**, the reverse of the cross-engine path that exists today, and continuous two-way sync.
+1. **Continuous two-way sync** between two databases, with conflict handling.
 2. **Document to relational**: MongoDB → PostgreSQL, with a reviewed mapping from documents to tables.
 3. **Scheduled backups and retention**, then point-in-time recovery.
 4. **Partitioned tables** for PostgreSQL, and tested upgrade paths across more MySQL versions.
