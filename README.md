@@ -26,11 +26,15 @@ Dedie moves a production database to a newer server version while the old one st
 
 ## What it does
 
-**Online migration.** Upgrade PostgreSQL or MySQL to a newer version with the source in service throughout. A migration can cover a whole database, selected schemas, or selected tables. It can be paused and resumed, survives a crash without losing or repeating a change, and refuses to complete a cutover if source and target differ.
+**Online migration.** Upgrade PostgreSQL or MySQL to a newer version, or move a MySQL database to PostgreSQL, with the source in service throughout. A migration can cover a whole database, selected schemas, or selected tables. It can be paused and resumed, survives a crash without losing or repeating a change, and refuses to complete a cutover if source and target differ.
 
-**Query browser.** A schema tree, a SQL editor with syntax highlighting, and a result grid with CSV export and per-connection history. Statements run read-only unless a permitted user explicitly allows writes.
+**Query browser.** A full-window workspace with a schema tree, a SQL editor and a result grid, each resizable. The editor follows the connection's SQL dialect, completes table and column names and can run just the selected text. The grid handles wide and long results: it scrolls in both directions under a pinned header, and a click on a cell shows its full value. Statements run read-only unless a permitted user explicitly allows writes.
+
+**Creating objects.** Create a database, a schema or a table from the query browser, with a small table designer. The database server decides whether the account is allowed to.
 
 **Backup and recovery.** Logical backups, encrypted before they reach disk, with integrity verification and restore into any connection of the same kind.
+
+**Connection status.** The Connections page shows which servers are answering, with response time, and checks again every thirty seconds.
 
 **Server administration.** Live sessions with cancel and terminate, database sizes, replication slots and the WAL they retain, and the settings that matter for replication and security.
 
@@ -44,10 +48,18 @@ Dedie moves a production database to a newer server version while the old one st
 | Query browser and schema explorer | Working | Working |
 | Encrypted backup, verify, restore | Working | Working |
 | Server console | Working | Working |
+| Create database, schema, table | Working | Working |
 
-Both migration pipelines are covered by end-to-end tests that migrate a database under write load, pause and resume mid-stream, cut over with a read-only fence and compare every row. The PostgreSQL test runs 16 → 18. The MySQL test runs between two 8.0 servers; other MySQL version pairs have not been exercised yet.
+| Migration path | State |
+|---|---|
+| PostgreSQL → PostgreSQL | Working |
+| MySQL → MySQL | Working |
+| MySQL → PostgreSQL | Working: tables, keys, indexes and foreign keys are translated; views, routines and triggers are not |
+| PostgreSQL → MySQL | Not built yet |
 
-Not built yet: migration between different engines (MySQL ↔ PostgreSQL), document stores to relational (MongoDB → PostgreSQL), continuous two-way sync, scheduled backups, point-in-time recovery, single sign-on, and external key management. See the [roadmap](#roadmap).
+All three pipelines are covered by end-to-end tests that migrate a database under write load, pause and resume mid-stream, cut over with a read-only fence and compare the result. The PostgreSQL test runs 16 → 18. The MySQL tests use MySQL 8.0 (to MySQL 8.0, and to PostgreSQL 18); other MySQL versions have not been exercised yet.
+
+Not built yet: PostgreSQL → MySQL, document stores to relational (MongoDB → PostgreSQL), continuous two-way sync, scheduled backups, point-in-time recovery, single sign-on, and external key management. See the [roadmap](#roadmap).
 
 ## Programs
 
@@ -74,7 +86,7 @@ make                # builds the web interface, bin/dedie-server and bin/dedie
 bin/dedie-server    # http://127.0.0.1:8080
 ```
 
-Open the address, create your organization and owner account, then add connections.
+The first screen is the sign-in page. On a new installation choose **Create account** there to set up your organization and its owner, then add connections. Further users are added by owners and admins from the Users page.
 
 The server listens on loopback by default and refuses to serve plain HTTP on any other address, because sessions and database credentials would cross the network unencrypted. To expose it:
 
@@ -89,8 +101,8 @@ bin/dedie-server --addr 127.0.0.1:8080 --behind-tls-proxy
 | Page | What you do there |
 |---|---|
 | Overview | See connections, migrations and recent backups at a glance. |
-| Connections | Add, edit, test and delete connections. Passwords are write-only; weak SSL modes are flagged. |
-| Query browser | Browse schemas, write SQL, run with Ctrl/Cmd+Enter, export results as CSV. |
+| Connections | Add, edit, test and delete connections, and see which servers are online. Passwords are write-only; weak SSL modes are flagged. |
+| Query browser | Browse schemas, write SQL, run all of it or just the selection with Ctrl/Cmd+Enter, inspect cells, export results as CSV, and create databases, schemas and tables. |
 | Migrations | Create a migration at database, schema or table level; run the preflight check; watch phase, lag and per-table progress; pause, resume, cut over or abort. |
 | Backups | Create, verify, restore and delete backups; review restore history and logs. |
 | Server activity | Inspect sessions, sizes, replication slots and settings; cancel or terminate a session. |
@@ -144,7 +156,7 @@ dedie migrate status <id>
 dedie migrate cutover <id>       # when lag is near zero and you are ready to switch
 ```
 
-Source and target must be the same kind of database. The target must not already contain the tables being migrated.
+Supported pairs are PostgreSQL → PostgreSQL, MySQL → MySQL and MySQL → PostgreSQL. The target must not already contain the tables being migrated.
 
 ### Levels
 
@@ -211,7 +223,39 @@ Notes:
 - A paused job can resume for as long as the source still has the binary logs it needs. Check `binlog_expire_logs_seconds` before pausing for long.
 - MariaDB is not supported by this pipeline.
 
-### For both
+### MySQL to PostgreSQL
+
+The source side is read exactly as for MySQL → MySQL, so the same source requirements apply. The target database must use UTF-8. Tables are created in the target's `public` schema.
+
+How the schema is translated:
+
+| MySQL | PostgreSQL |
+|---|---|
+| `TINYINT`, `SMALLINT`, `MEDIUMINT`, `INT`, `BIGINT` | the smallest integer type that holds every value; unsigned types move up one size, and `BIGINT UNSIGNED` becomes `numeric(20,0)` |
+| `TINYINT(1)` | `smallint`, not `boolean`, so no value is lost |
+| `DECIMAL(p,s)`, `FLOAT`, `DOUBLE` | `numeric(p,s)`, `real`, `double precision` |
+| `CHAR(n)`, `VARCHAR(n)`, text types | `varchar(n)`, `text` |
+| `BINARY`, `VARBINARY`, BLOB types, spatial types | `bytea` |
+| `DATE`, `DATETIME`, `TIME`, `YEAR` | `date`, `timestamp`, `time`, `smallint` |
+| `TIMESTAMP` | `timestamptz` (the value is a point in time, read in UTC) |
+| `JSON` | `jsonb` |
+| `ENUM` | `text` with a `CHECK` constraint listing the allowed values |
+| `SET`, `BIT(n)` | `text`, `bigint` |
+| `AUTO_INCREMENT` | `GENERATED BY DEFAULT AS IDENTITY`, restarted past the source's counter at cutover |
+
+Primary keys, unique and secondary indexes, and foreign keys with their `ON UPDATE` and `ON DELETE` rules are recreated. Text is converted to UTF-8 from `utf8mb4`, `utf8`, `latin1` and `ascii`; other character sets fail preflight.
+
+What changes in meaning, all of it listed by preflight for your schema before anything runs:
+
+- Text comparison is case-sensitive in PostgreSQL, while most MySQL collations are not. Unique keys and lookups that relied on case-insensitive matching behave differently.
+- Zero dates (`0000-00-00`) do not exist in PostgreSQL and become `NULL`.
+- Generated columns become ordinary columns holding the same values.
+- `ON UPDATE CURRENT_TIMESTAMP`, expression defaults, full-text, spatial and functional indexes are not translated.
+- Views, stored routines, triggers and events are written in MySQL's dialect and are not migrated.
+
+Validation at cutover compares row counts and, for tables with an integer or UTF-8 text primary key, the set of key values. Whole rows cannot be checksummed across the two engines, because they print many types differently.
+
+### For all pipelines
 
 - Schema changes made on the source while a migration is running are not replicated. Freeze the schema until cutover. `TRUNCATE` is replicated.
 - Aborting removes what the migration created on the source and leaves the copied tables on the target for inspection.
@@ -275,7 +319,8 @@ Everything the interface does goes through a JSON API under `/api/v1`. Requests 
 |---|---|
 | Setup and session | `GET/POST /setup`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` |
 | Users | `GET/POST /users`, `PATCH /users/{id}` |
-| Connections | `GET/POST /connections`, `GET/PUT/DELETE /connections/{id}`, `POST /connections/test`, `POST /connections/{id}/test` |
+| Connections | `GET/POST /connections`, `GET/PUT/DELETE /connections/{id}`, `POST /connections/test`, `POST /connections/{id}/test`, `GET /connections/status` |
+| Objects | `POST /connections/{id}/databases`, `POST /connections/{id}/schemas`, `POST /connections/{id}/tables` |
 | Query | `GET /connections/{id}/catalog`, `POST /connections/{id}/query` |
 | Server console | `GET /connections/{id}/overview`, `POST /connections/{id}/backends/{pid}/cancel` |
 | Migrations | `GET/POST /migrations`, `GET /migrations/{id}`, `POST /migrations/{id}/preflight`, `POST /migrations/{id}/actions/{start,pause,resume,cutover,abort,delete}` |
@@ -297,7 +342,8 @@ engine/
     mysql/           the same for MySQL
   migrate/           options, phases, reporting and the pipeline registry
     pgpg/            PostgreSQL → PostgreSQL, one file per phase
-    mymy/            MySQL → MySQL, one file per phase
+    mymy/            MySQL → MySQL, one file per phase; also the binary log reader other pipelines reuse
+    mypg/            MySQL → PostgreSQL: schema translation, value conversion, PostgreSQL applier
   backup/            pg_dump / pg_restore and mysqldump / mysql drivers
   secure/            envelope and stream encryption, password hashing, tokens
   store/             metadata database (SQLite), one file per entity
@@ -336,7 +382,8 @@ The end-to-end tests need two servers of the same kind and create and drop their
 export DEDIE_TEST_SOURCE=postgres://postgres@127.0.0.1:54316/postgres
 export DEDIE_TEST_TARGET=postgres://postgres@127.0.0.1:54318/postgres
 
-# MySQL: the source needs binary logging in ROW format
+# MySQL: the source needs binary logging in ROW format. The MySQL to
+# PostgreSQL test uses DEDIE_TEST_MYSQL_SOURCE and DEDIE_TEST_TARGET.
 export DEDIE_TEST_MYSQL_SOURCE=mysql://root@127.0.0.1:33161
 export DEDIE_TEST_MYSQL_TARGET=mysql://root@127.0.0.1:33162
 
@@ -347,7 +394,7 @@ To check a desktop build without watching the window, run it with `-Ddedie.smoke
 
 ### Continuous integration
 
-`.github/workflows/ci.yml` lints, runs the unit tests, runs the PostgreSQL 16 → 18 migration test, builds the server and CLI for Linux, macOS and Windows, and builds the desktop application on a runner of each operating system. Pushing a tag that starts with `v` publishes everything as a GitHub release with checksums. The MySQL migration test is run locally for now.
+`.github/workflows/ci.yml` lints, runs the unit tests, runs the PostgreSQL 16 → 18 migration test, builds the server and CLI for Linux, macOS and Windows, and builds the desktop application on a runner of each operating system. Pushing a tag that starts with `v` publishes everything as a GitHub release with checksums. The MySQL migration tests are run locally for now.
 
 ### Branching
 
@@ -379,7 +426,7 @@ What the data directory holds:
 
 ## Roadmap
 
-1. **Cross-engine migration and sync**: MySQL → PostgreSQL and back, with type mapping and schema translation, building on the two existing change streams.
+1. **PostgreSQL → MySQL**, the reverse of the cross-engine path that exists today, and continuous two-way sync.
 2. **Document to relational**: MongoDB → PostgreSQL, with a reviewed mapping from documents to tables.
 3. **Scheduled backups and retention**, then point-in-time recovery.
 4. **Partitioned tables** for PostgreSQL, and tested upgrade paths across more MySQL versions.
