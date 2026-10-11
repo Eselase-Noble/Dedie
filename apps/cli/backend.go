@@ -57,6 +57,11 @@ type backend interface {
 
 	ListAudit(before int64, limit int) ([]store.AuditEntry, error)
 	VerifyAudit() (app.AuditVerification, error)
+
+	// ListNotifications returns how many notifications the user has not
+	// read, and the newest ones.
+	ListNotifications(unreadOnly bool, limit int) (int, []store.Notification, error)
+	ReadAllNotifications() error
 }
 
 // local runs commands directly on this machine's data directory. Whoever
@@ -142,6 +147,18 @@ func (l *local) ListAudit(before int64, limit int) ([]store.AuditEntry, error) {
 }
 func (l *local) VerifyAudit() (app.AuditVerification, error) {
 	return l.app.VerifyAudit(l.ctx, l.actor)
+}
+func (l *local) ListNotifications(unreadOnly bool, limit int) (int, []store.Notification, error) {
+	unread, err := l.app.UnreadNotifications(l.ctx, l.actor)
+	if err != nil {
+		return 0, nil, err
+	}
+	items, err := l.app.ListNotifications(l.ctx, l.actor, app.NotificationQuery{Unread: unreadOnly, Limit: limit})
+	return unread, items, err
+}
+func (l *local) ReadAllNotifications() error {
+	_, err := l.app.MarkAllNotificationsRead(l.ctx, l.actor)
+	return err
 }
 
 // extractDownloaded unpacks a physical backup that was fetched from a

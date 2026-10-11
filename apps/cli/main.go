@@ -73,6 +73,12 @@ Backups
   backup schedule add|list|rm  recurring backups with retention
   backup location add|list|rm  directories backups may be written to
 
+Notifications
+  notifications                list what happened recently: migrations,
+                               backups, databases that stopped answering.
+                               Unread ones are marked; --unread shows only
+                               those, --read-all marks everything as read
+
 Audit
   audit list                   show recent audit entries
   audit verify                 verify the audit log has not been altered
@@ -238,6 +244,8 @@ func (c *cli) dispatch(args []string) error {
 				return c.scheduleRemove(rest)
 			}
 		}
+	case "notifications":
+		return c.notifications(args[1:])
 	case "audit":
 		switch sub {
 		case "list":

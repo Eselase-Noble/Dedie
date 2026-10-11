@@ -127,6 +127,10 @@ func New(a *app.App, opts Options) http.Handler {
 	mux.HandleFunc("DELETE /api/v1/alerts/channels/{id}", s.authed(s.deleteAlertChannel))
 	mux.HandleFunc("POST /api/v1/alerts/channels/{id}/test", s.authed(s.testAlertChannel))
 
+	mux.HandleFunc("GET /api/v1/notifications", s.authed(s.listNotifications))
+	mux.HandleFunc("POST /api/v1/notifications/read-all", s.authed(s.readAllNotifications))
+	mux.HandleFunc("POST /api/v1/notifications/{id}/read", s.authed(s.readNotification))
+
 	mux.HandleFunc("GET /api/v1/audit", s.authed(s.listAudit))
 	mux.HandleFunc("GET /api/v1/audit/verify", s.authed(s.verifyAudit))
 
