@@ -77,6 +77,12 @@ func New(a *app.App, opts Options) http.Handler {
 	mux.HandleFunc("GET /api/v1/connections/{id}/server-objects", s.authed(s.serverObjects))
 	mux.HandleFunc("POST /api/v1/connections/{id}/owner", s.authed(s.setOwner))
 
+	mux.HandleFunc("GET /api/v1/connections/{id}/accounts", s.authed(s.databaseAccounts))
+	mux.HandleFunc("POST /api/v1/connections/{id}/accounts", s.authed(s.saveDatabaseAccount))
+	mux.HandleFunc("DELETE /api/v1/connections/{id}/accounts/{user}", s.authed(s.dropDatabaseAccount))
+	mux.HandleFunc("POST /api/v1/connections/{id}/connection-limit", s.authed(s.setConnectionLimit))
+	mux.HandleFunc("POST /api/v1/connections/{id}/sessions/terminate", s.authed(s.terminateSessions))
+
 	mux.HandleFunc("GET /api/v1/queries", s.authed(s.listSavedQueries))
 	mux.HandleFunc("POST /api/v1/queries", s.authed(s.saveQuery))
 	mux.HandleFunc("PUT /api/v1/queries/{id}", s.authed(s.saveQuery))

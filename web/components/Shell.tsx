@@ -24,7 +24,8 @@ const NAV: NavItem[] = [
   { href: "/backups/", label: "Backups", needs: "backups.create", section: "Administration" },
   { href: "/monitoring/", label: "Monitoring", needs: "server.admin", section: "Administration" },
   { href: "/server/", label: "Server activity", needs: "server.admin", section: "Administration" },
-  { href: "/users/", label: "Users", needs: "users.manage", section: "Administration" },
+  { href: "/dbusers/", label: "Database users", needs: "server.admin", section: "Administration" },
+  { href: "/users/", label: "Dedie users", needs: "users.manage", section: "Administration" },
   { href: "/audit/", label: "Audit log", needs: "audit.view", section: "Administration" },
 ];
 

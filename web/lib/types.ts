@@ -512,3 +512,61 @@ export interface OwnerChange {
   name: string;
   owner: string;
 }
+
+export interface DbAccount {
+  name: string;
+  /** Client host part of a MySQL account. */
+  host?: string;
+  can_login: boolean;
+  superuser: boolean;
+  create_db: boolean;
+  create_role: boolean;
+  replication: boolean;
+  /** -1 means no limit. */
+  connection_limit: number;
+  connections: number;
+  member_of: string[];
+  valid_until?: string;
+}
+
+export interface ConnectionUsage {
+  user: string;
+  application: string;
+  client: string;
+  database: string;
+  total: number;
+  active: number;
+  idle: number;
+  idle_in_transaction: number;
+  longest_seconds: number;
+}
+
+export interface DbAccounts {
+  accounts: DbAccount[];
+  roles: string[];
+  max_connections: number;
+  used_connections: number;
+  reserved_connections: number;
+  databases: { name: string; connection_limit: number; connections: number }[];
+  usage: ConnectionUsage[];
+  database_limits: boolean;
+}
+
+export interface AccountChange {
+  create: boolean;
+  name: string;
+  host: string;
+  password?: string | null;
+  can_login?: boolean | null;
+  connection_limit?: number | null;
+  grant: string[];
+  revoke: string[];
+  access: "" | "readonly" | "readwrite";
+}
+
+export interface SessionFilter {
+  user?: string;
+  application?: string;
+  database?: string;
+  client?: string;
+}

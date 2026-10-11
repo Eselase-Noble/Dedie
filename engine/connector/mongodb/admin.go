@@ -110,3 +110,21 @@ func (s *session) SetOwner(ctx context.Context, c connector.OwnerChange) error {
 func (s *session) ChangeRow(ctx context.Context, c connector.RowChange) error {
 	return errors.New("documents are edited with update commands in the query editor, not in the grid")
 }
+
+var errNoAccounts = errors.New("managing users and connection limits is available for PostgreSQL and MySQL; MongoDB users are managed with its own roles")
+
+func (s *session) Accounts(ctx context.Context) (*connector.Accounts, error) {
+	return nil, errNoAccounts
+}
+func (s *session) SaveAccount(ctx context.Context, c connector.AccountChange) error {
+	return errNoAccounts
+}
+func (s *session) DropAccount(ctx context.Context, name, host string, handOver bool) error {
+	return errNoAccounts
+}
+func (s *session) SetConnectionLimit(ctx context.Context, l connector.LimitChange) error {
+	return errNoAccounts
+}
+func (s *session) TerminateSessions(ctx context.Context, f connector.SessionFilter) (int, error) {
+	return 0, errNoAccounts
+}

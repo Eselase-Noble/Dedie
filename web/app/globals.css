@@ -386,3 +386,4 @@ body.dragging-y, body.dragging-y * { cursor: row-resize !important; }
 .result-meta .select { width: auto; height: 28px; }
 a.btn { color: var(--text); text-decoration: none; }
 a.btn.primary { color: #fff; }
+.segmented { align-self: flex-start; }
