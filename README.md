@@ -4,6 +4,8 @@ A query browser, administration console and live migration engine for relational
 
 *Dedie* is Ewe for "safe": the data should arrive safely and stay that way.
 
+Website: https://eselase-noble.github.io/Dedie/ · Downloads: https://github.com/Eselase-Noble/Dedie/releases
+
 Dedie moves a production database to a newer server version while the old one stays online. It copies a consistent snapshot, follows the source's replication log to stay in step, and switches over in a write pause measured in seconds. The same engine powers a SQL browser, encrypted backups with verified restore, and a server activity console, behind role-based access control and a tamper-evident audit log.
 
 ## Contents
