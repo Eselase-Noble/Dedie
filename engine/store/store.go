@@ -126,6 +126,17 @@ CREATE TABLE IF NOT EXISTS health_samples (
   connection_id TEXT NOT NULL, ts TEXT NOT NULL, online INTEGER NOT NULL,
   latency_ms INTEGER NOT NULL, error TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS health_samples_conn ON health_samples(connection_id, ts);
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, org_id TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '',
+  topic TEXT NOT NULL, kind TEXT NOT NULL, level TEXT NOT NULL, title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '', link TEXT NOT NULL DEFAULT '',
+  connection_id TEXT NOT NULL DEFAULT '', target_id TEXT NOT NULL DEFAULT '', job_id TEXT NOT NULL DEFAULT '',
+  once_key TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS notifications_org ON notifications(org_id, id);
+CREATE UNIQUE INDEX IF NOT EXISTS notifications_once ON notifications(org_id, once_key) WHERE once_key <> '';
+CREATE TABLE IF NOT EXISTS notification_reads (
+  user_id TEXT NOT NULL, notification_id INTEGER NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, notification_id)) WITHOUT ROWID;
 `
 
 // columns lists columns added to existing tables after the first release.

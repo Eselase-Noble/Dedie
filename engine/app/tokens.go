@@ -57,6 +57,8 @@ func (a *App) CreateToken(ctx context.Context, actor Actor, in TokenInput) (Crea
 		return CreatedToken{}, err
 	}
 	a.audit(ctx, actor, "token.create", t.ID, map[string]any{"name": t.Name, "role": t.Role, "days": in.Days})
+	a.Notify(ctx, store.Notification{OrgID: t.OrgID, UserID: t.UserID, Kind: NoteTokenCreated, Level: LevelInfo, Title: "API token created: " + t.Name,
+		Body: "A token with the " + t.Role + " role was created for your account" + fromAddress(actor.IP) + ". Revoke it if this was not you.", Link: accountLink})
 	return CreatedToken{APIToken: t, Token: token}, nil
 }
 
@@ -90,4 +92,15 @@ func (a *App) RevokeToken(ctx context.Context, actor Actor, id string) error {
 	}
 	a.audit(ctx, actor, "token.revoke", t.ID, map[string]string{"name": t.Name, "owner": t.UserEmail})
 	return nil
+}
+
+// accountLink is the page where a user manages their own sign-ins.
+const accountLink = "/account/"
+
+// fromAddress names where a request came from, when that is known.
+func fromAddress(ip string) string {
+	if ip == "" || ip == "local" {
+		return ""
+	}
+	return " from " + ip
 }

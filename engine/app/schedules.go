@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -154,6 +155,8 @@ func (a *App) RunScheduler(ctx context.Context) {
 			spec, err := schedule.Parse(sc.Cron)
 			if err != nil {
 				a.Store.FinishSchedule(ctx, sc.ID, "failed", err.Error())
+				a.Notify(ctx, store.Notification{OrgID: sc.OrgID, Kind: NoteScheduleFailed, Level: LevelError, Title: "Scheduled backup could not run: " + sc.Name,
+					Body: "Its schedule cannot be read: " + firstLine(err) + ".", Link: backupsLink, ConnectionID: sc.ConnectionID, Once: "schedule-cron/" + sc.ID})
 				continue
 			}
 			// The next run is counted from now, not from the missed time:
@@ -175,27 +178,34 @@ func (a *App) RunScheduler(ctx context.Context) {
 // then applies the retention rule.
 func (a *App) runSchedule(ctx context.Context, sc store.Schedule) {
 	actor := Actor{User: store.User{ID: "system", OrgID: sc.OrgID, Email: "schedule:" + sc.Name, Role: RoleOwner}, IP: "local"}
-	finish := func(err error) {
-		if err != nil {
-			a.Store.FinishSchedule(ctx, sc.ID, "failed", err.Error())
-			a.emit(sc.OrgID, Event{Type: EventBackupFailed, Subject: sc.Name, Message: "Scheduled backup " + sc.Name + " failed: " + err.Error()})
-			return
-		}
-		a.Store.FinishSchedule(ctx, sc.ID, "completed", "")
+	note := func(kind, level, title, body string) {
+		a.Notify(ctx, store.Notification{OrgID: sc.OrgID, Kind: kind, Level: level, Title: title + ": " + sc.Name, Body: body,
+			Link: backupsLink, ConnectionID: sc.ConnectionID})
+	}
+	// failed records the failure on the schedule and raises the alert; each
+	// caller adds the notification that says what went wrong.
+	failed := func(err error) {
+		a.Store.FinishSchedule(ctx, sc.ID, "failed", err.Error())
+		a.emit(sc.OrgID, Event{Type: EventBackupFailed, Subject: sc.Name, Message: "Scheduled backup " + sc.Name + " failed: " + err.Error()})
 	}
 	b, err := a.startBackup(ctx, actor, BackupInput{ConnectionID: sc.ConnectionID, Type: sc.Type, Tables: sc.Tables, Level: sc.Level,
 		LocationID: sc.LocationID, Plain: !sc.Encrypted, Note: "Scheduled: " + sc.Name}, sc.ID, true)
 	if err != nil {
-		finish(err)
+		// No backup was begun: the database could not be reached, or the
+		// location could not be written to.
+		failed(err)
+		note(NoteScheduleFailed, LevelError, "Scheduled backup could not run", firstLine(err))
 		return
 	}
 	if b.Status != "completed" {
-		finish(&Error{Status: 500, Message: b.Error})
+		failed(&Error{Status: 500, Message: b.Error})
+		note(NoteBackupFailed, LevelError, "Scheduled backup failed", firstLine(&Error{Message: b.Error}))
 		return
 	}
 	if sc.Verify {
 		if err := a.verifyBackupFile(b); err != nil {
-			finish(&Error{Status: 500, Message: "the backup was written but failed verification: " + err.Error()})
+			failed(&Error{Status: 500, Message: "the backup was written but failed verification: " + err.Error()})
+			a.notifyVerifyFailed(ctx, b, err)
 			return
 		}
 		a.Store.MarkBackupVerified(ctx, b.ID)
@@ -204,7 +214,32 @@ func (a *App) runSchedule(ctx context.Context, sc store.Schedule) {
 	if removed > 0 {
 		log.Printf("scheduler: %s: removed %d expired backup(s)", sc.Name, removed)
 	}
-	finish(err)
+	body := fmt.Sprintf("%s on %s was backed up (%s).", b.Database, b.ConnectionName, byteSize(b.SizeBytes))
+	if sc.Verify {
+		body = fmt.Sprintf("%s on %s was backed up and verified (%s).", b.Database, b.ConnectionName, byteSize(b.SizeBytes))
+	}
+	if err != nil {
+		// The backup itself is good; only clearing out old ones failed.
+		failed(err)
+		note(NoteBackupCompleted, LevelWarning, "Scheduled backup finished", body+" Expired backups could not be removed: "+firstLine(err)+".")
+		return
+	}
+	a.Store.FinishSchedule(ctx, sc.ID, "completed", "")
+	note(NoteBackupCompleted, LevelSuccess, "Scheduled backup finished", body)
+}
+
+// byteSize writes a size the way a person would say it.
+func byteSize(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTP"[exp])
 }
 
 // applyRetention deletes the schedule's backups that its rule no longer

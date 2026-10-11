@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"dedie/engine/connector"
@@ -167,6 +168,14 @@ func (a *App) PreflightMigration(ctx context.Context, actor Actor, id string) (*
 		return nil, err
 	}
 	a.audit(ctx, actor, "migration.preflight", j.ID, map[string]any{"ok": report.OK})
+	if n := len(report.Existing); n > 0 && cfg.Existing() == migrate.ExistingFail {
+		// Nothing has been decided about these objects yet, and the job
+		// cannot start until someone does. Asked once per job.
+		a.Notify(ctx, store.Notification{OrgID: j.OrgID, Kind: NoteMigrationDecision, Level: LevelWarning,
+			Title: "Waiting for your decision: " + j.Name,
+			Body:  fmt.Sprintf("The target already has %s this migration would create. Choose whether to keep or replace them before it can start.", plural(n, "object")),
+			Link:  migrationLink(j.ID), ConnectionID: j.SourceID, TargetID: j.TargetID, JobID: j.ID, Once: "decision/" + j.ID})
+	}
 	return report, nil
 }
 
@@ -305,6 +314,20 @@ func (a *App) MigrationAction(ctx context.Context, actor Actor, id, action strin
 	}
 	a.Store.AddJobEvent(ctx, j.ID, "info", action+" requested by "+actor.User.Email)
 	a.audit(ctx, actor, "migration."+action, j.ID, map[string]string{"name": j.Name})
+	// Announced here, where the instruction is given once, and not by the
+	// worker, which may pick the same job up again after a restart.
+	switch {
+	case action == "abort" && j.Status == StatusDraft:
+		// A draft has nothing running, so no worker will report this.
+		a.notifyJob(ctx, j, NoteMigrationAborted, LevelWarning, "Migration aborted", "Aborted by "+actor.User.Email+" before it started.")
+	case action != "start" && action != "resume":
+	case j.Status == StatusDraft:
+		a.notifyJob(ctx, j, NoteMigrationStarted, LevelInfo, "Migration started", "Started by "+actor.User.Email+".")
+	case j.Status == StatusFailed:
+		a.notifyJob(ctx, j, NoteMigrationStarted, LevelInfo, "Migration resumed", "Resumed by "+actor.User.Email+" after it failed.")
+	default:
+		a.notifyJob(ctx, j, NoteMigrationStarted, LevelInfo, "Migration resumed", "Resumed by "+actor.User.Email+" after it was paused.")
+	}
 	return nil
 }
 
@@ -333,3 +356,10 @@ func (a *App) SuggestColumns(ctx context.Context, actor Actor, connID string, cf
 }
 
 func wrapJob(j store.Job, err error) (store.Job, error) { return j, wrap(err) }
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
