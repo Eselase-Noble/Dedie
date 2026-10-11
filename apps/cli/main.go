@@ -45,7 +45,11 @@ Query
 Migrations
   migrate create               define a migration between two connections
   migrate list                 list migrations
-  migrate preflight <id>       check both databases without changing them
+  migrate preflight <id>       check both databases without changing them; if
+                               the target already has some of the objects,
+                               it lists them and asks what to do
+  migrate existing <id> fail|skip|replace
+                               answer that question without a prompt
   migrate run <id>             run in the foreground until paused or complete
   migrate start <id>           queue for a running dedie-server to execute
   migrate status <id>          show phase, lag and per-table progress
@@ -176,6 +180,8 @@ func (c *cli) dispatch(args []string) error {
 			return c.migrateList()
 		case "preflight":
 			return c.migratePreflight(rest)
+		case "existing":
+			return c.migrateExisting(rest)
 		case "run":
 			return c.migrateRun(rest)
 		case "status":

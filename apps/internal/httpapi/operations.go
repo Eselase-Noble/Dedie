@@ -51,6 +51,23 @@ func (s *Server) preflightMigration(w http.ResponseWriter, r *http.Request, acto
 	writeJSON(w, http.StatusOK, report)
 }
 
+// setOnExisting records what the migration should do about objects that
+// already exist on the target.
+func (s *Server) setOnExisting(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	var in struct {
+		Policy string `json:"policy"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	job, err := s.app.SetOnExisting(r.Context(), actor, r.PathValue("id"), in.Policy)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
 func (s *Server) migrationAction(w http.ResponseWriter, r *http.Request, actor app.Actor) {
 	if err := s.app.MigrationAction(r.Context(), actor, r.PathValue("id"), r.PathValue("action")); err != nil {
 		fail(w, err)

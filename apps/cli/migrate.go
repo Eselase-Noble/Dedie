@@ -5,9 +5,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 
 	"dedie/engine/app"
 	"dedie/engine/migrate"
@@ -29,6 +32,7 @@ func (c *cli) migrateCreate(args []string) error {
 	columns := fs.String("columns", "", "MongoDB sources: fields to lift into typed columns, as collection:field:type separated by commas, for example users:email:text,users:address.city:text,orders:total:numeric")
 	sync := fs.Bool("sync", false, "keep the target following the source continuously instead of planning a cutover")
 	offline := fs.Bool("offline", false, "copy once from a consistent snapshot, validate and finish, without following changes; the source needs no replication set up")
+	fs.StringVar(&in.Config.OnExisting, "on-existing", "", "when the target already has an object being migrated: fail (default; preflight then asks you), skip (leave it and do not migrate it) or replace (drop it and create it from the source)")
 	fs.BoolVar(&in.Config.KeepSlot, "keep-slot", false, "keep the replication slot on the source after completion")
 	fs.Parse(args)
 	in.Config.Schemas, in.Config.Tables, in.Config.ExcludeTables = splitList(*schemas), splitList(*tables), splitList(*exclude)
@@ -85,6 +89,16 @@ func (c *cli) migratePreflight(args []string) error {
 		rows = append(rows, []string{ch.Status, ch.Name, ch.Detail})
 	}
 	table("RESULT\tCHECK\tDETAIL", rows)
+	if len(report.Existing) > 0 {
+		chosen, err := c.askOnExisting(id, report)
+		if err != nil {
+			return err
+		}
+		if chosen {
+			// The answer changes what preflight has to say.
+			return c.migratePreflight(args)
+		}
+	}
 	if !report.OK {
 		return fmt.Errorf("preflight failed; fix the items marked fail and run it again")
 	}
@@ -199,5 +213,82 @@ func (c *cli) migrateStatus(args []string) error {
 		rows = append(rows, []string{t.Schema + "." + t.Table, t.Status, strconv.FormatInt(t.RowsCopied, 10), counts, t.Validation})
 	}
 	table("TABLE\tSTATUS\tROWS COPIED\tSOURCE / TARGET\tVALIDATION", rows)
+	return nil
+}
+
+// askOnExisting shows what the target already holds and lets the
+// administrator decide what the migration does about it. It asks only
+// when nothing has been decided yet and there is someone to ask; it
+// reports whether a new choice was recorded.
+func (c *cli) askOnExisting(id string, report *migrate.Report) (bool, error) {
+	d, err := c.be.GetMigration(id)
+	if err != nil {
+		return false, err
+	}
+	var cfg migrate.Config
+	_ = json.Unmarshal(d.Config, &cfg)
+	if cfg.OnExisting != "" && cfg.OnExisting != migrate.ExistingFail {
+		return false, nil
+	}
+	byKind := map[string][]string{}
+	var kinds []string
+	for _, o := range report.Existing {
+		if byKind[o.Kind] == nil {
+			kinds = append(kinds, o.Kind)
+		}
+		byKind[o.Kind] = append(byKind[o.Kind], o.Name)
+	}
+	fmt.Printf("\nThe target already has %d object(s) with the name of one being migrated:\n", len(report.Existing))
+	for _, k := range kinds {
+		names := byKind[k]
+		more := ""
+		if len(names) > 12 {
+			more = fmt.Sprintf(" and %d more", len(names)-12)
+			names = names[:12]
+		}
+		fmt.Printf("  %-10s %s%s\n", k+":", strings.Join(names, ", "), more)
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		fmt.Printf("\nDecide with: dedie migrate existing %s fail|skip|replace\n", id)
+		return false, nil
+	}
+	fmt.Print(`
+What should the migration do about them?
+  1) Refuse   do not start; I will deal with them myself (the default)
+  2) Skip     leave them exactly as they are and do not migrate them;
+              an existing table receives no rows and is not followed
+  3) Replace  DROP each one on the target and create it from the source;
+              a dropped table loses the data it holds there
+`)
+	answer, err := prompt("Choose 1, 2 or 3")
+	if err != nil {
+		return false, err
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "2", "skip":
+		return true, c.be.SetOnExisting(id, migrate.ExistingSkip)
+	case "3", "replace":
+		typed, err := prompt(fmt.Sprintf("This drops %d object(s) on the target. Type REPLACE to confirm", len(report.Existing)))
+		if err != nil {
+			return false, err
+		}
+		if strings.TrimSpace(typed) != "REPLACE" {
+			fmt.Println("Not confirmed; nothing was changed.")
+			return false, nil
+		}
+		return true, c.be.SetOnExisting(id, migrate.ExistingReplace)
+	}
+	return false, nil
+}
+
+// migrateExisting records the decision without a prompt, for scripts.
+func (c *cli) migrateExisting(args []string) error {
+	if len(args) != 2 {
+		return errors.New("usage: dedie migrate existing <id> fail|skip|replace")
+	}
+	if err := c.be.SetOnExisting(args[0], args[1]); err != nil {
+		return err
+	}
+	fmt.Printf("%s: objects that already exist on the target will be handled with %q. Next: dedie migrate preflight %s\n", args[0], args[1], args[0])
 	return nil
 }

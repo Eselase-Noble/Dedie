@@ -86,6 +86,11 @@ func (a *App) CreateMigration(ctx context.Context, actor Actor, in MigrationInpu
 	default:
 		return store.Job{}, invalid("mode must be migrate, sync or offline")
 	}
+	switch in.Config.OnExisting {
+	case "", migrate.ExistingFail, migrate.ExistingSkip, migrate.ExistingReplace:
+	default:
+		return store.Job{}, invalid("on_existing must be fail, skip or replace")
+	}
 	_, _, kind, err := a.endpoints(ctx, actor.User.OrgID, in.SourceID, in.TargetID)
 	if err != nil {
 		return store.Job{}, err
@@ -163,6 +168,45 @@ func (a *App) PreflightMigration(ctx context.Context, actor Actor, id string) (*
 	}
 	a.audit(ctx, actor, "migration.preflight", j.ID, map[string]any{"ok": report.OK})
 	return report, nil
+}
+
+// SetOnExisting records the administrator's decision about objects that
+// already exist on the target: refuse, leave them and skip them, or drop
+// and recreate them. It can be changed only while the job has not created
+// anything yet, because that is when the decision is acted on.
+func (a *App) SetOnExisting(ctx context.Context, actor Actor, id, policy string) (store.Job, error) {
+	if err := actor.require(PermManageMigrations); err != nil {
+		return store.Job{}, err
+	}
+	switch policy {
+	case migrate.ExistingFail, migrate.ExistingSkip, migrate.ExistingReplace:
+	default:
+		return store.Job{}, invalid("choose fail, skip or replace")
+	}
+	j, err := a.Store.GetJob(ctx, actor.User.OrgID, id)
+	if err != nil {
+		return store.Job{}, wrap(err)
+	}
+	if j.Status == "running" || j.Status == "queued" || j.Status == "completed" {
+		return store.Job{}, invalid("this can only be changed before the migration starts")
+	}
+	var progress struct {
+		SchemaDone bool `json:"schema_done"`
+	}
+	_ = json.Unmarshal(j.State, &progress)
+	if progress.SchemaDone {
+		return store.Job{}, invalid("the migration has already created its objects on the target; this can only be changed before it starts")
+	}
+	var cfg migrate.Config
+	_ = json.Unmarshal(j.Config, &cfg)
+	cfg.OnExisting = policy
+	b, _ := json.Marshal(cfg)
+	// The stored preflight report was made under the previous choice.
+	if err := a.Store.SetJob(ctx, j.ID, map[string]any{"config": string(b), "preflight": ""}); err != nil {
+		return store.Job{}, err
+	}
+	a.audit(ctx, actor, "migration.on_existing", j.ID, map[string]any{"policy": policy})
+	return wrapJob(a.Store.GetJob(ctx, actor.User.OrgID, id))
 }
 
 // MigrationAction applies an operator instruction: start, pause, resume,
@@ -253,3 +297,5 @@ func (a *App) SuggestColumns(ctx context.Context, actor Actor, connID string, cf
 	}
 	return out, nil
 }
+
+func wrapJob(j store.Job, err error) (store.Job, error) { return j, wrap(err) }
