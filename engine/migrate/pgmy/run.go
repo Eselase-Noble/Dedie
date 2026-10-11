@@ -40,7 +40,8 @@ type runner struct {
 // checkpoint stored on the target.
 func Run(ctx context.Context, jobID string, cfg migrate.Config, st pgpg.State, srcCfg, dstCfg connector.Config, rep migrate.Reporter) (migrate.Outcome, error) {
 	cfg.Defaults()
-	if st.Slot == "" {
+	// An offline job follows no changes and so never names a slot.
+	if st.Slot == "" && !cfg.Offline() {
 		st.Slot, st.Publication = pgpg.SlotName(jobID), pgpg.SlotName(jobID)
 	}
 	r := &runner{jobID: jobID, cfg: cfg, st: &st, srcCfg: srcCfg, dstCfg: dstCfg, rep: rep}
@@ -106,6 +107,15 @@ func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 		}
 		r.st.IndexingDone = true
 		r.save()
+	}
+
+	// An offline job has no stream to follow: the copy is the whole
+	// migration, and it finishes without waiting for the operator.
+	if r.cfg.Offline() {
+		if _, err := r.finalize(ctx); err != nil {
+			return "", err
+		}
+		return migrate.Completed, nil
 	}
 
 	retries := 0
@@ -200,7 +210,7 @@ func (r *runner) reconnect(ctx context.Context) error {
 
 func (r *runner) schemaPhase(ctx context.Context) error {
 	r.rep.SetPhase(migrate.PhaseSchema)
-	report, err := preflight(ctx, r.src, r.dst, r.plan)
+	report, err := preflight(ctx, r.src, r.dst, r.plan, r.cfg)
 	if err != nil {
 		return err
 	}
@@ -242,12 +252,16 @@ func (r *runner) schemaPhase(ctx context.Context) error {
 		names[i] = "ONLY " + pgx.Identifier{t.Schema, t.Name}.Sanitize()
 		progress[i] = migrate.TableProgress{Schema: t.Schema, Table: t.Name, EstRows: t.EstRows}
 	}
-	publication := pgx.Identifier{r.st.Publication}.Sanitize()
-	if _, err := r.src.Exec(ctx, "DROP PUBLICATION IF EXISTS "+publication); err != nil {
-		return err
-	}
-	if _, err := r.src.Exec(ctx, "CREATE PUBLICATION "+publication+" FOR TABLE "+strings.Join(names, ", ")); err != nil {
-		return fmt.Errorf("create publication: %w", err)
+	// The publication exists for the stream; an offline job creates nothing
+	// on the source.
+	if !r.cfg.Offline() {
+		publication := pgx.Identifier{r.st.Publication}.Sanitize()
+		if _, err := r.src.Exec(ctx, "DROP PUBLICATION IF EXISTS "+publication); err != nil {
+			return err
+		}
+		if _, err := r.src.Exec(ctx, "CREATE PUBLICATION "+publication+" FOR TABLE "+strings.Join(names, ", ")); err != nil {
+			return fmt.Errorf("create publication: %w", err)
+		}
 	}
 	r.rep.ResetTables(progress)
 	r.st.SchemaDone = true
@@ -259,8 +273,10 @@ func (r *runner) snapshotPhase(ctx context.Context) error {
 	r.rep.SetPhase(migrate.PhaseSnapshot)
 	// Start clean: a slot or rows left by an interrupted attempt belong to a
 	// snapshot that no longer exists.
-	if err := pgpg.DropSlot(ctx, r.src, r.st.Slot); err != nil {
-		return err
+	if !r.cfg.Offline() {
+		if err := pgpg.DropSlot(ctx, r.src, r.st.Slot); err != nil {
+			return err
+		}
 	}
 	for _, t := range r.plan.Tables {
 		if _, err := r.dst.ExecContext(ctx, "TRUNCATE TABLE "+t.QName()); err != nil {
@@ -269,6 +285,9 @@ func (r *runner) snapshotPhase(ctx context.Context) error {
 	}
 	if _, err := r.dst.ExecContext(ctx, "UPDATE `"+checkpointTable+"` SET commit_lsn = '', end_lsn = '' WHERE job_id = ?", r.jobID); err != nil {
 		return err
+	}
+	if r.cfg.Offline() {
+		return r.offlineSnapshot(ctx)
 	}
 
 	repl, err := postgres.ConnectReplication(ctx, r.srcCfg)
@@ -292,6 +311,26 @@ func (r *runner) snapshotPhase(ctx context.Context) error {
 	r.st.SnapshotDone = true
 	r.save()
 	r.rep.Event("info", "initial copy finished")
+	return nil
+}
+
+// offlineSnapshot copies the tables for a job that follows no changes. The
+// workers share the snapshot of an ordinary read-only transaction instead of
+// a replication slot's, so nothing is created on the source.
+func (r *runner) offlineSnapshot(ctx context.Context) error {
+	holder, name, err := pgpg.ExportSnapshot(ctx, r.srcCfg)
+	if err != nil {
+		return err
+	}
+	// The exported snapshot stays valid only while this transaction is open.
+	defer holder.Close(context.WithoutCancel(ctx))
+	r.rep.Event("info", fmt.Sprintf("copying %d tables from one snapshot of the source with %d workers", len(r.plan.Tables), r.cfg.SnapshotWorkers))
+	if err := snapshot(ctx, r.srcCfg, r.dst, name, r.plan, r.cfg.SnapshotWorkers, r.rep); err != nil {
+		return err
+	}
+	r.st.SnapshotDone = true
+	r.save()
+	r.rep.Event("info", "copy finished")
 	return nil
 }
 
@@ -320,8 +359,10 @@ func (r *runner) syncCounters(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// finalize runs once the stream has drained at cutover. It returns false
-// when validation fails, in which case the job goes back to streaming.
+// finalize runs once the stream has drained at cutover, or straight after
+// indexing in an offline job. It returns false when validation fails, in
+// which case the job goes back to streaming; an offline job has no stream to
+// go back to and fails instead.
 func (r *runner) finalize(ctx context.Context) (bool, error) {
 	r.rep.SetPhase(migrate.PhaseCutover)
 	if err := r.reconnect(ctx); err != nil {
@@ -338,6 +379,12 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 		why := fmt.Sprintf("%d table(s) differ between source and target", mismatches)
 		if err != nil {
 			why = err.Error()
+		}
+		if r.cfg.Offline() {
+			if err != nil {
+				return false, err
+			}
+			return false, fmt.Errorf("%s: the source was probably written to during the copy. Stop writes to the source and run the migration again", why)
 		}
 		if r.st.Fenced {
 			if uerr := pgpg.Unfence(ctx, r.srcCfg); uerr != nil {
@@ -362,6 +409,9 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 	msg := "cutover complete: the target is ready for application traffic"
 	if r.st.Fenced {
 		msg += ". The source database was left read-only"
+	}
+	if r.cfg.Offline() {
+		msg = "offline copy complete: the target holds the source as of the snapshot"
 	}
 	r.rep.Event("info", msg)
 	r.save()
@@ -395,7 +445,11 @@ func (r *runner) abort(ctx context.Context) migrate.Outcome {
 		}
 	}
 	r.cleanup(ctx)
-	r.rep.Event("info", "aborted; replication slot and publication removed from the source. Tables already copied to the target were left in place")
+	if r.cfg.Offline() {
+		r.rep.Event("info", "aborted. Tables already copied to the target were left in place")
+	} else {
+		r.rep.Event("info", "aborted; replication slot and publication removed from the source. Tables already copied to the target were left in place")
+	}
 	r.save()
 	return migrate.Aborted
 }

@@ -13,6 +13,7 @@ import (
 
 	"dedie/engine/connector"
 	"dedie/engine/connector/postgres"
+	"dedie/engine/migrate"
 )
 
 // The integration test needs two PostgreSQL servers, the source with
@@ -338,5 +339,134 @@ func TestMigration(t *testing.T) {
 	t.Logf("applied %d transactions, %d row changes, %d anomalies", st.TxApplied, st.RowsApplied, st.Anomalies)
 	if st.Anomalies != 0 {
 		t.Errorf("%d apply anomalies", st.Anomalies)
+	}
+}
+
+// TestMigrationOffline runs a one-time copy. The job must finish by itself,
+// with no cutover requested, and leave nothing behind on the source.
+func TestMigrationOffline(t *testing.T) {
+	srcAdmin, dstAdmin := testConfig(t, "DEDIE_TEST_SOURCE"), testConfig(t, "DEDIE_TEST_TARGET")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	db := fmt.Sprintf("dedie_test_%d", time.Now().UnixNano())
+	srcCfg, dstCfg := srcAdmin, dstAdmin
+	srcCfg.Database, dstCfg.Database = db, db
+	for _, admin := range []connector.Config{srcAdmin, dstAdmin} {
+		c, err := postgres.Connect(ctx, admin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Exec(ctx, "CREATE DATABASE "+db); err != nil {
+			t.Fatal(err)
+		}
+		c.Close(ctx)
+		admin := admin
+		t.Cleanup(func() {
+			bg := context.Background()
+			if c, err := postgres.Connect(bg, admin); err == nil {
+				c.Exec(bg, "DROP DATABASE IF EXISTS "+db+" WITH (FORCE)")
+				c.Close(bg)
+			}
+		})
+	}
+	src, err := postgres.Connect(ctx, srcCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close(ctx)
+	// scratch has no key at all: a stream could not follow it, a copy can.
+	if _, err := src.PgConn().Exec(ctx, fixture+`INSERT INTO scratch SELECT g FROM generate_series(1, 100) g;`).ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fencing is asked for and must be ignored: an offline job has no cutover.
+	cfg := Config{Mode: migrate.ModeOffline, FenceSource: true}
+	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var noted bool
+	for _, c := range report.Checks {
+		t.Logf("preflight %-28s %-4s %s", c.Name, c.Status, c.Detail)
+		switch c.Name {
+		case "Offline copy":
+			noted = c.Status == "warn"
+		case "Source wal_level", "Replication privilege", "Replication capacity", "Tables without a key":
+			t.Errorf("offline preflight should not check %q", c.Name)
+		}
+	}
+	if !report.OK || !noted {
+		t.Fatalf("offline preflight: ok=%v, offline note=%v", report.OK, noted)
+	}
+
+	rep := &memReporter{t: t, desired: "run", tables: map[string]map[string]any{}}
+	out, err := Run(ctx, "mig_offline1", cfg, State{}, srcCfg, dstCfg, rep)
+	if err != nil || out != Completed {
+		t.Fatalf("offline run: %v %v", out, err)
+	}
+	phase, st := rep.snapshot()
+	if phase != PhaseDone || rep.Desired() != "run" {
+		t.Errorf("finished in phase %q with the operator's instruction %q", phase, rep.Desired())
+	}
+	if st.Slot != "" || st.Fenced {
+		t.Errorf("offline state names slot %q, fenced %v", st.Slot, st.Fenced)
+	}
+
+	dst, err := postgres.Connect(ctx, dstCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close(ctx)
+	check := func(sql string) {
+		t.Helper()
+		var a, b string
+		if err := src.QueryRow(ctx, sql).Scan(&a); err != nil {
+			t.Fatalf("%s on source: %v", sql, err)
+		}
+		if err := dst.QueryRow(ctx, sql).Scan(&b); err != nil {
+			t.Fatalf("%s on target: %v", sql, err)
+		}
+		if a != b {
+			t.Errorf("%s: source %s, target %s", sql, a, b)
+		}
+	}
+	check(`SELECT md5(string_agg(c::text, '' ORDER BY id)) FROM customers c`)
+	check(`SELECT md5(string_agg(i::text, '' ORDER BY id)) FROM billing.invoices i`)
+	check(`SELECT md5(string_agg(e::text, '' ORDER BY kind, payload)) FROM events e`)
+	check(`SELECT sum(v)::text FROM scratch`)
+	check(`SELECT last_value::text FROM customers_id_seq`)
+	check(`SELECT count(*)::text FROM pg_indexes WHERE schemaname IN ('public', 'billing')`)
+	check(`SELECT count(*)::text FROM pg_constraint WHERE contype = 'f'`)
+	check(`SELECT sum(total)::text FROM customer_totals`)
+	for name, tbl := range rep.tables {
+		if tbl["validation"] != "match" {
+			t.Errorf("table %s validation = %v", name, tbl["validation"])
+		}
+	}
+
+	var slots, pubs int
+	src.QueryRow(ctx, `SELECT count(*) FROM pg_replication_slots WHERE database = current_database()`).Scan(&slots)
+	src.QueryRow(ctx, `SELECT count(*) FROM pg_publication`).Scan(&pubs)
+	if slots != 0 || pubs != 0 {
+		t.Errorf("left behind %d slot(s) and %d publication(s) on the source", slots, pubs)
+	}
+	var metaLeft bool
+	dst.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'dedie')`).Scan(&metaLeft)
+	if metaLeft {
+		t.Error("checkpoint schema left on the target")
+	}
+
+	// The source stays writable. A job resumed after its copy goes straight
+	// to validation, which must now fail: nothing carries this row over.
+	if _, err := src.Exec(ctx, `INSERT INTO change_log (note) VALUES ('late write')`); err != nil {
+		t.Fatalf("source refused a write after an offline job: %v", err)
+	}
+	out, err = Run(ctx, "mig_offline1", cfg, st, srcCfg, dstCfg, rep)
+	if err == nil || !strings.Contains(err.Error(), "differ") {
+		t.Errorf("resumed offline job over a changed source: %v %v", out, err)
+	}
+	if phase, _ := rep.snapshot(); phase == PhaseStreaming {
+		t.Error("offline job went to streaming")
 	}
 }

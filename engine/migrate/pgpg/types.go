@@ -14,6 +14,10 @@
 // While streaming, every source transaction is applied as one target
 // transaction that also records its position in a checkpoint table, which
 // makes a restart after a crash exactly-once.
+//
+// An offline job stops after indexing and goes straight to the final step.
+// Its snapshot is that of an ordinary read-only transaction, so it creates
+// no slot and no publication and needs no logical replication on the source.
 package pgpg
 
 import (

@@ -36,9 +36,34 @@ func columnList(cols []string) string {
 	return strings.Join(q, ", ")
 }
 
+// ExportSnapshot opens a read-only transaction on the source and exports its
+// snapshot, so that any number of worker connections can read the same
+// instant. This is how an offline job gets a consistent copy without a
+// replication slot. The snapshot stays valid only while the returned
+// connection keeps the transaction open; the caller closes it after the copy.
+func ExportSnapshot(ctx context.Context, srcCfg connector.Config) (*pgx.Conn, string, error) {
+	conn, err := postgres.Connect(ctx, srcCfg)
+	if err != nil {
+		return nil, "", fmt.Errorf("source: %w", err)
+	}
+	// The transaction sits idle for the whole copy; a server-side limit on
+	// idle transactions must not end it.
+	conn.Exec(ctx, "SET idle_in_transaction_session_timeout = 0")
+	var name string
+	if _, err = conn.Exec(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"); err == nil {
+		err = conn.QueryRow(ctx, "SELECT pg_export_snapshot()").Scan(&name)
+	}
+	if err != nil {
+		conn.Close(context.WithoutCancel(ctx))
+		return nil, "", fmt.Errorf("export snapshot: %s", pgMessage(err))
+	}
+	return conn, name, nil
+}
+
 // copyTable streams one table from the source to the target. The source side
 // reads inside the exported snapshot, so every table reflects the same
-// instant: the replication slot's starting point.
+// instant: the replication slot's starting point, or for an offline job the
+// moment its snapshot was exported.
 func copyTable(ctx context.Context, srcCfg, dstCfg connector.Config, snapshot string, t Table, rows *atomic.Int64) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

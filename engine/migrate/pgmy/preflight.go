@@ -33,10 +33,10 @@ func Preflight(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate
 	if err != nil {
 		return nil, err
 	}
-	return preflight(ctx, src, dst, plan)
+	return preflight(ctx, src, dst, plan, cfg)
 }
 
-func preflight(ctx context.Context, src *pgx.Conn, dst *sql.DB, plan *Plan) (*migrate.Report, error) {
+func preflight(ctx context.Context, src *pgx.Conn, dst *sql.DB, plan *Plan, cfg migrate.Config) (*migrate.Report, error) {
 	r := &migrate.Report{Tables: len(plan.Tables)}
 	var srcVer, dstVer string
 	var srcNum int
@@ -47,7 +47,7 @@ func preflight(ctx context.Context, src *pgx.Conn, dst *sql.DB, plan *Plan) (*mi
 		return nil, err
 	}
 	switch {
-	case srcNum < 100000:
+	case srcNum < 100000 && !cfg.Offline():
 		r.Add("Versions", "fail", "PostgreSQL "+srcVer+" has no built-in logical replication; version 10 or newer is required")
 	case strings.Contains(strings.ToLower(dstVer), "mariadb"):
 		r.Add("Versions", "fail", "MariaDB is not supported as a target by this pipeline")
@@ -56,7 +56,7 @@ func preflight(ctx context.Context, src *pgx.Conn, dst *sql.DB, plan *Plan) (*mi
 	default:
 		r.Add("Versions", "ok", "PostgreSQL "+srcVer+" → MySQL "+dstVer)
 	}
-	if err := pgpg.CheckSource(ctx, src, plan.Plan, r); err != nil {
+	if err := pgpg.CheckSource(ctx, src, plan.Plan, cfg, r); err != nil {
 		return nil, err
 	}
 

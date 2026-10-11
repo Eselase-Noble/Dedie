@@ -238,9 +238,10 @@ func (p *Plan) loadTables(ctx context.Context, src *pgx.Conn, cfg Config) error 
 			skip("partitions and inheritance children are not supported yet", false)
 		case persistence != "p":
 			skip("unlogged and temporary tables are not written to the replication log", false)
-		case !hasKey:
+		case !hasKey && !cfg.Offline():
 			// Publishing a table without a replica identity makes UPDATE and
-			// DELETE fail on the source, so this must stop the migration.
+			// DELETE fail on the source, so this must stop the migration. An
+			// offline job publishes nothing and copies such a table as it is.
 			skip("no primary key or replica identity; add one, or exclude the table", true)
 		default:
 			p.Tables = append(p.Tables, t)

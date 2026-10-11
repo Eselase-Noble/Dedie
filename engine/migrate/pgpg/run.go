@@ -64,7 +64,8 @@ func SlotName(jobID string) string {
 
 func (r *runner) run(ctx context.Context) (Outcome, error) {
 	jobID, cfg, st, srcCfg, dstCfg, rep := r.jobID, r.cfg, r.st, r.srcCfg, r.dstCfg, r.rep
-	if st.Slot == "" {
+	// An offline job follows no changes and so never names a slot.
+	if st.Slot == "" && !cfg.Offline() {
 		st.Slot, st.Publication = SlotName(jobID), SlotName(jobID)
 	}
 	if rep.Desired() == "abort" {
@@ -105,6 +106,15 @@ func (r *runner) run(ctx context.Context) (Outcome, error) {
 		if err := r.indexingPhase(ctx); err != nil {
 			return "", err
 		}
+	}
+
+	// An offline job has no stream to follow: the copy is the whole
+	// migration, and it finishes without waiting for the operator.
+	if cfg.Offline() {
+		if _, err := r.finalize(ctx); err != nil {
+			return "", err
+		}
+		return Completed, nil
 	}
 
 	retries := 0
@@ -190,7 +200,7 @@ func (r *runner) reconnect(ctx context.Context) error {
 
 func (r *runner) schemaPhase(ctx context.Context) error {
 	r.rep.SetPhase(PhaseSchema)
-	report, err := preflight(ctx, r.src, r.dst, r.plan)
+	report, err := preflight(ctx, r.src, r.dst, r.plan, r.cfg)
 	if err != nil {
 		return err
 	}
@@ -229,11 +239,15 @@ func (r *runner) schemaPhase(ctx context.Context) error {
 		names[i] = "ONLY " + t.QName()
 		progress[i] = TableProgress{Schema: t.Schema, Table: t.Name, EstRows: t.EstRows}
 	}
-	if _, err := r.src.Exec(ctx, "DROP PUBLICATION IF EXISTS "+qident(r.st.Publication)); err != nil {
-		return err
-	}
-	if _, err := r.src.Exec(ctx, "CREATE PUBLICATION "+qident(r.st.Publication)+" FOR TABLE "+strings.Join(names, ", ")); err != nil {
-		return fmt.Errorf("create publication: %s", pgMessage(err))
+	// The publication exists for the stream; an offline job creates nothing
+	// on the source.
+	if !r.cfg.Offline() {
+		if _, err := r.src.Exec(ctx, "DROP PUBLICATION IF EXISTS "+qident(r.st.Publication)); err != nil {
+			return err
+		}
+		if _, err := r.src.Exec(ctx, "CREATE PUBLICATION "+qident(r.st.Publication)+" FOR TABLE "+strings.Join(names, ", ")); err != nil {
+			return fmt.Errorf("create publication: %s", pgMessage(err))
+		}
 	}
 	r.rep.ResetTables(progress)
 	r.st.SchemaDone = true
@@ -250,6 +264,9 @@ func (r *runner) ownTarget(ctx context.Context) bool {
 
 func (r *runner) snapshotPhase(ctx context.Context) error {
 	r.rep.SetPhase(PhaseSnapshot)
+	if r.cfg.Offline() {
+		return r.offlineSnapshot(ctx)
+	}
 	// Start clean: a slot or rows left by an interrupted attempt belong to a
 	// snapshot that no longer exists.
 	if err := DropSlot(ctx, r.src, r.st.Slot); err != nil {
@@ -284,6 +301,30 @@ func (r *runner) snapshotPhase(ctx context.Context) error {
 	return nil
 }
 
+// offlineSnapshot copies the tables for a job that follows no changes. The
+// workers share the snapshot of an ordinary read-only transaction instead of
+// a replication slot's, so nothing is created on the source.
+func (r *runner) offlineSnapshot(ctx context.Context) error {
+	if err := truncateTargets(ctx, r.dst, r.plan); err != nil {
+		return fmt.Errorf("empty target tables: %s", pgMessage(err))
+	}
+	holder, name, err := ExportSnapshot(ctx, r.srcCfg)
+	if err != nil {
+		return err
+	}
+	// The exported snapshot stays valid only while this transaction is open.
+	defer holder.Close(context.WithoutCancel(ctx))
+	r.rep.Event("info", fmt.Sprintf("copying %d tables from one snapshot of the source with %d workers", len(r.plan.Tables), r.cfg.SnapshotWorkers))
+
+	if err := snapshot(ctx, r.srcCfg, r.dstCfg, name, r.plan, r.cfg.SnapshotWorkers, r.rep); err != nil {
+		return err
+	}
+	r.st.SnapshotDone = true
+	r.save()
+	r.rep.Event("info", "copy finished")
+	return nil
+}
+
 func (r *runner) indexingPhase(ctx context.Context) error {
 	r.rep.SetPhase(PhaseIndexing)
 	if err := r.reconnect(ctx); err != nil {
@@ -300,15 +341,19 @@ func (r *runner) indexingPhase(ctx context.Context) error {
 	// With foreign keys in place, a replicated parent change would cascade
 	// on the target and then collide with the replicated child change. The
 	// replica role switches those actions off for the apply session; where
-	// the target user may not set it, foreign keys wait until cutover.
-	if _, err := r.dst.Exec(ctx, "SET session_replication_role = replica"); err == nil {
-		r.st.ReplicaRole = true
-		r.dst.Exec(ctx, "RESET session_replication_role")
-	} else {
-		r.rep.Event("warn", "target user may not set session_replication_role; foreign keys will be created at cutover instead of now")
+	// the target user may not set it, foreign keys wait until cutover. An
+	// offline job replays nothing, so its foreign keys never need to wait.
+	offline := r.cfg.Offline()
+	if !offline {
+		if _, err := r.dst.Exec(ctx, "SET session_replication_role = replica"); err == nil {
+			r.st.ReplicaRole = true
+			r.dst.Exec(ctx, "RESET session_replication_role")
+		} else {
+			r.rep.Event("warn", "target user may not set session_replication_role; foreign keys will be created at cutover instead of now")
+		}
 	}
 	for _, s := range r.plan.Post {
-		if s.Kind != kindForeignKey || r.st.ReplicaRole {
+		if s.Kind != kindForeignKey || r.st.ReplicaRole || offline {
 			list = append(list, s)
 		}
 	}
@@ -323,8 +368,10 @@ func (r *runner) indexingPhase(ctx context.Context) error {
 	return nil
 }
 
-// finalize runs once the stream has drained at cutover. It returns false
-// when validation fails, in which case the job goes back to streaming.
+// finalize runs once the stream has drained at cutover, or straight after
+// indexing in an offline job. It returns false when validation fails, in
+// which case the job goes back to streaming; an offline job has no stream to
+// go back to and fails instead.
 func (r *runner) finalize(ctx context.Context) (bool, error) {
 	r.rep.SetPhase(PhaseCutover)
 	if err := r.reconnect(ctx); err != nil {
@@ -346,6 +393,12 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 		if err != nil {
 			why = err.Error()
 		}
+		if r.cfg.Offline() {
+			if err != nil {
+				return false, err
+			}
+			return false, fmt.Errorf("%s: the source was probably written to during the copy. Stop writes to the source and run the migration again", why)
+		}
 		if r.st.Fenced {
 			if uerr := Unfence(ctx, r.srcCfg); uerr != nil {
 				r.rep.Event("error", "could not make the source writable again: "+pgMessage(uerr))
@@ -360,7 +413,7 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 	}
 
 	final := r.plan.Final
-	if !r.st.ReplicaRole {
+	if !r.st.ReplicaRole && !r.cfg.Offline() {
 		for _, s := range r.plan.Post {
 			if s.Kind == kindForeignKey {
 				final = append(final, s)
@@ -377,7 +430,7 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 	if _, err := r.dst.Exec(ctx, "ANALYZE"); err != nil {
 		r.rep.Event("warn", "ANALYZE on the target failed: "+pgMessage(err))
 	}
-	if r.cfg.KeepSlot {
+	if r.cfg.KeepSlot && !r.cfg.Offline() {
 		r.rep.Event("warn", "replication slot "+r.st.Slot+" was kept as requested; the source retains WAL until it is dropped")
 	} else {
 		cleanup(ctx, r.jobID, r.st, r.srcCfg, r.dstCfg, r.rep)
@@ -386,6 +439,9 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 	msg := "cutover complete: the target is ready for application traffic"
 	if r.st.Fenced {
 		msg += ". The source database was left read-only"
+	}
+	if r.cfg.Offline() {
+		msg = "offline copy complete: the target holds the source as of the snapshot"
 	}
 	r.rep.Event("info", msg)
 	r.save()
@@ -403,7 +459,11 @@ func (r *runner) abort(ctx context.Context) Outcome {
 		}
 	}
 	cleanup(ctx, r.jobID, r.st, r.srcCfg, r.dstCfg, r.rep)
-	r.rep.Event("info", "aborted; replication slot and publication removed from the source. Tables already copied to the target were left in place")
+	if r.cfg.Offline() {
+		r.rep.Event("info", "aborted. Tables already copied to the target were left in place")
+	} else {
+		r.rep.Event("info", "aborted; replication slot and publication removed from the source. Tables already copied to the target were left in place")
+	}
 	r.save()
 	return Aborted
 }

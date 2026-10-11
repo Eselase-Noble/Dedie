@@ -106,6 +106,10 @@ func DropSlot(ctx context.Context, src *pgx.Conn, slot string) error {
 // CleanupSource removes what a job created on the source: its replication
 // slot and its publication.
 func CleanupSource(ctx context.Context, st *State, srcCfg connector.Config, rep Reporter) {
+	// An offline job named neither, because it created neither.
+	if st.Slot == "" {
+		return
+	}
 	ctx = context.WithoutCancel(ctx)
 	src, err := postgres.Connect(ctx, srcCfg)
 	if err != nil {

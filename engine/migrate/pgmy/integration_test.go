@@ -345,3 +345,142 @@ func TestMigration(t *testing.T) {
 		t.Errorf("%d apply anomalies", st.Anomalies)
 	}
 }
+
+// TestMigrationOffline runs a one-time copy. The job must finish by itself,
+// with no cutover requested, and leave nothing behind on the source.
+func TestMigrationOffline(t *testing.T) {
+	srcAdmin, dstCfg := testConfig(t, "DEDIE_TEST_SOURCE"), testConfig(t, "DEDIE_TEST_MYSQL_TARGET")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	db := fmt.Sprintf("dedie_y_%d", time.Now().UnixNano())
+	pgAdmin, err := postgres.Connect(ctx, srcAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pgAdmin.Exec(ctx, "CREATE DATABASE "+db); err != nil {
+		t.Fatal(err)
+	}
+	pgAdmin.Close(ctx)
+	myAdmin, err := mysql.Open(ctx, dstCfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := myAdmin.ExecContext(ctx, "CREATE DATABASE "+db+" CHARACTER SET utf8mb4"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		myAdmin.Exec("DROP DATABASE IF EXISTS " + db)
+		myAdmin.Close()
+		if c, err := postgres.Connect(bg, srcAdmin); err == nil {
+			c.Exec(bg, "DROP DATABASE IF EXISTS "+db+" WITH (FORCE)")
+			c.Close(bg)
+		}
+	})
+	srcCfg := srcAdmin
+	srcCfg.Database, dstCfg.Database = db, db
+
+	src, err := postgres.Connect(ctx, srcCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close(ctx)
+	// notes has no key at all: a stream could not follow it, a copy can.
+	if _, err := src.PgConn().Exec(ctx, fixture+`CREATE TABLE notes (body text); INSERT INTO notes SELECT 'note ' || g FROM generate_series(1, 100) g;`).ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fencing is asked for and must be ignored: an offline job has no cutover.
+	cfg := migrate.Config{Mode: migrate.ModeOffline, FenceSource: true}
+	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var noted bool
+	for _, c := range report.Checks {
+		switch c.Name {
+		case "Offline copy":
+			noted = c.Status == "warn"
+		case "Source wal_level", "Replication privilege", "Replication capacity", "Tables without a key":
+			t.Errorf("offline preflight should not check %q", c.Name)
+		}
+		if c.Status == "fail" {
+			t.Errorf("preflight %s: %s", c.Name, c.Detail)
+		}
+	}
+	if !report.OK || !noted {
+		t.Fatalf("offline preflight: ok=%v, offline note=%v", report.OK, noted)
+	}
+
+	rep := &memReporter{t: t, desired: "run", tables: map[string]map[string]any{}}
+	out, err := Run(ctx, "mig_offline1", cfg, pgpg.State{}, srcCfg, dstCfg, rep)
+	if err != nil || out != migrate.Completed {
+		t.Fatalf("offline run: %v %v", out, err)
+	}
+	phase, st := rep.snapshot()
+	if phase != migrate.PhaseDone || rep.Desired() != "run" {
+		t.Errorf("finished in phase %q with the operator's instruction %q", phase, rep.Desired())
+	}
+	if st.Slot != "" || st.Fenced {
+		t.Errorf("offline state names slot %q, fenced %v", st.Slot, st.Fenced)
+	}
+
+	dst, err := mysql.Open(ctx, dstCfg, map[string]string{"group_concat_max_len": "1000000000", "information_schema_stats_expiry": "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close()
+	check := func(what, pg, my string) {
+		t.Helper()
+		var a *string
+		var b sql.NullString
+		if err := src.QueryRow(ctx, pg).Scan(&a); err != nil {
+			t.Fatalf("%s on source: %v", what, err)
+		}
+		if err := dst.QueryRowContext(ctx, my).Scan(&b); err != nil {
+			t.Fatalf("%s on target: %v", what, err)
+		}
+		if a == nil || *a != b.String {
+			t.Errorf("%s: source %.80v, target %.80s", what, a, b.String)
+		}
+	}
+	check("customers", `SELECT count(*)::text FROM customers`, `SELECT COUNT(*) FROM customers`)
+	check("text", `SELECT md5(string_agg(code || name, '' ORDER BY id)) FROM customers`, `SELECT MD5(GROUP_CONCAT(CONCAT(code, name) ORDER BY id SEPARATOR '')) FROM customers`)
+	check("long text", `SELECT md5(string_agg(md5(bio), '' ORDER BY id)) FROM customers`, `SELECT MD5(GROUP_CONCAT(MD5(bio) ORDER BY id SEPARATOR '')) FROM customers`)
+	check("numeric", `SELECT sum(balance)::text FROM customers`, `SELECT CAST(SUM(balance) AS CHAR) FROM customers`)
+	check("invoices", `SELECT sum(customer_id)::text || '/' || sum(amount)::text FROM billing.invoices`, `SELECT CONCAT(SUM(customer_id), '/', SUM(amount)) FROM billing_invoices`)
+	check("events", `SELECT count(*)::text FROM events`, `SELECT COUNT(*) FROM events`)
+	check("table without a key", `SELECT md5(string_agg(body, '' ORDER BY body)) FROM notes`, `SELECT MD5(GROUP_CONCAT(body ORDER BY body SEPARATOR '')) FROM notes`)
+
+	var fks int
+	dst.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema = DATABASE() AND constraint_type = 'FOREIGN KEY'`).Scan(&fks)
+	if fks != 1 {
+		t.Errorf("target has %d foreign keys", fks)
+	}
+	for name, tbl := range rep.tables {
+		if v, _ := tbl["validation"].(string); !strings.Contains(v, "match") || v == "mismatch" {
+			t.Errorf("table %s validation = %v", name, tbl["validation"])
+		}
+	}
+	var leftover, slots, pubs int
+	dst.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?`, checkpointTable).Scan(&leftover)
+	src.QueryRow(ctx, `SELECT count(*) FROM pg_replication_slots WHERE database = current_database()`).Scan(&slots)
+	src.QueryRow(ctx, `SELECT count(*) FROM pg_publication`).Scan(&pubs)
+	if leftover != 0 || slots != 0 || pubs != 0 {
+		t.Errorf("left behind: %d checkpoint table(s) on the target, %d slot(s) and %d publication(s) on the source", leftover, slots, pubs)
+	}
+
+	// The source stays writable. A job resumed after its copy goes straight
+	// to validation, which must now fail: nothing carries this row over.
+	if _, err := src.Exec(ctx, `INSERT INTO notes VALUES ('late write')`); err != nil {
+		t.Fatalf("source refused a write after an offline job: %v", err)
+	}
+	out, err = Run(ctx, "mig_offline1", cfg, st, srcCfg, dstCfg, rep)
+	if err == nil || !strings.Contains(err.Error(), "differ") {
+		t.Errorf("resumed offline job over a changed source: %v %v", out, err)
+	}
+	if phase, _ := rep.snapshot(); phase == migrate.PhaseStreaming {
+		t.Error("offline job went to streaming")
+	}
+}

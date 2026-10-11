@@ -28,37 +28,19 @@ func Preflight(ctx context.Context, srcCfg, dstCfg connector.Config, cfg Config)
 	if err != nil {
 		return nil, err
 	}
-	return preflight(ctx, src, dst, plan)
+	return preflight(ctx, src, dst, plan, cfg)
 }
 
 // CheckSource records every finding about the source that does not depend on
 // the kind of target: replication settings, privileges and the tables
-// selected. It is shared by all pipelines that read from PostgreSQL.
-func CheckSource(ctx context.Context, src *pgx.Conn, plan *Plan, r *Report) error {
-	var walLevel string
-	var canReplicate bool
-	var slotsFree, sendersFree int
-	if err := src.QueryRow(ctx, `SELECT current_setting('wal_level'),
-			(SELECT rolreplication OR rolsuper FROM pg_roles WHERE rolname=current_user),
-			current_setting('max_replication_slots')::int - (SELECT count(*) FROM pg_replication_slots),
-			current_setting('max_wal_senders')::int - (SELECT count(*) FROM pg_stat_replication)`).
-		Scan(&walLevel, &canReplicate, &slotsFree, &sendersFree); err != nil {
+// selected. It is shared by all pipelines that read from PostgreSQL. An
+// offline job reads the source in an ordinary transaction, so none of the
+// replication settings apply to it.
+func CheckSource(ctx context.Context, src *pgx.Conn, plan *Plan, cfg Config, r *Report) error {
+	if cfg.Offline() {
+		r.Add("Offline copy", "warn", offlineNote)
+	} else if err := checkReplication(ctx, src, r); err != nil {
 		return err
-	}
-	if walLevel == "logical" {
-		r.Add("Source wal_level", "ok", "logical")
-	} else {
-		r.Add("Source wal_level", "fail", fmt.Sprintf("wal_level is %q; set wal_level = logical and restart the source server", walLevel))
-	}
-	if canReplicate {
-		r.Add("Replication privilege", "ok", "source user may open replication connections")
-	} else {
-		r.Add("Replication privilege", "fail", "source user needs the REPLICATION attribute (ALTER ROLE ... REPLICATION)")
-	}
-	if slotsFree > 0 && sendersFree > 0 {
-		r.Add("Replication capacity", "ok", fmt.Sprintf("%d free slot(s), %d free WAL sender(s)", slotsFree, sendersFree))
-	} else {
-		r.Add("Replication capacity", "fail", "no free replication slot or WAL sender; raise max_replication_slots / max_wal_senders")
 	}
 
 	if len(plan.Tables) == 0 {
@@ -87,7 +69,41 @@ func CheckSource(ctx context.Context, src *pgx.Conn, plan *Plan, r *Report) erro
 	return nil
 }
 
-func preflight(ctx context.Context, src, dst *pgx.Conn, plan *Plan) (*Report, error) {
+// offlineNote is what the operator must know before starting an offline job.
+const offlineNote = "the tables are copied once, from a single snapshot; changes made to the source after the copy starts are not carried over. Stop application writes to the source before starting"
+
+// checkReplication records whether the source can feed a logical replication
+// stream.
+func checkReplication(ctx context.Context, src *pgx.Conn, r *Report) error {
+	var walLevel string
+	var canReplicate bool
+	var slotsFree, sendersFree int
+	if err := src.QueryRow(ctx, `SELECT current_setting('wal_level'),
+			(SELECT rolreplication OR rolsuper FROM pg_roles WHERE rolname=current_user),
+			current_setting('max_replication_slots')::int - (SELECT count(*) FROM pg_replication_slots),
+			current_setting('max_wal_senders')::int - (SELECT count(*) FROM pg_stat_replication)`).
+		Scan(&walLevel, &canReplicate, &slotsFree, &sendersFree); err != nil {
+		return err
+	}
+	if walLevel == "logical" {
+		r.Add("Source wal_level", "ok", "logical")
+	} else {
+		r.Add("Source wal_level", "fail", fmt.Sprintf("wal_level is %q; set wal_level = logical and restart the source server", walLevel))
+	}
+	if canReplicate {
+		r.Add("Replication privilege", "ok", "source user may open replication connections")
+	} else {
+		r.Add("Replication privilege", "fail", "source user needs the REPLICATION attribute (ALTER ROLE ... REPLICATION)")
+	}
+	if slotsFree > 0 && sendersFree > 0 {
+		r.Add("Replication capacity", "ok", fmt.Sprintf("%d free slot(s), %d free WAL sender(s)", slotsFree, sendersFree))
+	} else {
+		r.Add("Replication capacity", "fail", "no free replication slot or WAL sender; raise max_replication_slots / max_wal_senders")
+	}
+	return nil
+}
+
+func preflight(ctx context.Context, src, dst *pgx.Conn, plan *Plan, cfg Config) (*Report, error) {
 	r := &Report{Tables: len(plan.Tables)}
 
 	var srcVer, dstVer string
@@ -100,7 +116,7 @@ func preflight(ctx context.Context, src, dst *pgx.Conn, plan *Plan) (*Report, er
 		return nil, err
 	}
 	switch {
-	case srcNum < 100000:
+	case srcNum < 100000 && !cfg.Offline():
 		r.Add("Source version", "fail", "PostgreSQL "+srcVer+" has no built-in logical replication; version 10 or newer is required")
 	case dstNum < srcNum:
 		r.Add("Versions", "fail", fmt.Sprintf("target (%s) is older than source (%s); downgrades are not supported", dstVer, srcVer))
@@ -108,7 +124,7 @@ func preflight(ctx context.Context, src, dst *pgx.Conn, plan *Plan) (*Report, er
 		r.Add("Versions", "ok", fmt.Sprintf("%s → %s", srcVer, dstVer))
 	}
 
-	if err := CheckSource(ctx, src, plan, r); err != nil {
+	if err := CheckSource(ctx, src, plan, cfg, r); err != nil {
 		return nil, err
 	}
 
