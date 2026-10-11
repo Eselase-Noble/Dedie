@@ -96,6 +96,7 @@ var fixture = []string{
 		tags SET('a','b','c'), profile JSON, avatar BLOB, flags BIT(8), small TINYINT UNSIGNED,
 		medium MEDIUMINT UNSIGNED, big BIGINT UNSIGNED, balance DECIMAL(12,2) DEFAULT 0, ratio DOUBLE,
 		born DATE, wakes TIME, yr YEAR, created DATETIME(6), seen TIMESTAMP NULL, bio LONGTEXT,
+		updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 		name_upper VARCHAR(100) GENERATED ALWAYS AS (UPPER(name)) STORED, KEY name_idx (name)) ENGINE=InnoDB`,
 	`CREATE TABLE invoices (
 		id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, customer_id INT UNSIGNED NOT NULL, amount DECIMAL(12,2) NOT NULL,
@@ -279,7 +280,7 @@ func TestMigration(t *testing.T) {
 	check(`SELECT COUNT(*) FROM invoices`)
 	check(`SELECT BIT_XOR(CRC32(CONCAT_WS('|', id, name, IFNULL(HEX(legacy_name), '~'), feeling, IFNULL(tags, '~'), profile, IFNULL(HEX(avatar), '~'),
 		IFNULL(HEX(flags), '~'), IFNULL(small, '~'), IFNULL(medium, '~'), IFNULL(big, '~'), balance, IFNULL(ratio, '~'), IFNULL(born, '~'),
-		IFNULL(wakes, '~'), IFNULL(yr, '~'), IFNULL(created, '~'), IFNULL(seen, '~'), MD5(bio), name_upper))) FROM customers`)
+		IFNULL(wakes, '~'), IFNULL(yr, '~'), IFNULL(created, '~'), IFNULL(seen, '~'), MD5(bio), name_upper, updated))) FROM customers`)
 	check(`SELECT BIT_XOR(CRC32(CONCAT_WS('|', id, customer_id, amount))) FROM invoices`)
 	check(`SELECT BIT_XOR(CRC32(CONCAT_WS('|', kind, payload))) FROM events`)
 	check(`SELECT MAX(big) FROM customers`)

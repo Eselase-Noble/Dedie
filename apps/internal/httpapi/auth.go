@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"log"
 	"net/http"
 
 	"dedie/engine/app"
@@ -65,6 +66,10 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, email, pas
 	ip := s.clientIP(r)
 	token, user, err := s.app.Login(r.Context(), email, password, ip)
 	if err != nil {
+		// The audit log only knows accounts that exist; the server log also
+		// records attempts for addresses that do not, which is what an
+		// administrator needs when someone reports that they cannot sign in.
+		log.Printf("sign-in failed for %q from %s: %v", email, ip, err)
 		fail(w, err)
 		return
 	}

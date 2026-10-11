@@ -32,6 +32,15 @@ type Column struct {
 	Generated bool
 	// Binary columns hold bytes rather than text and are transferred as such.
 	Binary bool
+
+	// The rest describes the column for pipelines that translate the
+	// schema to another database.
+	ColumnType    string // full type, for example "decimal(12,2)" or "enum('a','b')"
+	Charset       string // character set of text columns, lower case
+	Nullable      bool
+	Default       *string // nil when the column has no default
+	Extra         string  // information_schema extra, lower case
+	AutoIncrement bool
 }
 
 // Table is a source table that will be copied and replicated.
@@ -144,7 +153,8 @@ func BuildPlan(ctx context.Context, src Querier, database string, cfg migrate.Co
 	sort.Strings(p.Missing)
 
 	rows, err = src.QueryContext(ctx, `SELECT table_name, column_name, LOWER(data_type), column_type LIKE '%unsigned%',
-			extra LIKE '%GENERATED%', column_key = 'PRI'
+			extra LIKE '%VIRTUAL GENERATED%' OR extra LIKE '%STORED GENERATED%', column_key = 'PRI',
+			column_type, LOWER(COALESCE(character_set_name, '')), is_nullable = 'YES', column_default, LOWER(extra)
 		FROM information_schema.columns WHERE table_schema = ? ORDER BY table_name, ordinal_position`, database)
 	if err != nil {
 		return nil, err
@@ -153,10 +163,16 @@ func BuildPlan(ctx context.Context, src Querier, database string, cfg migrate.Co
 		var table string
 		var c Column
 		var pk bool
-		if err := rows.Scan(&table, &c.Name, &c.DataType, &c.Unsigned, &c.Generated, &pk); err != nil {
+		var def sql.NullString
+		if err := rows.Scan(&table, &c.Name, &c.DataType, &c.Unsigned, &c.Generated, &pk,
+			&c.ColumnType, &c.Charset, &c.Nullable, &def, &c.Extra); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		if def.Valid {
+			c.Default = &def.String
+		}
+		c.AutoIncrement = strings.Contains(c.Extra, "auto_increment")
 		c.Binary = binaryTypes[c.DataType]
 		if t := p.byName[table]; t != nil {
 			if pk {
@@ -195,6 +211,9 @@ func BuildPlan(ctx context.Context, src Querier, database string, cfg migrate.Co
 	}
 	return p, nil
 }
+
+// Table returns the planned table with that name, or nil.
+func (p *Plan) Table(name string) *Table { return p.byName[name] }
 
 // showCreate runs SHOW CREATE <kind> and returns the statement, which sits in
 // a different column for each kind of object.

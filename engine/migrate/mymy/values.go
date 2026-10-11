@@ -7,26 +7,12 @@ var charTypes = map[string]bool{
 	"char": true, "varchar": true, "tinytext": true, "text": true, "mediumtext": true, "longtext": true,
 }
 
-// binlogValue converts a value decoded from a row event into something the
-// SQL driver will send in a form the target column accepts.
-func binlogValue(c Column, v any) any {
+// Integer returns an integer decoded from a row event with its sign
+// corrected: the binary log has no sign information, so unsigned values
+// arrive as negative numbers once they pass the signed maximum. Other values
+// are returned unchanged.
+func Integer(c Column, v any) any {
 	switch x := v.(type) {
-	case nil:
-		return nil
-	case []byte:
-		// JSON arrives as text and must be sent as text; a binary string is
-		// not accepted by a JSON column.
-		if c.DataType == "json" {
-			return string(x)
-		}
-		return x
-	case string:
-		if charTypes[c.DataType] {
-			return []byte(x)
-		}
-		return x
-	// The binary log has no sign information, so unsigned integers arrive
-	// as negative numbers once they pass the signed maximum.
 	case int8:
 		if c.Unsigned {
 			return uint64(uint8(x))
@@ -52,8 +38,40 @@ func binlogValue(c Column, v any) any {
 		return x
 	case int:
 		return int64(x)
+	// Servers that log column signedness let the reader return unsigned
+	// values directly; widen them to one type for the callers.
+	case uint8:
+		return uint64(x)
+	case uint16:
+		return uint64(x)
+	case uint32:
+		return uint64(x)
+	case uint:
+		return uint64(x)
+	}
+	return v
+}
+
+// binlogValue converts a value decoded from a row event into something the
+// SQL driver will send in a form the target column accepts.
+func binlogValue(c Column, v any) any {
+	switch x := v.(type) {
+	case nil:
+		return nil
+	case []byte:
+		// JSON arrives as text and must be sent as text; a binary string is
+		// not accepted by a JSON column.
+		if c.DataType == "json" {
+			return string(x)
+		}
+		return x
+	case string:
+		if charTypes[c.DataType] {
+			return []byte(x)
+		}
+		return x
 	case float32:
 		return float64(x)
 	}
-	return v
+	return Integer(c, v)
 }
