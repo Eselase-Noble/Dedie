@@ -103,7 +103,7 @@ export default function TableTab({ connection, schema, table, info, mayWrite, ac
     setLoading(true);
     setError("");
     const order = keys.length > 0 ? ` ORDER BY ${keys.map((k) => quoteIdent(k, kind)).join(", ")}` : "";
-    const sql = `SELECT * FROM ${qualified}${applied.trim() ? ` WHERE ${applied.trim()}` : ""}${order} LIMIT ${pageSize} OFFSET ${page * pageSize}`;
+    const sql = `SELECT * FROM ${qualified}${applied.trim() ? ` WHERE ${applied.trim()}` : ""}${order}${kind === "oracle" ? ` OFFSET ${page * pageSize} ROWS FETCH NEXT ${pageSize} ROWS ONLY` : ` LIMIT ${pageSize} OFFSET ${page * pageSize}`}`;
     try {
       const res = await api.query(connection.id, { sql, write: false, max_rows: pageSize });
       setResult(res.results[0] ?? null);

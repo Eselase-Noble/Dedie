@@ -45,7 +45,13 @@ Query
 Migrations
   migrate create               define a migration between two connections
   migrate list                 list migrations
-  migrate preflight <id>       check both databases without changing them
+  migrate preflight <id>       check both databases without changing them; if
+                               the target already has some of the objects,
+                               it lists them and asks what to do
+  migrate preview <id>         print the statements the migration would run
+                               on the target, as a script, without running them
+  migrate existing <id> fail|skip|replace
+                               answer that question without a prompt
   migrate run <id>             run in the foreground until paused or complete
   migrate start <id>           queue for a running dedie-server to execute
   migrate status <id>          show phase, lag and per-table progress
@@ -66,6 +72,12 @@ Backups
   backup rm <id>               delete a backup
   backup schedule add|list|rm  recurring backups with retention
   backup location add|list|rm  directories backups may be written to
+
+Notifications
+  notifications                list what happened recently: migrations,
+                               backups, databases that stopped answering.
+                               Unread ones are marked; --unread shows only
+                               those, --read-all marks everything as read
 
 Audit
   audit list                   show recent audit entries
@@ -176,6 +188,10 @@ func (c *cli) dispatch(args []string) error {
 			return c.migrateList()
 		case "preflight":
 			return c.migratePreflight(rest)
+		case "existing":
+			return c.migrateExisting(rest)
+		case "preview":
+			return c.migratePreview(rest)
 		case "run":
 			return c.migrateRun(rest)
 		case "status":
@@ -228,6 +244,8 @@ func (c *cli) dispatch(args []string) error {
 				return c.scheduleRemove(rest)
 			}
 		}
+	case "notifications":
+		return c.notifications(args[1:])
 	case "audit":
 		switch sub {
 		case "list":

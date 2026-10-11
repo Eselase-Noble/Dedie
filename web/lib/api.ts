@@ -24,9 +24,11 @@ import type {
   MigrationDetail,
   MigrationInput,
   Monitoring,
+  NotificationList,
+  NotificationQuery,
   Overview,
   OwnerChange,
-  PreflightReport,
+  OnExisting, PreviewStatement, PreflightReport,
   QueryResponse,
   Restore,
   RestoreInput,
@@ -204,6 +206,8 @@ export const api = {
   createMigration: (body: MigrationInput) => post<Migration>("/migrations", body),
   migration: (jobId: string) => get<MigrationDetail>(`/migrations/${id(jobId)}`),
   preflight: (jobId: string) => post<PreflightReport>(`/migrations/${id(jobId)}/preflight`),
+  previewMigration: (jobId: string) => get<PreviewStatement[]>(`/migrations/${id(jobId)}/preview`),
+  setOnExisting: (jobId: string, policy: OnExisting) => post<Migration>(`/migrations/${id(jobId)}/on-existing`, { policy }),
   migrationAction: (jobId: string, action: MigrationAction) =>
     post<{ ok: boolean }>(`/migrations/${id(jobId)}/actions/${action}`),
 
@@ -235,6 +239,18 @@ export const api = {
     channelId ? request<AlertChannel>("PUT", `/alerts/channels/${id(channelId)}`, { body }) : post<AlertChannel>("/alerts/channels", body),
   deleteAlertChannel: (channelId: string) => request<{ ok: boolean }>("DELETE", `/alerts/channels/${id(channelId)}`),
   testAlertChannel: (channelId: string) => post<{ ok: boolean }>(`/alerts/channels/${id(channelId)}/test`),
+
+  // Notifications
+  notifications: (q: NotificationQuery = {}) => {
+    const params = new URLSearchParams();
+    if (q.unread) params.set("unread", "1");
+    if (q.topic) params.set("topic", q.topic);
+    if (q.before) params.set("before", String(q.before));
+    if (q.limit !== undefined) params.set("limit", String(q.limit));
+    return get<NotificationList>(`/notifications?${params}`);
+  },
+  readNotification: (notificationId: number) => post<{ unread: number }>(`/notifications/${notificationId}/read`),
+  readAllNotifications: () => post<{ unread: number }>("/notifications/read-all"),
 
   // Audit
   audit: (before: number, limit: number) => get<AuditEntry[]>(`/audit?before=${before}&limit=${limit}`),

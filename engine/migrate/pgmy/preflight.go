@@ -12,6 +12,7 @@ import (
 	"dedie/engine/connector/mysql"
 	"dedie/engine/connector/postgres"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/mymy"
 	"dedie/engine/migrate/pgpg"
 )
 
@@ -33,10 +34,10 @@ func Preflight(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate
 	if err != nil {
 		return nil, err
 	}
-	return preflight(ctx, src, dst, plan)
+	return preflight(ctx, src, dst, plan, cfg)
 }
 
-func preflight(ctx context.Context, src *pgx.Conn, dst *sql.DB, plan *Plan) (*migrate.Report, error) {
+func preflight(ctx context.Context, src *pgx.Conn, dst *sql.DB, plan *Plan, cfg migrate.Config) (*migrate.Report, error) {
 	r := &migrate.Report{Tables: len(plan.Tables)}
 	var srcVer, dstVer string
 	var srcNum int
@@ -47,7 +48,7 @@ func preflight(ctx context.Context, src *pgx.Conn, dst *sql.DB, plan *Plan) (*mi
 		return nil, err
 	}
 	switch {
-	case srcNum < 100000:
+	case srcNum < 100000 && !cfg.Offline():
 		r.Add("Versions", "fail", "PostgreSQL "+srcVer+" has no built-in logical replication; version 10 or newer is required")
 	case strings.Contains(strings.ToLower(dstVer), "mariadb"):
 		r.Add("Versions", "fail", "MariaDB is not supported as a target by this pipeline")
@@ -56,7 +57,7 @@ func preflight(ctx context.Context, src *pgx.Conn, dst *sql.DB, plan *Plan) (*mi
 	default:
 		r.Add("Versions", "ok", "PostgreSQL "+srcVer+" → MySQL "+dstVer)
 	}
-	if err := pgpg.CheckSource(ctx, src, plan.Plan, r); err != nil {
+	if err := pgpg.CheckSource(ctx, src, plan.Plan, cfg, r); err != nil {
 		return nil, err
 	}
 
@@ -64,38 +65,13 @@ func preflight(ctx context.Context, src *pgx.Conn, dst *sql.DB, plan *Plan) (*mi
 		r.Add("Table names", "fail", "MySQL has no schemas inside a database, and these tables would get the same name: "+
 			strings.Join(plan.Collisions, "; ")+". Migrate the schemas separately, or exclude one of each pair")
 	}
-	var dstDB sql.NullString
-	if err := dst.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&dstDB); err != nil {
+	// The target database must not already hold the tables being migrated,
+	// nor anything else under a name the plan is going to take.
+	found, err := mymy.FindExisting(ctx, dst, plan.objects())
+	if err != nil {
 		return nil, err
 	}
-	args := []any{dstDB.String}
-	var marks []string
-	for _, t := range plan.Tables {
-		args = append(args, t.Target)
-		marks = append(marks, "?")
-	}
-	if len(marks) > 0 {
-		rows, err := dst.QueryContext(ctx, `SELECT table_name FROM information_schema.tables
-			WHERE table_schema = ? AND table_name IN (`+strings.Join(marks, ",")+`) ORDER BY 1`, args...)
-		if err != nil {
-			return nil, err
-		}
-		var existing []string
-		for rows.Next() {
-			var name string
-			if err := rows.Scan(&name); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			existing = append(existing, name)
-		}
-		rows.Close()
-		if len(existing) > 0 {
-			r.Add("Target is empty", "fail", "these tables already exist in the target database: "+strings.Join(existing, ", "))
-		} else {
-			r.Add("Target is empty", "ok", "no conflicting tables in target database "+dstDB.String)
-		}
-	}
+	mymy.ReportExisting(r, found, cfg.Existing())
 
 	if len(plan.Notes) > 0 {
 		r.Add("Translated with changes", "warn", strings.Join(plan.Notes, "\n"))

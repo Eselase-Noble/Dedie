@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -66,10 +67,20 @@ func (a *App) RunJobForeground(ctx context.Context, id string) error {
 type reporter struct {
 	store *store.Store
 	jobID string
+	// cutoverCancelled is called when the pipeline gives up a cutover and
+	// goes back to streaming, with its reason.
+	cutoverCancelled func(why string)
 }
+
+// cutoverCancelledPrefix begins the event every pipeline reports when a
+// cutover does not go through.
+const cutoverCancelledPrefix = "cutover cancelled: "
 
 func (r reporter) Event(level, msg string) {
 	r.store.AddJobEvent(context.Background(), r.jobID, level, msg)
+	if why, ok := strings.CutPrefix(msg, cutoverCancelledPrefix); ok && r.cutoverCancelled != nil {
+		r.cutoverCancelled(why)
+	}
 }
 
 func (r reporter) SetPhase(phase string) {
@@ -104,15 +115,23 @@ func (r reporter) SetDesired(d string) {
 
 func (a *App) runJob(ctx context.Context, id string) {
 	bg := context.Background()
-	rep := reporter{store: a.Store, jobID: id}
 	j, err := a.Store.JobByID(ctx, id)
 	if err != nil {
 		return
 	}
+	rep := reporter{store: a.Store, jobID: id, cutoverCancelled: func(why string) {
+		// The reason is the first sentence; the rest is advice the job's
+		// page repeats.
+		reason, _, _ := strings.Cut(why, ". ")
+		reason = strings.TrimSuffix(reason, "; streaming continues")
+		a.notifyJob(bg, j, NoteCutoverCancelled, LevelWarning, "Cutover cancelled",
+			"Cutover did not go through: "+reason+". The migration is still streaming changes.")
+	}}
 	fail := func(err error) {
 		a.Store.SetJob(bg, id, map[string]any{"status": StatusFailed, "error": err.Error()})
 		rep.Event("error", err.Error())
 		a.emit(j.OrgID, Event{Type: EventMigrationFailed, Subject: "Migration " + j.Name + " failed", Message: err.Error()})
+		a.notifyJob(bg, j, NoteMigrationFailed, LevelError, "Migration failed", firstLine(err))
 	}
 	src, dst, kind, err := a.endpoints(ctx, j.OrgID, j.SourceID, j.TargetID)
 	if err != nil {
@@ -163,9 +182,28 @@ func (a *App) runJob(ctx context.Context, id string) {
 		status := map[migrate.Outcome]string{migrate.Completed: StatusCompleted, migrate.Paused: StatusPaused, migrate.Aborted: StatusAborted}[outcome]
 		a.Store.SetJob(bg, id, map[string]any{"status": status, "desired": "", "error": ""})
 		a.Store.Audit(bg, j.OrgID, "system", "migration."+status, id, fmt.Sprintf(`{"name":%q}`, j.Name), "")
-		if outcome == migrate.Completed {
+		switch outcome {
+		case migrate.Completed:
 			a.emit(j.OrgID, Event{Type: EventMigrationCompleted, Subject: "Migration " + j.Name + " completed",
 				Message: "The target has every change from the source and passed validation. Applications can use it now."})
+			a.notifyJob(bg, j, NoteMigrationCompleted, LevelSuccess, "Migration completed", completedText(cfg))
+		case migrate.Paused:
+			a.notifyJob(bg, j, NoteMigrationPaused, LevelInfo, "Migration paused",
+				"It keeps its place and continues from there when it is resumed.")
+		case migrate.Aborted:
+			a.notifyJob(bg, j, NoteMigrationAborted, LevelWarning, "Migration aborted",
+				"It was stopped for good and what it had set up on the source was removed.")
 		}
 	}
+}
+
+// completedText says how a migration finished, which depends on its mode.
+func completedText(cfg migrate.Config) string {
+	switch cfg.Mode {
+	case migrate.ModeOffline:
+		return "Offline copy complete: the target holds the data as it was when the copy began."
+	case migrate.ModeSync:
+		return "Sync finished: the target has every change the source made while it ran."
+	}
+	return "Cutover complete: the target has every change from the source and is ready for applications."
 }

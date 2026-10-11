@@ -6,7 +6,14 @@ import { Suspense, useState, type ReactNode } from "react";
 import { api, errorMessage } from "@/lib/api";
 import { formatBytes, formatDuration, formatNumber, formatTime } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
-import type { MigrationAction, MigrationDetail, PreflightReport } from "@/lib/types";
+import type { MigrationAction, MigrationDetail, OnExisting, PreflightReport } from "@/lib/types";
+import ApplyRate from "@/components/migrations/ApplyRate";
+import CopyProgress from "@/components/migrations/CopyProgress";
+import ExistingObjectsDialog from "@/components/migrations/ExistingObjects";
+import MigrationForm from "@/components/MigrationForm";
+import SchemaPreview from "@/components/migrations/SchemaPreview";
+import { download } from "@/lib/csv";
+import { copyText } from "@/lib/desktop";
 import { useSession } from "@/components/session";
 import { Banner, ConfirmDialog, Loading, PageHeader, Progress, StatusBadge } from "@/components/ui";
 
@@ -16,17 +23,22 @@ const PHASE_LABELS: Record<string, string> = {
 };
 
 function Stepper({ job }: { job: MigrationDetail }) {
-  const current = job.status === "completed" ? PHASES.length : PHASES.indexOf(job.phase);
+  // An offline migration has no streaming phase, and what the engine
+  // calls cutover is its validation. A sync is finished, not cut over.
+  const offline = job.config.mode === "offline";
+  const cutover = offline ? "Validation" : job.config.mode === "sync" ? "Finish" : PHASE_LABELS.cutover;
+  const phases = offline ? PHASES.filter((p) => p !== "streaming") : PHASES;
+  const current = job.status === "completed" ? phases.length : phases.indexOf(job.phase);
   return (
     <div className="stepper">
-      {PHASES.map((phase, i) => {
+      {phases.map((phase, i) => {
         let cls = "";
         if (i < current) cls = "done";
         else if (i === current) cls = job.status === "failed" ? "failed" : "current";
         return (
           <div key={phase} className={`step ${cls}`}>
             <div className="dot">{i < current ? "✓" : i + 1}</div>
-            {PHASE_LABELS[phase]}
+            {phase === "cutover" ? cutover : PHASE_LABELS[phase]}
           </div>
         );
       })}
@@ -43,19 +55,48 @@ function Figure({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function Preflight({ report }: { report: PreflightReport }) {
+/** Renders a preflight report as plain text, for a ticket or a change request. */
+function reportText(name: string, report: PreflightReport): string {
+  const lines = [`Preflight for ${name}: ${report.ok ? "passed" : "FAILED"} (${report.tables} table(s))`, ""];
+  for (const c of report.checks) {
+    lines.push(`[${c.status.toUpperCase()}] ${c.name}`);
+    for (const line of c.detail.split("\n")) lines.push(`    ${line}`);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+function Preflight({ report, name }: { report: PreflightReport; name: string }) {
+  const [only, setOnly] = useState<"all" | "attention">("all");
+  const count = (status: string) => report.checks.filter((c) => c.status === status).length;
+  const shown = only === "all" ? report.checks : report.checks.filter((c) => c.status !== "ok");
   return (
-    <table className="data">
-      <tbody>
-        {report.checks.map((c, i) => (
-          <tr key={i}>
-            <td style={{ width: 70 }}><StatusBadge status={c.status} /></td>
-            <td style={{ width: 220 }}><strong>{c.name}</strong></td>
-            <td className="pre-line">{c.detail}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <>
+      <div className="preflight-bar">
+        <span><strong>{count("fail")}</strong> blocking</span>
+        <span><strong>{count("warn")}</strong> to read</span>
+        <span><strong>{count("ok")}</strong> passed</span>
+        <span className="spacer" />
+        <div className="segmented small">
+          <button type="button" className={only === "all" ? "active" : ""} onClick={() => setOnly("all")}>All</button>
+          <button type="button" className={only === "attention" ? "active" : ""} onClick={() => setOnly("attention")}>Needs attention</button>
+        </div>
+        <button className="btn small" onClick={() => copyText(reportText(name, report))}>Copy</button>
+        <button className="btn small" onClick={() => download(`preflight-${name.replace(/[^A-Za-z0-9]+/g, "-").toLowerCase()}.txt`, reportText(name, report), "text/plain;charset=utf-8")}>Download</button>
+      </div>
+      <table className="data">
+        <tbody>
+          {shown.map((c, i) => (
+            <tr key={i}>
+              <td style={{ width: 70 }}><StatusBadge status={c.status} /></td>
+              <td style={{ width: 220 }}><strong>{c.name}</strong></td>
+              <td className="pre-line">{c.detail}</td>
+            </tr>
+          ))}
+          {shown.length === 0 && <tr><td colSpan={3} className="empty">Nothing needs attention.</td></tr>}
+        </tbody>
+      </table>
+    </>
   );
 }
 
@@ -80,6 +121,11 @@ function Detail({ id }: { id: string }) {
   const [busy, setBusy] = useState("");
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [preflighting, setPreflighting] = useState(false);
+  const [asking, setAsking] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  // Duplicating opens the new-migration form filled in from this job;
+  // "replace" is the same with existing objects on the target replaced.
+  const [duplicating, setDuplicating] = useState<"" | "copy" | "replace">("");
 
   if (loading && !job) return <div className="content"><Loading /></div>;
   if (!job) return <div className="content"><Banner tone="error">{error || "Migration not found."}</Banner></div>;
@@ -112,12 +158,15 @@ function Detail({ id }: { id: string }) {
     }
   };
 
-  const runPreflight = async () => {
+  const runPreflight = async (ask = true) => {
     setPreflighting(true);
     setActionError("");
     try {
-      await api.preflight(job.id);
+      const result = await api.preflight(job.id);
       await reload();
+      // Objects already on the target are the administrator's call; ask
+      // as soon as they are found, unless an answer was already given.
+      if (ask && (result.existing?.length ?? 0) > 0 && onExisting === "fail") setAsking(true);
     } catch (err) {
       setActionError(errorMessage(err));
     } finally {
@@ -126,9 +175,19 @@ function Detail({ id }: { id: string }) {
   };
 
   const fenced = !!job.config.fence_source;
+  const onExisting: OnExisting = job.config.on_existing || "fail";
+  // The choice is acted on when the job creates its objects, so it can
+  // only be made before that.
+  const canDecide = status === "draft" || (status === "failed" && job.phase === "schema");
   // A continuous sync is the same job with a different intent: it is not
   // expected to end, and ending it is called finishing rather than cutover.
   const sync = job.config.mode === "sync";
+  // An offline migration copies once and finishes by itself; there is no
+  // stream to cut over from.
+  const offline = job.config.mode === "offline";
+  // Every pipeline copies once per job: a retry after the copy carries on
+  // from the indexes or the validation and never reads the source again.
+  const copyStands = offline && status === "failed" && !!st.snapshot_done;
   const confirmations: Record<"cutover" | "abort" | "delete", Confirm> = {
     cutover: {
       action: "cutover",
@@ -184,6 +243,7 @@ function Detail({ id }: { id: string }) {
   const totalEst = job.tables.reduce((n, t) => n + t.est_rows, 0);
   const totalCopied = job.tables.reduce((n, t) => n + t.rows_copied, 0);
   const report = job.preflight ?? null;
+  const existing = report?.existing ?? [];
 
   return (
     <div className="content">
@@ -201,13 +261,17 @@ function Detail({ id }: { id: string }) {
               </button>
             )}
             {canPause && <button className="btn" disabled={!!busy || job.desired === "pause"} onClick={() => act("pause")}>Pause</button>}
-            <button className="btn primary" disabled={!canCutover || !!busy || job.desired === "cutover"}
-              title={canCutover ? undefined : "Available while the migration is streaming changes"}
-              onClick={() => setConfirm(confirmations.cutover)}>
-              {sync ? "Finish sync" : "Cutover"}
-            </button>
+            {!offline && (
+              <button className="btn primary" disabled={!canCutover || !!busy || job.desired === "cutover"}
+                title={canCutover ? undefined : "Available while the migration is streaming changes"}
+                onClick={() => setConfirm(confirmations.cutover)}>
+                {sync ? "Finish sync" : "Cutover"}
+              </button>
+            )}
             {canAbort && <button className="btn danger" disabled={!!busy || job.desired === "abort"} onClick={() => setConfirm(confirmations.abort)}>Abort</button>}
             {canDelete && <button className="btn" disabled={!!busy} onClick={() => setConfirm(confirmations.delete)}>Delete</button>}
+            <button className="btn" onClick={() => setDuplicating("copy")}
+              title="Open the new migration form filled in from this one">Duplicate</button>
           </>
         )}
       </PageHeader>
@@ -215,12 +279,23 @@ function Detail({ id }: { id: string }) {
       {error && <Banner tone="error">{error}</Banner>}
       {actionError && <Banner tone="error">{actionError}</Banner>}
       {job.error && <Banner tone="error"><strong>Failed:</strong> <span className="pre-line">{job.error}</span></Banner>}
+      {copyStands && (
+        <Banner tone="warn">
+          The rows were copied before this failed, and Retry does not copy them again: it repeats only the steps after
+          the copy, on the rows already there. If the copy itself is what is wrong, as when the source was written to
+          while it ran, stop those writes, then empty the target (or choose to replace existing objects) and create the
+          migration again.{" "}
+          {manage && <button className="btn small" onClick={() => setDuplicating("replace")}>Create again</button>}
+        </Banner>
+      )}
       {status === "running" && job.desired && job.desired !== "run" && (
         <Banner tone="info">Requested: {job.desired}. The worker picks this up within a couple of seconds.</Banner>
       )}
       {status === "queued" && <Banner tone="info">Waiting for a worker to pick the job up.</Banner>}
       {status === "paused" && (
-        <Banner tone="warn">Paused. The source keeps WAL for this migration until it is resumed or aborted; do not leave it paused for long on a busy database.</Banner>
+        <Banner tone="warn">{offline
+          ? "Paused. The copy starts over from a new snapshot when the job is resumed."
+          : "Paused. The source keeps its change log for this migration until it is resumed or aborted; do not leave it paused for long on a busy database."}</Banner>
       )}
       {sync && status === "running" && job.phase === "streaming" && (
         <Banner tone="ok">In sync: every change on the source is being applied to the target. This continues until you pause or finish it.</Banner>
@@ -228,26 +303,35 @@ function Detail({ id }: { id: string }) {
       {st.fenced && status !== "completed" && <Banner tone="warn">The source database is currently read-only (fenced for cutover).</Banner>}
       {status === "completed" && (
         <Banner tone="ok">
-          {sync ? "Sync finished. The target is an independent, validated copy." : "Cutover complete. The target is ready for application traffic."}
+          {sync ? "Sync finished. The target is an independent, validated copy."
+            : offline ? "Offline copy complete. The target holds the source as it was when the copy started, validated."
+              : "Cutover complete. The target is ready for application traffic."}
           {st.fenced && " The source database was left read-only."}
         </Banner>
       )}
 
       <div className="card">
         <Stepper job={job} />
+        {job.phase === "snapshot" && job.tables.length > 0 && status !== "aborted" && <CopyProgress job={job} />}
         <div className="figures">
-          <Figure label="Replication lag">
-            {job.phase !== "streaming" && job.phase !== "cutover" ? "—"
-              : st.lag_seconds !== undefined ? formatDuration(st.lag_seconds) : formatBytes(st.lag_bytes ?? 0)}
-          </Figure>
-          <Figure label="Applied position"><span className="mono">{st.applied_lsn || "—"}</span></Figure>
-          <Figure label="Source position"><span className="mono">{st.source_lsn || "—"}</span></Figure>
-          <Figure label="Transactions applied">{formatNumber(st.tx_applied ?? 0)}</Figure>
-          <Figure label="Row changes applied">{formatNumber(st.rows_applied ?? 0)}</Figure>
-          <Figure label="Apply anomalies">
-            <span style={{ color: (st.anomalies ?? 0) > 0 ? "var(--danger)" : undefined }}>{formatNumber(st.anomalies ?? 0)}</span>
-          </Figure>
-          <Figure label="Last applied commit">{formatTime(st.last_commit_time)}</Figure>
+          {/* An offline copy follows no changes, so it has no stream to report on. */}
+          {!offline && (
+            <>
+              <Figure label="Replication lag">
+                {job.phase !== "streaming" && job.phase !== "cutover" ? "—"
+                  : st.lag_seconds !== undefined ? formatDuration(st.lag_seconds) : formatBytes(st.lag_bytes ?? 0)}
+              </Figure>
+              <Figure label="Applied position"><span className="mono">{st.applied_lsn || "—"}</span></Figure>
+              <Figure label="Source position"><span className="mono">{st.source_lsn || "—"}</span></Figure>
+              <Figure label="Transactions applied">{formatNumber(st.tx_applied ?? 0)}</Figure>
+              <Figure label="Row changes applied">{formatNumber(st.rows_applied ?? 0)}</Figure>
+              <Figure label="Apply rate"><ApplyRate job={job} /></Figure>
+              <Figure label="Apply anomalies">
+                <span style={{ color: (st.anomalies ?? 0) > 0 ? "var(--danger)" : undefined }}>{formatNumber(st.anomalies ?? 0)}</span>
+              </Figure>
+              <Figure label="Last applied commit">{formatTime(st.last_commit_time)}</Figure>
+            </>
+          )}
           <Figure label="Source version"><span title={st.source_version}>{st.source_version || "—"}</span></Figure>
           <Figure label="Target version"><span title={st.target_version}>{st.target_version || "—"}</span></Figure>
           {st.slot && <Figure label="Replication slot"><span className="mono">{st.slot}</span></Figure>}
@@ -260,15 +344,40 @@ function Detail({ id }: { id: string }) {
           <div className="actions">
             {report && <StatusBadge status={report.ok ? "ok" : "fail"} />}
             {manage && (
-              <button className="btn small" onClick={runPreflight} disabled={preflighting}>
+              <button className="btn small" onClick={() => setPreviewing(true)}
+                title="Read the statements this migration would run on the target, without running them">Preview schema</button>
+            )}
+            {manage && (
+              <button className="btn small" onClick={() => runPreflight()} disabled={preflighting}>
                 {preflighting ? "Checking…" : report ? "Run again" : "Run preflight"}
               </button>
             )}
           </div>
         </div>
+        {existing.length > 0 && (
+          <div className="card-body">
+            {st.schema_done && onExisting !== "fail" ? (
+              // The report was made before the job created anything; by now
+              // the choice has been carried out.
+              <Banner tone="info">
+                The target had {existing.length} object{existing.length === 1 ? "" : "s"} this migration would create.{" "}
+                {onExisting === "skip" ? "They were kept as they were and left out of the migration."
+                  : "They were dropped and created again from the source when the migration started."}
+              </Banner>
+            ) : (
+              <Banner tone={onExisting === "fail" ? "error" : "warn"}>
+                The target already has {existing.length} object{existing.length === 1 ? "" : "s"} this migration would create.{" "}
+                {onExisting === "fail" ? "The migration will not start until you decide what to do with them."
+                  : onExisting === "skip" ? "They will be kept as they are and left out of the migration."
+                    : "They will be dropped and created again from the source when the migration starts."}{" "}
+                {manage && canDecide && <button className="btn small" onClick={() => setAsking(true)}>{onExisting === "fail" ? "Decide…" : "Change…"}</button>}
+              </Banner>
+            )}
+          </div>
+        )}
         <div className="card-body flush table-wrap">
           {report
-            ? <Preflight report={report} />
+            ? <Preflight report={report} name={job.name} />
             : <div className="empty">Not run yet. Preflight inspects both databases without changing either.</div>}
         </div>
       </div>
@@ -315,6 +424,7 @@ function Detail({ id }: { id: string }) {
       <div className="card">
         <div className="card-head"><h2>Configuration</h2></div>
         <div className="figures" style={{ borderTop: "none" }}>
+          <Figure label="Purpose">{sync ? "continuous sync" : offline ? "offline copy" : "online migration"}</Figure>
           <Figure label="Level">{job.config.tables?.length ? "table" : job.config.schemas?.length ? "schema" : "database"}</Figure>
           <Figure label="Schemas">{job.config.schemas?.length ? job.config.schemas.join(", ") : "all"}</Figure>
           <Figure label="Tables">
@@ -325,9 +435,10 @@ function Detail({ id }: { id: string }) {
           </Figure>
           <Figure label="Snapshot workers">{job.config.snapshot_workers || 4}</Figure>
           <Figure label="Validation">{job.config.validation || "checksum"}</Figure>
-          <Figure label="Fence source at cutover">{fenced ? "yes" : "no"}</Figure>
-          {job.kind === "postgres-postgres" && <Figure label="Keep replication slot">{job.config.keep_slot ? "yes" : "no"}</Figure>}
-          <Figure label="Cutover timeout">{job.config.cutover_timeout_seconds || 300}s</Figure>
+          {!offline && !sync && <Figure label="Fence source at cutover">{fenced ? "yes" : "no"}</Figure>}
+          <Figure label="Objects already on the target">{onExisting === "skip" ? "keep and skip" : onExisting === "replace" ? "replace" : "refuse"}</Figure>
+          {job.kind === "postgres-postgres" && !offline && <Figure label="Keep replication slot">{job.config.keep_slot ? "yes" : "no"}</Figure>}
+          {!offline && <Figure label="Cutover timeout">{job.config.cutover_timeout_seconds || 300}s</Figure>}
         </div>
       </div>
 
@@ -345,6 +456,24 @@ function Detail({ id }: { id: string }) {
         </div>
       </div>
 
+      {duplicating && connections.data && (
+        <MigrationForm
+          connections={connections.data}
+          template={{
+            name: `${job.name} (copy)`,
+            source_id: job.source_id,
+            target_id: job.target_id,
+            config: duplicating === "replace" ? { ...job.config, on_existing: "replace" } : job.config,
+          }}
+          onClose={() => setDuplicating("")}
+          onCreated={(created) => router.push(`/migrations/detail/?id=${encodeURIComponent(created.id)}`)}
+        />
+      )}
+      {previewing && <SchemaPreview jobId={job.id} name={job.name} onClose={() => setPreviewing(false)} />}
+      {asking && (
+        <ExistingObjectsDialog jobId={job.id} objects={existing} current={onExisting}
+          onClose={() => setAsking(false)} onChosen={() => runPreflight(false)} />
+      )}
       {confirm && (
         <ConfirmDialog
           title={confirm.title}

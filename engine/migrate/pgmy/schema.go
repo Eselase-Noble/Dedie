@@ -10,6 +10,7 @@ import (
 
 	"dedie/engine/connector/mysql"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/mymy"
 	"dedie/engine/migrate/pgpg"
 )
 
@@ -20,6 +21,10 @@ type Stmt struct {
 	SQL  string
 	Soft bool
 	err  error
+	// constraint is the name a foreign key takes. MySQL names foreign keys
+	// per database rather than per table, so the preflight looks for it on
+	// the target; see objects.
+	constraint string
 }
 
 // Column is a source column with its translation.
@@ -213,6 +218,15 @@ var fkActions = map[string]string{"a": "NO ACTION", "r": "RESTRICT", "c": "CASCA
 // search_path is cleared by the PostgreSQL planner, so type names in the
 // catalog come back schema-qualified.
 func BuildPlan(ctx context.Context, src *pgx.Conn, cfg migrate.Config) (*Plan, error) {
+	return buildPlan(ctx, src, cfg, nil)
+}
+
+// buildPlan is BuildPlan for a job that leaves out the tables in skipped,
+// which the target already had and keeps. They are excluded like any table
+// the operator excluded, with one difference: the other tables keep the
+// names they were given when the skipped ones were still counted.
+func buildPlan(ctx context.Context, src *pgx.Conn, cfg migrate.Config, skipped []string) (*Plan, error) {
+	cfg.ExcludeTables = append(cfg.ExcludeTables[:len(cfg.ExcludeTables):len(cfg.ExcludeTables)], skipped...)
 	base, err := pgpg.BuildPlan(ctx, src, cfg)
 	if err != nil {
 		return nil, err
@@ -221,6 +235,10 @@ func BuildPlan(ctx context.Context, src *pgx.Conn, cfg migrate.Config) (*Plan, e
 	oids := make([]uint32, len(base.Tables))
 	byOID := map[uint32]*Table{}
 	schemas := map[string]bool{}
+	for _, name := range skipped {
+		schema, _, _ := strings.Cut(name, ".")
+		schemas[schema] = true
+	}
 	for _, t := range base.Tables {
 		schemas[t.Schema] = true
 	}
@@ -510,9 +528,10 @@ func (p *Plan) buildDDL(indexes map[uint32][]index, fks map[uint32][]foreignKey)
 			if !t.has(fk.cols) || !parent.has(fk.parentCols) {
 				continue
 			}
-			p.Post = append(p.Post, Stmt{Kind: "foreign key", Name: t.Target + "." + fk.name, Soft: true,
+			constraint := clip(t.Target + "_" + fk.name)
+			p.Post = append(p.Post, Stmt{Kind: "foreign key", Name: t.Target + "." + fk.name, Soft: true, constraint: constraint,
 				SQL: fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s (%s) ON UPDATE %s ON DELETE %s",
-					t.QName(), mysql.Quote(clip(t.Target+"_"+fk.name)), quoteAll(fk.cols), parent.QName(), quoteAll(fk.parentCols),
+					t.QName(), mysql.Quote(constraint), quoteAll(fk.cols), parent.QName(), quoteAll(fk.parentCols),
 					fkActions[fk.onUpdate], fkActions[fk.onDelete])})
 		}
 	}
@@ -526,4 +545,55 @@ func (t *Table) has(cols []string) bool {
 		}
 	}
 	return len(cols) > 0
+}
+
+// objects lists every name the plan takes in the target database, for the
+// preflight to look up there: the tables, and the foreign keys, read off
+// the statements that create them, so what is checked and what is created
+// cannot drift apart. An index is named within its table, and the tables
+// are new.
+func (p *Plan) objects() []mymy.Object {
+	var out []mymy.Object
+	for _, t := range p.Tables {
+		out = append(out, mymy.Object{Kind: "table", Name: t.Target})
+	}
+	for _, s := range p.Post {
+		if s.constraint != "" {
+			out = append(out, mymy.Object{Kind: s.Kind, Name: s.constraint})
+		}
+	}
+	return out
+}
+
+// keep removes from the plan every statement that would create an object
+// the job was told to leave as it is on the target.
+func (p *Plan) keep(kept []string) {
+	if len(kept) == 0 {
+		return
+	}
+	is := map[string]bool{}
+	for _, k := range kept {
+		is[k] = true
+	}
+	out := p.Post[:0:0]
+	for _, s := range p.Post {
+		if s.constraint == "" || !is[pgpg.KeptKey(s.Kind, s.constraint)] {
+			out = append(out, s)
+		}
+	}
+	p.Post = out
+}
+
+// sources translates the names tables have on the target into the names
+// the job's table selection knows them by on the source.
+func (p *Plan) sources(targets []string) []string {
+	var out []string
+	for _, target := range targets {
+		for _, t := range p.Tables {
+			if strings.EqualFold(t.Target, target) {
+				out = append(out, t.Schema+"."+t.Name)
+			}
+		}
+	}
+	return out
 }

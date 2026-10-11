@@ -23,6 +23,9 @@ const (
 	lagAlertBytes = 512 << 20
 )
 
+// monitoringLink is the page that shows reachability and alerts.
+const monitoringLink = "/monitoring/"
+
 // progress is the part of every pipeline's saved state that monitoring
 // reads.
 type progress struct {
@@ -61,6 +64,7 @@ func (a *App) RunMonitor(ctx context.Context) {
 		}
 		a.enforceIdlePolicies(ctx)
 		a.Store.PruneHealth(ctx, time.Now().Add(-healthRetention))
+		a.pruneNotifications(ctx)
 		select {
 		case <-ctx.Done():
 			return
@@ -90,6 +94,8 @@ func (a *App) checkConnections(ctx context.Context, st *monitorState, orgID stri
 			case status.Online && st.down[c.ID]:
 				st.down[c.ID] = false
 				a.emit(orgID, Event{Type: EventConnectionUp, Subject: c.Name + " is back", Message: fmt.Sprintf("%s (%s:%d/%s) answers again.", c.Name, c.Host, c.Port, c.Database)})
+				a.Notify(ctx, store.Notification{OrgID: orgID, Kind: NoteConnectionUp, Level: LevelSuccess, Title: c.Name + " is answering again",
+					Body: fmt.Sprintf("%s:%d/%s responds to checks again.", c.Host, c.Port, c.Database), Link: monitoringLink, ConnectionID: c.ID})
 			case status.Online:
 				st.failures[c.ID] = 0
 			default:
@@ -98,6 +104,8 @@ func (a *App) checkConnections(ctx context.Context, st *monitorState, orgID stri
 					st.down[c.ID] = true
 					a.emit(orgID, Event{Type: EventConnectionDown, Subject: c.Name + " is not answering",
 						Message: fmt.Sprintf("%s (%s:%d/%s) failed %d checks in a row: %s", c.Name, c.Host, c.Port, c.Database, failuresBeforeDown, status.Error)})
+					a.Notify(ctx, store.Notification{OrgID: orgID, Kind: NoteConnectionDown, Level: LevelError, Title: c.Name + " is not answering",
+						Body: fmt.Sprintf("%s:%d/%s failed %d checks in a row.", c.Host, c.Port, c.Database, failuresBeforeDown), Link: monitoringLink, ConnectionID: c.ID})
 				}
 			}
 			if status.Online {
@@ -122,6 +130,8 @@ func (a *App) checkLag(ctx context.Context, st *monitorState, orgID string) {
 		if behind && !st.lagging[j.ID] {
 			a.emit(orgID, Event{Type: EventMigrationLag, Subject: j.Name + " is falling behind",
 				Message: fmt.Sprintf("Migration %s has %d MB of source changes waiting to be applied. The target may be overloaded, or the source is writing faster than changes can be replayed.", j.Name, p.LagBytes>>20)})
+			a.notifyJob(ctx, j, NoteMigrationLag, LevelWarning, "Migration falling behind",
+				fmt.Sprintf("%d MB of source changes are waiting to be applied to the target.", p.LagBytes>>20))
 		}
 		st.lagging[j.ID] = behind
 	}

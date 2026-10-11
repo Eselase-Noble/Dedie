@@ -95,6 +95,8 @@ func New(a *app.App, opts Options) http.Handler {
 	mux.HandleFunc("POST /api/v1/migrations", s.authed(s.createMigration))
 	mux.HandleFunc("GET /api/v1/migrations/{id}", s.authed(s.getMigration))
 	mux.HandleFunc("POST /api/v1/migrations/{id}/preflight", s.authed(s.preflightMigration))
+	mux.HandleFunc("POST /api/v1/migrations/{id}/on-existing", s.authed(s.setOnExisting))
+	mux.HandleFunc("GET /api/v1/migrations/{id}/preview", s.authed(s.previewMigration))
 	mux.HandleFunc("POST /api/v1/migrations/{id}/actions/{action}", s.authed(s.migrationAction))
 
 	mux.HandleFunc("GET /api/v1/backups", s.authed(s.listBackups))
@@ -124,6 +126,10 @@ func New(a *app.App, opts Options) http.Handler {
 	mux.HandleFunc("PUT /api/v1/alerts/channels/{id}", s.authed(s.saveAlertChannel))
 	mux.HandleFunc("DELETE /api/v1/alerts/channels/{id}", s.authed(s.deleteAlertChannel))
 	mux.HandleFunc("POST /api/v1/alerts/channels/{id}/test", s.authed(s.testAlertChannel))
+
+	mux.HandleFunc("GET /api/v1/notifications", s.authed(s.listNotifications))
+	mux.HandleFunc("POST /api/v1/notifications/read-all", s.authed(s.readAllNotifications))
+	mux.HandleFunc("POST /api/v1/notifications/{id}/read", s.authed(s.readNotification))
 
 	mux.HandleFunc("GET /api/v1/audit", s.authed(s.listAudit))
 	mux.HandleFunc("GET /api/v1/audit/verify", s.authed(s.verifyAudit))

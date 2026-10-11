@@ -6,7 +6,8 @@
 // logical replication stream from that point. What differs is the target.
 // The schema is translated rather than copied, values are converted between
 // the two type systems, and changes are applied to MySQL together with a
-// checkpoint of the replication position.
+// checkpoint of the replication position. An offline job ends after the
+// snapshot, which it takes without a slot.
 //
 // MySQL has no schemas inside a database, so tables from several PostgreSQL
 // schemas share one namespace on the target; see tableName.
@@ -38,6 +39,10 @@ func (pipeline) Run(ctx context.Context, jobID string, cfg migrate.Config, state
 		_ = json.Unmarshal(state, &st)
 	}
 	return Run(ctx, jobID, cfg, st, src, dst, rep)
+}
+
+func (pipeline) Preview(ctx context.Context, src, dst connector.Config, cfg migrate.Config) ([]migrate.Statement, error) {
+	return Preview(ctx, src, dst, cfg)
 }
 
 // checkpointTable lives in the target database while a job runs.

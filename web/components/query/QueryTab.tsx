@@ -16,6 +16,9 @@ const ROW_LIMITS = [100, 500, 1000, 5000, 10000];
 /** Prefixes a statement so the server describes how it would run it. */
 function explain(statement: string, kind: string, analyze: boolean): string {
   const sql = statement.replace(/;\s*$/, "");
+  // Oracle stores the plan and is then asked to print it; the connector
+  // does both when it is given EXPLAIN PLAN FOR.
+  if (kind === "oracle") return `EXPLAIN PLAN FOR ${sql}`;
   if (kind === "mysql") return `${analyze ? "EXPLAIN ANALYZE" : "EXPLAIN FORMAT=TREE"} ${sql}`;
   return `EXPLAIN (${analyze ? "ANALYZE, BUFFERS, " : ""}FORMAT TEXT) ${sql}`;
 }
@@ -74,7 +77,7 @@ export default function QueryTab({ connection, mayWrite, completions, sql, onSql
 
   const format = () => {
     try {
-      onSql(formatSQL(sql, { language: connection.kind === "mysql" ? "mysql" : "postgresql", keywordCase: "upper", tabWidth: 2 }));
+      onSql(formatSQL(sql, { language: connection.kind === "mysql" ? "mysql" : connection.kind === "oracle" ? "plsql" : "postgresql", keywordCase: "upper", tabWidth: 2 }));
     } catch (err) {
       setError(`The statement could not be formatted: ${errorMessage(err)}`);
     }
@@ -108,8 +111,10 @@ export default function QueryTab({ connection, mayWrite, completions, sql, onSql
           <>
             <button className="btn small" disabled={running || !sql.trim()} onClick={() => void run(undefined, (s) => explain(s, connection.kind, false))}
               title="Show how the database would run the statement, without running it">Explain</button>
-            <button className="btn small" disabled={running || !sql.trim()} onClick={() => void run(undefined, (s) => explain(s, connection.kind, true))}
-              title="Run the statement in a read-only transaction and show where the time went">Analyze</button>
+            {connection.kind !== "oracle" && (
+              <button className="btn small" disabled={running || !sql.trim()} onClick={() => void run(undefined, (s) => explain(s, connection.kind, true))}
+                title="Run the statement in a read-only transaction and show where the time went">Analyze</button>
+            )}
             <button className="btn small" disabled={!sql.trim()} onClick={format}>Format</button>
           </>
         )}

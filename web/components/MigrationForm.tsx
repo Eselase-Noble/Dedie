@@ -2,7 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
-import type { ColumnSpec, Connection, Migration, Validation } from "@/lib/types";
+import type { ColumnSpec, Connection, Migration, MigrationConfig, Validation, OnExisting } from "@/lib/types";
 import { Banner, Checkbox, Field, Modal } from "./ui";
 
 /** Splits a comma or newline separated list, dropping blanks. */
@@ -36,45 +36,77 @@ const TARGET_KINDS: Record<string, string[]> = {
   postgres: ["postgres", "mysql"],
   mysql: ["mysql", "postgres"],
   mongodb: ["postgres"],
+  oracle: ["oracle", "postgres", "mysql"],
 };
 
 const SOURCE_HINTS: Record<string, string> = {
   postgres: "Stays online. Needs wal_level = logical and a role with REPLICATION.",
   mysql: "Stays online. Needs binary logging in ROW format and an account with RELOAD, REPLICATION SLAVE and REPLICATION CLIENT.",
   mongodb: "Stays online. Must be a replica set member, and the account must be able to read the database and open a change stream on it.",
+  oracle: "Stays online. Needs supplemental logging and an account that may use LogMiner (LOGMINING, SELECT ANY TRANSACTION, EXECUTE_CATALOG_ROLE, SELECT ANY DICTIONARY).",
 };
 
-export default function MigrationForm({ connections, onClose, onCreated }: {
+/** What an offline copy needs of its source: far less. */
+const OFFLINE_HINTS: Record<string, string> = {
+  postgres: "Read from one snapshot. Needs only a role that can read the tables; no replication settings.",
+  mysql: "Read from one snapshot. Needs only SELECT (and RELOAD to copy with several workers); no binary log.",
+  mongodb: "Each collection is read once. Works on a standalone server; keep the source still while it runs.",
+  oracle: "Read as of one moment with flashback queries. Needs only an account that can read the tables; no LogMiner.",
+};
+
+/** An existing migration to start the form from, when one is being duplicated. */
+export interface MigrationTemplate {
+  name: string;
+  source_id: string;
+  target_id: string;
+  config: Partial<MigrationConfig>;
+}
+
+export default function MigrationForm({ connections, onClose, onCreated, initialMode = "migrate", template }: {
   connections: Connection[]; onClose: () => void; onCreated: (job: Migration) => void;
+  initialMode?: "migrate" | "sync" | "offline";
+  /** Fills the form in from another migration. Nothing is created until it is submitted. */
+  template?: MigrationTemplate;
 }) {
   // Migrations run between two databases of the same kind, or across the
   // two engines in either direction.
   const candidates = connections.filter((c) => c.kind in TARGET_KINDS);
-  const [name, setName] = useState("");
-  const [mode, setMode] = useState<"migrate" | "sync">("migrate");
-  const [sourceId, setSourceId] = useState((candidates.find((c) => c.kind !== "mongodb") ?? candidates[0])?.id ?? "");
+  const from = template?.config ?? {};
+  // A connection the template names may have been deleted since, or be
+  // one this user is not shown; the form then falls back to its defaults.
+  const templateSource = candidates.find((c) => c.id === template?.source_id);
+  const [name, setName] = useState(template?.name ?? "");
+  const [mode, setMode] = useState<"migrate" | "sync" | "offline">(from.mode || initialMode);
+  const [onExisting, setOnExisting] = useState<OnExisting>(from.on_existing || "fail");
+  const [sourceId, setSourceId] = useState((templateSource ?? candidates.find((c) => c.kind !== "mongodb") ?? candidates[0])?.id ?? "");
   const source = candidates.find((c) => c.id === sourceId);
   const targets = candidates.filter((c) => c.id !== sourceId && (TARGET_KINDS[source?.kind ?? ""] ?? []).includes(c.kind));
-  const [chosenTarget, setTargetId] = useState("");
-  // Fall back to the first valid target when the source changes kind.
-  const targetId = targets.some((c) => c.id === chosenTarget) ? chosenTarget : targets[0]?.id ?? "";
+  const [chosenTarget, setTargetId] = useState(template?.target_id ?? "");
+  // Until one is chosen, or when the source changes kind, offer a target
+  // of the source's own engine first: a version upgrade is the common case,
+  // and moving between engines should be a deliberate choice.
+  const targetId = targets.some((c) => c.id === chosenTarget) ? chosenTarget
+    : (targets.find((c) => c.kind === source?.kind) ?? targets[0])?.id ?? "";
   const mysql = source?.kind === "mysql";
   const mongo = source?.kind === "mongodb";
   const sync = mode === "sync";
+  const offline = mode === "offline";
+  const oracle = source?.kind === "oracle";
   const crossEngine = !!source && !!targetId && candidates.find((c) => c.id === targetId)?.kind !== source.kind;
   // What to migrate: the whole database, selected schemas, or selected tables.
-  const [scope, setScope] = useState<"database" | "schema" | "table">("database");
-  const [schemas, setSchemas] = useState("");
-  const [tables, setTables] = useState("");
-  const [exclude, setExclude] = useState("");
-  const [workers, setWorkers] = useState(4);
-  const [validation, setValidation] = useState<Validation>("checksum");
-  const [fence, setFence] = useState(false);
-  const [keepSlot, setKeepSlot] = useState(false);
-  const [timeout, setTimeoutSeconds] = useState(300);
+  const [scope, setScope] = useState<"database" | "schema" | "table">(
+    from.tables?.length ? "table" : from.schemas?.length ? "schema" : "database");
+  const [schemas, setSchemas] = useState((from.schemas ?? []).join(", "));
+  const [tables, setTables] = useState((from.tables ?? []).join(", "));
+  const [exclude, setExclude] = useState((from.exclude_tables ?? []).join(", "));
+  const [workers, setWorkers] = useState(from.snapshot_workers || 4);
+  const [validation, setValidation] = useState<Validation>(from.validation || "checksum");
+  const [fence, setFence] = useState(!!from.fence_source);
+  const [keepSlot, setKeepSlot] = useState(!!from.keep_slot);
+  const [timeout, setTimeoutSeconds] = useState(from.cutover_timeout_seconds || 300);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [columns, setColumns] = useState("");
+  const [columns, setColumns] = useState(formatColumns(from.columns ?? {}));
   const [suggesting, setSuggesting] = useState(false);
 
   const suggest = async () => {
@@ -105,9 +137,10 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
           tables: scope === "table" ? parseList(tables) : [],
           exclude_tables: parseList(exclude),
           snapshot_workers: workers,
-          fence_source: fence && !sync && !mongo,
+          fence_source: fence && !sync && !offline && !mongo && !oracle,
           validation,
-          keep_slot: keepSlot && !mysql && !mongo,
+          keep_slot: keepSlot && !offline && !mysql && !mongo,
+          on_existing: onExisting,
           cutover_timeout_seconds: timeout,
         },
       });
@@ -121,7 +154,7 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
   return (
     <Modal
       wide
-      title={sync ? "New continuous sync" : "New migration"}
+      title={sync ? "New continuous sync" : offline ? "New offline migration" : "New migration"}
       onClose={onClose}
       footer={
         <>
@@ -135,7 +168,7 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
       <form id="migration-form" onSubmit={submit}>
         {error && <Banner tone="error">{error}</Banner>}
         {!targetId && (
-          <Banner tone="warn">A migration needs a source and an empty target. PostgreSQL and MySQL can each be migrated to either engine, and MongoDB to PostgreSQL.</Banner>
+          <Banner tone="warn">A migration needs a source and an empty target. PostgreSQL and MySQL can each be migrated to either engine, Oracle to a newer Oracle, PostgreSQL or MySQL, and MongoDB to PostgreSQL.</Banner>
         )}
         {mongo && (
           <Banner tone="info">
@@ -151,15 +184,26 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
             check lists every difference before anything is changed.
           </Banner>
         )}
+        {template && (
+          <Banner tone="info">
+            Filled in from “{template.name.replace(/ \(copy\)$/, "")}”. Change anything that should differ; it is created as a
+            new migration and the original is left as it is.
+            {(!templateSource || !targets.some((c) => c.id === template.target_id)) &&
+              " A connection the original used is no longer available, so check the source and target."}
+          </Banner>
+        )}
         <p className="hint" style={{ marginBottom: 12 }}>
           Creating a migration changes nothing on either database. Run the preflight check, then start it.
         </p>
         <div className="form-grid">
           <Field label="Purpose" className="span2" hint={sync
             ? "The target is filled, then kept in step with every change on the source for as long as the sync runs. One direction only: do not write to the migrated tables on the target. Finish it whenever the target should stand on its own."
-            : "The target is filled and kept in step until you cut over, at which point it is validated and becomes the database your applications use."}>
+            : offline
+              ? "The source is copied once, as it stands at one moment, then validated; the job finishes by itself. Changes made to the source after the copy starts are not carried over, so stop application writes first. The source needs no replication set up."
+              : "The target is filled and kept in step until you cut over, at which point it is validated and becomes the database your applications use."}>
             <div className="segmented">
-              <button type="button" className={!sync ? "active" : ""} onClick={() => setMode("migrate")}>Migrate and cut over</button>
+              <button type="button" className={mode === "migrate" ? "active" : ""} onClick={() => setMode("migrate")}>Online: migrate and cut over</button>
+              <button type="button" className={offline ? "active" : ""} onClick={() => setMode("offline")}>Offline: copy once</button>
               <button type="button" className={sync ? "active" : ""} onClick={() => setMode("sync")}>Keep in sync continuously</button>
             </div>
           </Field>
@@ -167,19 +211,20 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} required autoFocus
               placeholder="orders database: 13 to 17" />
           </Field>
-          <Field label="Source" hint={SOURCE_HINTS[source?.kind ?? "postgres"]}>
+          <Field label="Source" hint={(offline ? OFFLINE_HINTS : SOURCE_HINTS)[source?.kind ?? "postgres"]}>
             <select className="select" value={sourceId} onChange={(e) => setSourceId(e.target.value)} required>
               {candidates.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.kind}, {c.database})</option>)}
             </select>
           </Field>
-          <Field label="Target" hint="Must not already contain the tables being migrated.">
+          <Field label="Target" hint="Best empty. What happens to objects it already has is chosen below.">
             <select className="select" value={targetId} onChange={(e) => setTargetId(e.target.value)} required>
               {targets.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.kind}, {c.database})</option>)}
             </select>
           </Field>
           <Field label="Level" className="span2"
             hint={scope === "database"
-              ? "Everything in the source connection's database is migrated."
+              ? oracle ? "Every table of the connecting user's own schema is migrated. Choose the schema level to name other schemas."
+                : "Everything in the source connection's database is migrated."
               : scope === "schema"
                 ? "Everything in the schemas you list is migrated."
                 : mongo ? "Only the collections you list are migrated."
@@ -193,17 +238,17 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
           </Field>
           {scope === "schema" && !mysql && !mongo && (
             <Field label="Schemas" hint="Comma separated.">
-              <input className="input" value={schemas} onChange={(e) => setSchemas(e.target.value)} placeholder="public, billing" required />
+              <input className="input" value={schemas} onChange={(e) => setSchemas(e.target.value)} placeholder={oracle ? "HR, SALES" : "public, billing"} required />
             </Field>
           )}
           {scope === "table" && (
             <Field label={mongo ? "Collections" : "Tables"} hint={mongo ? "Comma separated collection names." : mysql ? "Comma separated table names." : "Comma separated schema.table names."}>
               <input className="input" value={tables} onChange={(e) => setTables(e.target.value)}
-                placeholder={mysql || mongo ? "orders, order_items" : "public.orders, public.order_items"} required />
+                placeholder={mysql || mongo ? "orders, order_items" : oracle ? "HR.EMPLOYEES, HR.DEPARTMENTS" : "public.orders, public.order_items"} required />
             </Field>
           )}
           <Field label={mongo ? "Excluded collections" : "Excluded tables"} hint={mongo ? "Comma separated collection names." : mysql ? "Comma separated table names. The source connection's database is migrated." : "Comma separated schema.table names."}>
-            <input className="input" value={exclude} onChange={(e) => setExclude(e.target.value)} placeholder={mysql || mongo ? "sessions, audit_trail" : "public.sessions"} />
+            <input className="input" value={exclude} onChange={(e) => setExclude(e.target.value)} placeholder={mysql || mongo ? "sessions, audit_trail" : oracle ? "HR.JOB_HISTORY" : "public.sessions"} />
           </Field>
           {mongo && (
             <Field label="Fields to lift into columns (optional)" className="span2"
@@ -218,28 +263,44 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
           <Field label="Snapshot workers" hint="Tables copied in parallel during the initial copy (1 to 16).">
             <input className="input" type="number" min={1} max={16} value={workers} onChange={(e) => setWorkers(Number(e.target.value))} />
           </Field>
-          <Field label={sync ? "Validation when finished" : "Validation at cutover"} hint={mongo ? "Checksum compares the set of document keys; count compares totals only." : "Checksum compares every row; count compares row totals only."}>
+          <Field label={sync ? "Validation when finished" : offline ? "Validation after the copy" : "Validation at cutover"} hint={mongo ? "Checksum compares the set of document keys; count compares totals only." : oracle ? "Checksum compares row counts and the set of primary keys; count compares totals only." : "Checksum compares every row; count compares row totals only."}>
             <select className="select" value={validation} onChange={(e) => setValidation(e.target.value as Validation)}>
               <option value="checksum">checksum</option>
               <option value="count">count</option>
               <option value="none">none</option>
             </select>
           </Field>
-          <Field label="Cutover timeout (seconds)" hint="How long cutover waits for the stream to drain before giving up.">
-            <input className="input" type="number" min={10} value={timeout} onChange={(e) => setTimeoutSeconds(Number(e.target.value))} />
+          <Field label="If the target already has some of the objects" className="span2"
+            hint={onExisting === "fail"
+              ? "Preflight lists them and the migration does not start until you decide. Nothing on the target is touched."
+              : onExisting === "skip"
+                ? "Each is left exactly as it is and is not migrated. An existing table receives no rows and changes to its source are not followed."
+                : "Each is dropped on the target and created again from the source. A dropped table loses the data it holds there. Preflight shows exactly what would be dropped before anything is."}>
+            <select className="select" value={onExisting} onChange={(e) => setOnExisting(e.target.value as OnExisting)}>
+              <option value="fail">Refuse, and ask me</option>
+              <option value="skip">Keep them and skip them</option>
+              <option value="replace">Replace them</option>
+            </select>
           </Field>
+          {!offline && (
+            <Field label={sync ? "Finish timeout (seconds)" : "Cutover timeout (seconds)"} hint={sync ? "How long finishing waits for the stream to drain before giving up." : "How long cutover waits for the stream to drain before giving up."}>
+              <input className="input" type="number" min={10} value={timeout} onChange={(e) => setTimeoutSeconds(Number(e.target.value))} />
+            </Field>
+          )}
           <div className="span2">
-            {!sync && !mongo && <Checkbox
+            {!sync && !offline && !mongo && !oracle && <Checkbox
               label="Fence the source at cutover"
               checked={fence}
               onChange={setFence}
               hint={mysql ? "At cutover the source database is made read-only (needs MySQL 8.0.22 or newer), so no write can land after the final sync. It stays read-only once the migration completes. Leave this off if you will stop application writes yourself." : "At cutover the source database is made read-only and its client sessions are disconnected, so no write can land after the final sync. The source stays read-only once the migration completes. Leave this off if you will stop application writes yourself."}
             />}
-            {!mysql && !mongo && <Checkbox
-              label="Keep the replication slot after completion"
+            {!offline && !mysql && !mongo && <Checkbox
+              label={oracle ? "Keep primary key logging after completion" : "Keep the replication slot after completion"}
               checked={keepSlot}
               onChange={setKeepSlot}
-              hint="The source retains WAL for a kept slot until you drop it. Leave off unless you have a reason to keep it."
+              hint={oracle
+                ? "The job switches on primary key supplemental logging for the tables it follows and switches it off again when done. Tick this to leave it on, for example for another tool that reads the redo log."
+                : "The source retains WAL for a kept slot until you drop it. Leave off unless you have a reason to keep it."}
             />}
           </div>
         </div>

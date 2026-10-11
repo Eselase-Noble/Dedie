@@ -63,9 +63,34 @@ export function Checkbox({ label, hint, checked, onChange, disabled }: {
   );
 }
 
+// How many dialogs are open; the page scrolls again when the last one closes.
+let scrollLocks = 0;
+
+/**
+ * Stops the page underneath from scrolling while a dialog covers it, so
+ * that the dialog's own scrollbar is the only one. The width the page's
+ * scrollbar took is padded back in to keep the page from shifting.
+ */
+export function useScrollLock() {
+  useEffect(() => {
+    const root = document.documentElement;
+    if (scrollLocks++ === 0) {
+      root.style.paddingRight = `${window.innerWidth - root.clientWidth}px`;
+      root.style.overflow = "hidden";
+    }
+    return () => {
+      if (--scrollLocks === 0) {
+        root.style.overflow = "";
+        root.style.paddingRight = "";
+      }
+    };
+  }, []);
+}
+
 export function Modal({ title, onClose, children, footer, wide }: {
   title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean;
 }) {
+  useScrollLock();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);

@@ -217,6 +217,7 @@ func (a *App) startWAL(ctx context.Context, w store.WALArchive) {
 	cfg, err := a.config(c)
 	if err != nil {
 		a.Store.SetWALError(ctx, w.ConnectionID, err.Error())
+		a.notifyArchiver(ctx, c, "could not be started", err.Error())
 		return
 	}
 	runCtx, cancel := context.WithCancel(ctx)
@@ -229,6 +230,7 @@ func (a *App) startWAL(ctx context.Context, w store.WALArchive) {
 			msg += ": " + tail
 		}
 		a.Store.SetWALError(ctx, w.ConnectionID, msg)
+		a.notifyArchiver(ctx, c, "could not be started", msg)
 		return
 	}
 	a.wal.mu.Lock()
@@ -248,9 +250,25 @@ func (a *App) startWAL(ctx context.Context, w store.WALArchive) {
 				msg = msg[len(msg)-500:]
 			}
 			a.Store.SetWALError(context.Background(), w.ConnectionID, "the log receiver stopped and will be restarted: "+msg)
+			a.notifyArchiver(context.Background(), c, "stopped", msg)
 		}
 		cancel()
 	}()
+}
+
+// notifyArchiver reports that a connection's log is not being archived,
+// which leaves a gap that point-in-time recovery cannot cross. The
+// archiver retries every few seconds, so this is said at most once an hour
+// per connection.
+func (a *App) notifyArchiver(ctx context.Context, c store.Connection, what, detail string) {
+	line := firstLineOf(detail)
+	body := "Changes made while it is down cannot be recovered to a point in time. It is restarted automatically."
+	if line != "" {
+		body = clip(line, 300) + ". " + body
+	}
+	a.Notify(ctx, store.Notification{OrgID: c.OrgID, Kind: NoteArchiverStopped, Level: LevelError,
+		Title: "Log archiving " + what + ": " + c.Name, Body: body, Link: backupsLink, ConnectionID: c.ID,
+		Once: "archiver/" + c.ID + "/" + time.Now().UTC().Format("2006010215")})
 }
 
 // pruneWAL deletes completed segments last written before a time. The

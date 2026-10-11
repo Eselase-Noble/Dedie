@@ -28,20 +28,22 @@ import javafx.stage.Stage;
 /**
  * What the interface can ask the desktop application to do for it.
  *
- * <p>The embedded browser has no download manager and no clipboard access,
- * so the pages hand those jobs to this object, which they find as
- * {@code window.dedieDesktop}. Its public methods are the whole of what a
- * page can reach.
+ * <p>The embedded browser has no download manager, no clipboard access and
+ * no way to show a notification outside its window, so the pages hand
+ * those jobs to this object, which they find as {@code window.dedieDesktop}.
+ * Its public methods are the whole of what a page can reach.
  */
 public final class Bridge {
 
     private final Stage stage;
     private final HostServices host;
     private final String baseUrl;
+    private final Notifier notifier;
 
-    Bridge(Stage stage, HostServices host, String baseUrl) {
+    Bridge(Stage stage, HostServices host, String baseUrl, Notifier notifier) {
         this.stage = stage;
         this.host = host;
+        this.notifier = notifier;
         this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
     }
 
@@ -116,6 +118,22 @@ public final class Bridge {
         if (url != null && (url.startsWith("https://") || url.startsWith("http://"))) {
             host.showDocument(url);
         }
+    }
+
+    /**
+     * Shows a notification by the system tray for something the user is
+     * not looking at: the window is behind another or minimized. When the
+     * window is in front the page's own notification is enough, and where
+     * there is no tray it is all there is. Clicking the notification
+     * brings the window forward on the page named by link, a path on the
+     * local engine.
+     */
+    public void notify(String title, String body, String link) {
+        if (title == null || title.isBlank() || (stage.isFocused() && !stage.isIconified())) {
+            return;
+        }
+        boolean local = link != null && link.startsWith("/") && !link.startsWith("//");
+        notifier.show(title, body == null ? "" : body, local ? link : null);
     }
 
     private Path choose(String name) {

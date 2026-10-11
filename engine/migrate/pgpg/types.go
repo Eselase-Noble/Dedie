@@ -14,6 +14,10 @@
 // While streaming, every source transaction is applied as one target
 // transaction that also records its position in a checkpoint table, which
 // makes a restart after a crash exactly-once.
+//
+// An offline job stops after indexing and goes straight to the final step.
+// Its snapshot is that of an ordinary read-only transaction, so it creates
+// no slot and no publication and needs no logical replication on the source.
 package pgpg
 
 import (
@@ -43,6 +47,10 @@ func (pipeline) Run(ctx context.Context, jobID string, cfg Config, state json.Ra
 		_ = json.Unmarshal(state, &st)
 	}
 	return Run(ctx, jobID, cfg, st, src, dst, rep)
+}
+
+func (pipeline) Preview(ctx context.Context, src, dst connector.Config, cfg Config) ([]migrate.Statement, error) {
+	return Preview(ctx, src, dst, cfg)
 }
 
 // The shared vocabulary of all pipelines, re-exported for brevity.
@@ -91,6 +99,20 @@ type State struct {
 	LastCommitTime time.Time `json:"last_commit_time"`
 	SourceVersion  string    `json:"source_version"`
 	TargetVersion  string    `json:"target_version"`
+
+	// What the job does about objects that were on the target before it
+	// started. It is decided once, in the schema phase, from the policy
+	// chosen for the job: later the job's own objects exist as well, and
+	// nothing on the target tells the two apart.
+	//
+	// SkippedTables are the tables left out of the migration because the
+	// target's are kept, named as the job's table selection names them.
+	SkippedTables []string `json:"skipped_tables,omitempty"`
+	// KeptObjects are the other objects that are kept: the plan neither
+	// creates nor alters them. See KeptKey.
+	KeptObjects []string `json:"kept_objects,omitempty"`
+	// DropFirst are the statements that remove what the job replaces.
+	DropFirst []string `json:"drop_first,omitempty"`
 }
 
 // metaSchema holds the checkpoint table on the target while a job runs.

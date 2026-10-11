@@ -25,6 +25,9 @@ type Job struct {
 	CreatedBy  string          `json:"created_by"`
 	CreatedAt  time.Time       `json:"created_at"`
 	UpdatedAt  time.Time       `json:"updated_at"`
+	// Copy is filled in for a listed job that is in its initial copy, so a
+	// list can show how far along it is without loading every table.
+	Copy *CopyProgress `json:"copy,omitempty"`
 }
 
 const jobCols = `id,org_id,name,kind,source_id,target_id,config,state,preflight,phase,status,desired,error,lease_owner,created_by,created_at,updated_at`
@@ -195,6 +198,42 @@ func (s *Store) ListJobTables(ctx context.Context, jobID string) ([]JobTable, er
 			return nil, err
 		}
 		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// CopyProgress sums a job's initial copy over its tables.
+type CopyProgress struct {
+	Tables       int   `json:"tables"`
+	TablesCopied int   `json:"tables_copied"`
+	RowsCopied   int64 `json:"rows_copied"`
+	// EstRows is the planner's estimate for all tables, as read from the
+	// source when the job started. It can be zero or out of date.
+	EstRows int64 `json:"est_rows"`
+	// RowsExpected is the best figure for the size of the whole copy: the
+	// actual count of every table already copied, and for the others the
+	// estimate, or what has been copied so far where that is more.
+	RowsExpected int64 `json:"rows_expected"`
+}
+
+// CopyProgress returns the progress of the initial copy for each of an
+// organization's jobs in the given phase, keyed by job id.
+func (s *Store) CopyProgress(ctx context.Context, orgID, phase string) (map[string]CopyProgress, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT t.job_id, COUNT(*), SUM(t.status='copied'), SUM(t.rows_copied), SUM(t.est_rows),
+		SUM(CASE WHEN t.status='copied' OR t.rows_copied>t.est_rows THEN t.rows_copied ELSE t.est_rows END)
+		FROM job_tables t JOIN jobs j ON j.id=t.job_id WHERE j.org_id=? AND j.phase=? GROUP BY t.job_id`, orgID, phase)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]CopyProgress{}
+	for rows.Next() {
+		var id string
+		var p CopyProgress
+		if err := rows.Scan(&id, &p.Tables, &p.TablesCopied, &p.RowsCopied, &p.EstRows, &p.RowsExpected); err != nil {
+			return nil, err
+		}
+		out[id] = p
 	}
 	return out, rows.Err()
 }

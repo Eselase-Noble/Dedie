@@ -64,6 +64,25 @@ func (s *Store) ListSessions(ctx context.Context, userID string) ([]Session, err
 	return out, rows.Err()
 }
 
+// LiveSessionAddresses lists the addresses a user's unexpired sessions
+// were opened from.
+func (s *Store) LiveSessionAddresses(ctx context.Context, userID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT ip FROM sessions WHERE user_id=? AND expires_at>?`, userID, now())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return nil, err
+		}
+		out = append(out, ip)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash=?`, tokenHash)
 	return err

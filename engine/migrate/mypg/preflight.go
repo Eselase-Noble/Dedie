@@ -13,6 +13,7 @@ import (
 	"dedie/engine/connector/postgres"
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/mymy"
+	"dedie/engine/migrate/pgpg"
 )
 
 // Preflight inspects both databases without changing either and reports
@@ -67,24 +68,13 @@ func preflight(ctx context.Context, src *sql.DB, dst *pgx.Conn, plan *Plan, cfg 
 			". Supported: utf8mb4, utf8, latin1, ascii")
 	}
 
-	names := make([]string, len(plan.Tables))
-	for i, t := range plan.Tables {
-		names[i] = t.Name
-	}
-	rows, err := dst.Query(ctx, `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE n.nspname = $1 AND c.relkind IN ('r','p') AND c.relname = ANY($2) ORDER BY 1`, targetSchema, names)
+	// The target must not already hold the tables being migrated, nor
+	// anything else under a name the plan is going to take.
+	found, err := pgpg.FindExisting(ctx, dst, plan.claims())
 	if err != nil {
 		return nil, err
 	}
-	existing, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, err
-	}
-	if len(existing) > 0 {
-		r.Add("Target is empty", "fail", "these tables already exist in schema "+targetSchema+" on the target: "+strings.Join(existing, ", "))
-	} else {
-		r.Add("Target is empty", "ok", "no conflicting tables in schema "+targetSchema)
-	}
+	pgpg.ReportExisting(r, found, cfg.Existing(), "in schema "+targetSchema+" on the target")
 
 	var canCreate bool
 	if err := dst.QueryRow(ctx, `SELECT has_database_privilege(current_database(), 'CREATE') AND has_schema_privilege($1, 'CREATE')`, targetSchema).Scan(&canCreate); err != nil {

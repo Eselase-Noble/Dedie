@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"dedie/engine/connector"
@@ -80,8 +81,16 @@ func (a *App) CreateMigration(ctx context.Context, actor Actor, in MigrationInpu
 	case "sync":
 		// A sync leaves the source in service by definition.
 		in.Config.FenceSource = false
+	case "offline":
+		// A one-time copy has no cutover to fence the source for.
+		in.Config.FenceSource = false
 	default:
-		return store.Job{}, invalid("mode must be migrate or sync")
+		return store.Job{}, invalid("mode must be migrate, sync or offline")
+	}
+	switch in.Config.OnExisting {
+	case "", migrate.ExistingFail, migrate.ExistingSkip, migrate.ExistingReplace:
+	default:
+		return store.Job{}, invalid("on_existing must be fail, skip or replace")
 	}
 	_, _, kind, err := a.endpoints(ctx, actor.User.OrgID, in.SourceID, in.TargetID)
 	if err != nil {
@@ -110,7 +119,22 @@ func (a *App) ListMigrations(ctx context.Context, actor Actor) ([]store.Job, err
 	if err := actor.require(PermViewMigrations); err != nil {
 		return nil, err
 	}
-	return a.Store.ListJobs(ctx, actor.User.OrgID)
+	jobs, err := a.Store.ListJobs(ctx, actor.User.OrgID)
+	if err != nil {
+		return nil, err
+	}
+	// A job in its initial copy carries a summary of it. The other phases
+	// have nothing to count, and the detail of a job lists its tables.
+	copying, err := a.Store.CopyProgress(ctx, actor.User.OrgID, migrate.PhaseSnapshot)
+	if err != nil {
+		return nil, err
+	}
+	for i := range jobs {
+		if p, ok := copying[jobs[i].ID]; ok {
+			jobs[i].Copy = &p
+		}
+	}
+	return jobs, nil
 }
 
 func (a *App) GetMigration(ctx context.Context, actor Actor, id string) (MigrationDetail, error) {
@@ -159,7 +183,88 @@ func (a *App) PreflightMigration(ctx context.Context, actor Actor, id string) (*
 		return nil, err
 	}
 	a.audit(ctx, actor, "migration.preflight", j.ID, map[string]any{"ok": report.OK})
+	if n := len(report.Existing); n > 0 && cfg.Existing() == migrate.ExistingFail {
+		// Nothing has been decided about these objects yet, and the job
+		// cannot start until someone does. Asked once per job.
+		a.Notify(ctx, store.Notification{OrgID: j.OrgID, Kind: NoteMigrationDecision, Level: LevelWarning,
+			Title: "Waiting for your decision: " + j.Name,
+			Body:  fmt.Sprintf("The target already has %s this migration would create. Choose whether to keep or replace them before it can start.", plural(n, "object")),
+			Link:  migrationLink(j.ID), ConnectionID: j.SourceID, TargetID: j.TargetID, JobID: j.ID, Once: "decision/" + j.ID})
+	}
 	return report, nil
+}
+
+// PreviewMigration returns the statements the migration would run on the
+// target, without running them.
+func (a *App) PreviewMigration(ctx context.Context, actor Actor, id string) ([]migrate.Statement, error) {
+	if err := actor.require(PermManageMigrations); err != nil {
+		return nil, err
+	}
+	j, err := a.Store.GetJob(ctx, actor.User.OrgID, id)
+	if err != nil {
+		return nil, wrap(err)
+	}
+	src, dst, kind, err := a.endpoints(ctx, j.OrgID, j.SourceID, j.TargetID)
+	if err != nil {
+		return nil, err
+	}
+	pipeline, err := migrate.Lookup(kind)
+	if err != nil {
+		return nil, invalid("%s", err.Error())
+	}
+	previewer, ok := pipeline.(migrate.Previewer)
+	if !ok {
+		return nil, invalid("a preview of the statements is not available for %s migrations", kind)
+	}
+	var cfg migrate.Config
+	_ = json.Unmarshal(j.Config, &cfg)
+	list, err := previewer.Preview(ctx, src, dst, cfg)
+	if err != nil {
+		return nil, &Error{Status: 502, Message: err.Error()}
+	}
+	if list == nil {
+		list = []migrate.Statement{}
+	}
+	return list, nil
+}
+
+// SetOnExisting records the administrator's decision about objects that
+// already exist on the target: refuse, leave them and skip them, or drop
+// and recreate them. It can be changed only while the job has not created
+// anything yet, because that is when the decision is acted on.
+func (a *App) SetOnExisting(ctx context.Context, actor Actor, id, policy string) (store.Job, error) {
+	if err := actor.require(PermManageMigrations); err != nil {
+		return store.Job{}, err
+	}
+	switch policy {
+	case migrate.ExistingFail, migrate.ExistingSkip, migrate.ExistingReplace:
+	default:
+		return store.Job{}, invalid("choose fail, skip or replace")
+	}
+	j, err := a.Store.GetJob(ctx, actor.User.OrgID, id)
+	if err != nil {
+		return store.Job{}, wrap(err)
+	}
+	if j.Status == "running" || j.Status == "queued" || j.Status == "completed" {
+		return store.Job{}, invalid("this can only be changed before the migration starts")
+	}
+	var progress struct {
+		SchemaDone bool `json:"schema_done"`
+	}
+	_ = json.Unmarshal(j.State, &progress)
+	if progress.SchemaDone {
+		return store.Job{}, invalid("the migration has already created its objects on the target; this can only be changed before it starts")
+	}
+	var cfg migrate.Config
+	_ = json.Unmarshal(j.Config, &cfg)
+	cfg.OnExisting = policy
+	b, _ := json.Marshal(cfg)
+	// The stored preflight report was made under the previous choice.
+	if err := a.Store.SetJob(ctx, j.ID, map[string]any{"config": string(b), "preflight": ""}); err != nil {
+		return store.Job{}, err
+	}
+	a.audit(ctx, actor, "migration.on_existing", j.ID, map[string]any{"policy": policy})
+	return wrapJob(a.Store.GetJob(ctx, actor.User.OrgID, id))
 }
 
 // MigrationAction applies an operator instruction: start, pause, resume,
@@ -224,6 +329,20 @@ func (a *App) MigrationAction(ctx context.Context, actor Actor, id, action strin
 	}
 	a.Store.AddJobEvent(ctx, j.ID, "info", action+" requested by "+actor.User.Email)
 	a.audit(ctx, actor, "migration."+action, j.ID, map[string]string{"name": j.Name})
+	// Announced here, where the instruction is given once, and not by the
+	// worker, which may pick the same job up again after a restart.
+	switch {
+	case action == "abort" && j.Status == StatusDraft:
+		// A draft has nothing running, so no worker will report this.
+		a.notifyJob(ctx, j, NoteMigrationAborted, LevelWarning, "Migration aborted", "Aborted by "+actor.User.Email+" before it started.")
+	case action != "start" && action != "resume":
+	case j.Status == StatusDraft:
+		a.notifyJob(ctx, j, NoteMigrationStarted, LevelInfo, "Migration started", "Started by "+actor.User.Email+".")
+	case j.Status == StatusFailed:
+		a.notifyJob(ctx, j, NoteMigrationStarted, LevelInfo, "Migration resumed", "Resumed by "+actor.User.Email+" after it failed.")
+	default:
+		a.notifyJob(ctx, j, NoteMigrationStarted, LevelInfo, "Migration resumed", "Resumed by "+actor.User.Email+" after it was paused.")
+	}
 	return nil
 }
 
@@ -249,4 +368,13 @@ func (a *App) SuggestColumns(ctx context.Context, actor Actor, connID string, cf
 		return nil, &Error{Status: 422, Message: err.Error()}
 	}
 	return out, nil
+}
+
+func wrapJob(j store.Job, err error) (store.Job, error) { return j, wrap(err) }
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }

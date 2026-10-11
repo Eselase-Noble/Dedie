@@ -15,5 +15,9 @@ public final class Launcher {
 
     public static void main(String[] args) {
         DedieApp.launch(DedieApp.class, args);
+        // The window has closed and the engine has stopped. Leaving through
+        // exit means a system tray that is slow to let go, or any other
+        // lingering thread, cannot keep the process alive behind it.
+        System.exit(0);
     }
 }

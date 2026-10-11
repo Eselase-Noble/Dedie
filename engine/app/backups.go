@@ -20,6 +20,18 @@ import (
 
 func backupAAD(orgID, backupID string) []byte { return []byte("backup/" + orgID + "/" + backupID) }
 
+// backupsLink is the page that lists backups, restores and schedules.
+const backupsLink = "/backups/"
+
+// notifyVerifyFailed tells the organization that a backup can no longer be
+// trusted. It is said once per backup, however often the check is repeated.
+func (a *App) notifyVerifyFailed(ctx context.Context, b store.Backup, err error) {
+	a.Notify(ctx, store.Notification{OrgID: b.OrgID, Kind: NoteBackupVerifyFailed, Level: LevelError,
+		Title: "Backup failed verification: " + b.Database + " on " + b.ConnectionName,
+		Body:  "The backup taken on " + b.CreatedAt.Local().Format("2 January 2006 at 15:04") + " cannot be relied on: " + firstLine(err) + ".",
+		Link:  backupsLink, ConnectionID: b.ConnectionID, Once: "verify/" + b.ID})
+}
+
 func (a *App) ListBackups(ctx context.Context, actor Actor) ([]store.Backup, error) {
 	if err := actor.require(PermBackup); err != nil {
 		return nil, err
@@ -280,6 +292,8 @@ func (a *App) startBackup(ctx context.Context, actor Actor, in BackupInput, sche
 			// A schedule reports its own failures, with its name.
 			if scheduleID == "" {
 				a.emit(b.OrgID, Event{Type: EventBackupFailed, Subject: "Backup of " + c.Name + " failed", Message: err.Error()})
+				a.Notify(bg, store.Notification{OrgID: b.OrgID, Kind: NoteBackupFailed, Level: LevelError, Title: "Backup failed: " + c.Name,
+					Body: firstLine(err), Link: backupsLink, ConnectionID: c.ID})
 			}
 			return
 		}
@@ -387,6 +401,9 @@ func (a *App) VerifyBackup(ctx context.Context, actor Actor, id string) error {
 		return wrap(err)
 	}
 	if err := a.verifyBackupFile(b); err != nil {
+		if b.Status == "completed" {
+			a.notifyVerifyFailed(ctx, b, err)
+		}
 		return err
 	}
 	return a.Store.MarkBackupVerified(ctx, b.ID)
@@ -661,9 +678,13 @@ func (a *App) RestoreBackup(ctx context.Context, actor Actor, backupID string, i
 		}()
 		if err != nil {
 			a.Store.FinishRestore(bg, r.ID, "failed", err.Error(), out)
+			a.Notify(bg, store.Notification{OrgID: r.OrgID, Kind: NoteRestoreFailed, Level: LevelError, Title: "Restore failed: " + database + " on " + target.Name,
+				Body: firstLine(err), Link: backupsLink, ConnectionID: target.ID})
 			return
 		}
 		a.Store.FinishRestore(bg, r.ID, "completed", "", out)
+		a.Notify(bg, store.Notification{OrgID: r.OrgID, Kind: NoteRestoreCompleted, Level: LevelSuccess, Title: "Restore finished: " + database + " on " + target.Name,
+			Body: "The backup of " + b.Database + " taken on " + b.CreatedAt.Local().Format("2 January 2006 at 15:04") + " was restored.", Link: backupsLink, ConnectionID: target.ID})
 	}
 	if !wait {
 		go run()

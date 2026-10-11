@@ -206,7 +206,7 @@ export interface MigrationConfig {
   /** MongoDB sources: fields lifted into typed columns, by collection. */
   columns?: Record<string, ColumnSpec[]>;
   /** "sync" keeps the target following the source; anything else ends with a cutover. */
-  mode?: "migrate" | "sync" | "";
+  mode?: "migrate" | "sync" | "offline" | "";
   schemas: string[] | null;
   tables?: string[] | null;
   exclude_tables: string[] | null;
@@ -214,6 +214,7 @@ export interface MigrationConfig {
   fence_source: boolean;
   validation: Validation | "";
   keep_slot: boolean;
+  on_existing?: OnExisting | "";
   cutover_timeout_seconds: number;
 }
 
@@ -248,10 +249,39 @@ export interface PreflightCheck {
   detail: string;
 }
 
+/** One statement a migration would run on the target. */
+export interface PreviewStatement {
+  phase: string;
+  kind: string;
+  name: string;
+  sql: string;
+}
+
+/** Something on the target with the name of an object being migrated. */
+export interface ExistingObject {
+  kind: string;
+  name: string;
+}
+
+/** What a migration does about objects the target already has. */
+export type OnExisting = "fail" | "skip" | "replace";
+
 export interface PreflightReport {
   ok: boolean;
   checks: PreflightCheck[];
   tables: number;
+  existing?: ExistingObject[];
+}
+
+/** A job's initial copy summed over its tables. Listed jobs carry it while they copy. */
+export interface CopyProgress {
+  tables: number;
+  tables_copied: number;
+  rows_copied: number;
+  /** The source's own estimate, which can be zero or out of date. */
+  est_rows: number;
+  /** Actual counts for the tables already copied, estimates for the rest. */
+  rows_expected: number;
 }
 
 export interface Migration {
@@ -263,6 +293,7 @@ export interface Migration {
   config: Partial<MigrationConfig>;
   state: MigrationState;
   preflight?: PreflightReport;
+  copy?: CopyProgress;
   phase: string;
   status: JobStatus;
   desired: string;
@@ -656,4 +687,36 @@ export interface ColumnSpec {
   field: string;
   name?: string;
   type: string;
+}
+
+export type NotificationLevel = "info" | "success" | "warning" | "error";
+export type NotificationTopic = "migration" | "backup" | "monitoring" | "security";
+
+/** Something that happened which the signed-in user should know about. */
+export interface AppNotification {
+  id: number;
+  topic: NotificationTopic;
+  /** What happened, for example "migration.completed". */
+  kind: string;
+  level: NotificationLevel;
+  title: string;
+  body: string;
+  /** The page inside the application where the user can act. */
+  link: string;
+  created_at: string;
+  /** Whether this user has read it; others have their own state. */
+  read: boolean;
+}
+
+export interface NotificationList {
+  unread: number;
+  items: AppNotification[];
+}
+
+export interface NotificationQuery {
+  unread?: boolean;
+  topic?: NotificationTopic | "";
+  /** Returns notifications older than this id. */
+  before?: number;
+  limit?: number;
 }

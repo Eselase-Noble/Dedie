@@ -41,10 +41,14 @@ const (
 //	          functions they may depend on, their indexes, constraints and
 //	          triggers; views and other standalone objects are left out
 type Config struct {
-	// Mode is "migrate" (the default) for a move that ends with a cutover,
-	// or "sync" to keep the target following the source for as long as
-	// the job runs. The pipeline does the same work either way; a sync is
-	// simply not expected to end, and never fences its source.
+	// Mode is ModeMigrate (the default) for a move that ends with a
+	// cutover, ModeSync to keep the target following the source for as
+	// long as the job runs, or ModeOffline for a one-time copy. Migrate
+	// and sync do the same work; a sync is simply not expected to end,
+	// and never fences its source. An offline migration copies from one
+	// consistent snapshot, validates and finishes by itself: it follows
+	// no changes, so the source needs no replication set up, and writes
+	// made to the source after the copy starts are not carried over.
 	Mode string `json:"mode"`
 	// Schemas limits the migration to these schemas; empty means all. In
 	// MySQL a schema is the database itself, so its pipeline ignores this.
@@ -68,6 +72,10 @@ type Config struct {
 	// document store is migrated into tables, keyed by collection. The
 	// whole document is still stored; these are for querying and indexing.
 	Columns map[string][]ColumnSpec `json:"columns,omitempty"`
+	// OnExisting says what to do when the target already holds an object
+	// with the name of one being migrated: ExistingFail (the default),
+	// ExistingSkip or ExistingReplace. See those constants.
+	OnExisting string `json:"on_existing,omitempty"`
 	// CutoverTimeoutSeconds bounds how long cutover waits for the stream to
 	// drain before giving up and resuming normal streaming.
 	CutoverTimeoutSeconds int `json:"cutover_timeout_seconds"`
@@ -82,6 +90,54 @@ type ColumnSpec struct {
 	// Type is the column's type on the target.
 	Type string `json:"type"`
 }
+
+// Migration modes.
+const (
+	ModeMigrate = "migrate"
+	ModeSync    = "sync"
+	ModeOffline = "offline"
+)
+
+// What a migration does about objects that already exist on the target.
+// The choice is the database administrator's: preflight lists the objects
+// in Report.Existing, and nothing is skipped or dropped unless one of the
+// two permissive policies was chosen for the job.
+const (
+	// ExistingFail refuses to start. Preflight fails and names the objects.
+	ExistingFail = "fail"
+	// ExistingSkip leaves every existing object exactly as it is. An
+	// existing table is left out of the migration altogether: no rows
+	// are copied into it and changes to its source are not followed.
+	// Other existing objects (views, routines, sequences and so on) are
+	// kept and the source's version is not created.
+	ExistingSkip = "skip"
+	// ExistingReplace drops each existing object and creates it again
+	// from the source. For a table that destroys the data it held on
+	// the target, along with whatever depends on it there.
+	ExistingReplace = "replace"
+)
+
+// Existing returns the policy for objects already on the target, with
+// the default filled in.
+func (c Config) Existing() string {
+	switch c.OnExisting {
+	case ExistingSkip, ExistingReplace:
+		return c.OnExisting
+	}
+	return ExistingFail
+}
+
+// ExistingObject is something on the target that has the name of an
+// object the migration would create.
+type ExistingObject struct {
+	// Kind is "table", "view", "function", "sequence", "trigger" and so on.
+	Kind string `json:"kind"`
+	// Name is how the target knows it, qualified where that applies.
+	Name string `json:"name"`
+}
+
+// Offline reports whether the job is a one-time copy that follows no changes.
+func (c Config) Offline() bool { return c.Mode == ModeOffline }
 
 // Scope names the level the migration runs at: "table", "schema" or "database".
 func (c Config) Scope() string {
@@ -143,6 +199,10 @@ type Report struct {
 	OK     bool    `json:"ok"`
 	Checks []Check `json:"checks"`
 	Tables int     `json:"tables"`
+	// Existing lists the objects already on the target that the
+	// migration would create, whatever the policy; it is what the
+	// operator is shown when asked to choose one.
+	Existing []ExistingObject `json:"existing,omitempty"`
 }
 
 func (r *Report) Add(name, status, detail string) {
@@ -166,6 +226,24 @@ type Pipeline interface {
 	// Run drives a job from its saved state (empty for a new job) until it
 	// completes or the operator pauses or aborts it.
 	Run(ctx context.Context, jobID string, cfg Config, state json.RawMessage, src, dst connector.Config, rep Reporter) (Outcome, error)
+}
+
+// Statement is one statement a migration would run on the target.
+type Statement struct {
+	// Phase is when it runs: PhaseSchema, PhaseIndexing or PhaseCutover.
+	Phase string `json:"phase"`
+	// Kind is what it creates: "schema", "table", "index", "foreign key"...
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	SQL  string `json:"sql"`
+}
+
+// Previewer is implemented by pipelines that can show the statements they
+// would run on the target, in order, without running any of them. It is
+// how an administrator reads a translated schema before agreeing to it.
+// Like preflight, a preview changes neither database.
+type Previewer interface {
+	Preview(ctx context.Context, src, dst connector.Config, cfg Config) ([]Statement, error)
 }
 
 var pipelines = map[string]Pipeline{}

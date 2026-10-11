@@ -215,6 +215,15 @@ func (r *remote) PreflightMigration(id string) (*migrate.Report, error) {
 	return &report, err
 }
 
+func (r *remote) PreviewMigration(id string) (list []migrate.Statement, err error) {
+	err = r.send("GET", "/migrations/"+seg(id)+"/preview", nil, &list)
+	return
+}
+
+func (r *remote) SetOnExisting(id, policy string) error {
+	return r.send("POST", "/migrations/"+seg(id)+"/on-existing", map[string]string{"policy": policy}, nil)
+}
+
 func (r *remote) MigrationAction(id, action string) error {
 	return r.send("POST", "/migrations/"+seg(id)+"/actions/"+seg(action), nil, nil)
 }
@@ -367,4 +376,21 @@ func (r *remote) ListAudit(before int64, limit int) (out []store.AuditEntry, err
 func (r *remote) VerifyAudit() (v app.AuditVerification, err error) {
 	err = r.send("GET", "/audit/verify", nil, &v)
 	return
+}
+
+func (r *remote) ListNotifications(unreadOnly bool, limit int) (int, []store.Notification, error) {
+	path := "/notifications?limit=" + strconv.Itoa(limit)
+	if unreadOnly {
+		path += "&unread=1"
+	}
+	var out struct {
+		Unread int                  `json:"unread"`
+		Items  []store.Notification `json:"items"`
+	}
+	err := r.send("GET", path, nil, &out)
+	return out.Unread, out.Items, err
+}
+
+func (r *remote) ReadAllNotifications() error {
+	return r.send("POST", "/notifications/read-all", nil, nil)
 }

@@ -17,10 +17,14 @@ import (
 	// Database drivers and migration pipelines register themselves on import.
 	_ "dedie/engine/connector/mongodb"
 	_ "dedie/engine/connector/mysql"
+	_ "dedie/engine/connector/oracle"
 	_ "dedie/engine/connector/postgres"
 	_ "dedie/engine/migrate/mongopg"
 	_ "dedie/engine/migrate/mymy"
 	_ "dedie/engine/migrate/mypg"
+	_ "dedie/engine/migrate/oramy"
+	_ "dedie/engine/migrate/oraora"
+	_ "dedie/engine/migrate/orapg"
 	_ "dedie/engine/migrate/pgmy"
 	_ "dedie/engine/migrate/pgpg"
 )

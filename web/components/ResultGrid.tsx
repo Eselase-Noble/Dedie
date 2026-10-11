@@ -13,6 +13,10 @@ const ROW_HEIGHT = 28;
 const OVERSCAN = 12;
 const MIN_COLUMN = 70;
 const MAX_COLUMN = 460;
+// A result of one column is usually text meant to be read whole, such as
+// a query plan, and has no neighbours to make room for.
+const MAX_ONLY_COLUMN = 1400;
+const SHOWN_CHARS = 300;
 
 type Row = (string | null)[];
 
@@ -38,7 +42,8 @@ function columnWidths(result: ResultSet): number[] {
       const v = row[i];
       if (v !== null && v.length > chars) chars = v.length;
     }
-    return Math.min(Math.max(chars * 7.7 + 24, MIN_COLUMN), MAX_COLUMN);
+    const widest = result.columns.length === 1 ? MAX_ONLY_COLUMN : MAX_COLUMN;
+    return Math.min(Math.max(Math.min(chars, SHOWN_CHARS) * 7.7 + 24, MIN_COLUMN), widest);
   });
 }
 
@@ -150,8 +155,10 @@ export default function ResultGrid({ result, order, sort, onSort, editor }: {
                 {result.rows[r].map((v, i) =>
                   v === null
                     ? <td key={i} className="null" onClick={() => setOpen({ row: r, col: i })}>NULL</td>
-                    // A value is shown on one line; its line breaks are kept in the cell viewer.
-                    : <td key={i} onClick={() => setOpen({ row: r, col: i })}>{v.length > 300 ? v.slice(0, 300) : v}</td>,
+                    // A value is shown on one line, with its spacing as it is:
+                    // the indentation of a query plan is its structure. The
+                    // line breaks are kept in the cell viewer.
+                    : <td key={i} onClick={() => setOpen({ row: r, col: i })}>{v.slice(0, SHOWN_CHARS).replace(/\s*[\r\n]+\s*/g, " ")}</td>,
                 )}
               </tr>
             ))}

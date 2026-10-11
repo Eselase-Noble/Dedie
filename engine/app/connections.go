@@ -49,6 +49,11 @@ func (in *ConnectionInput) validate() (connector.Driver, error) {
 	}
 	if in.SSLMode == "" {
 		in.SSLMode = "require"
+		// An Oracle listener takes TLS on a port of its own (TCPS), so
+		// encryption cannot be the assumption for the usual 1521.
+		if in.Kind == "oracle" {
+			in.SSLMode = "disable"
+		}
 	}
 	if !sslModes[in.SSLMode] {
 		return nil, invalid("unknown SSL mode %q", in.SSLMode)

@@ -59,7 +59,11 @@ export default function QueryPage() {
     } catch {
       // Storage unavailable: fall back to the first connection.
     }
-    const pick = connections.find((c) => c.id === remembered) ?? connections[0];
+    // "?connection=<id>" opens a particular one; the command palette
+    // links here that way.
+    const asked = new URLSearchParams(window.location.search).get("connection");
+    if (asked !== null) window.history.replaceState(null, "", window.location.pathname);
+    const pick = connections.find((c) => c.id === asked) ?? connections.find((c) => c.id === remembered) ?? connections[0];
     if (pick) setConnId(pick.id);
   }, [connections, connId]);
 
@@ -148,7 +152,7 @@ export default function QueryPage() {
       return;
     }
     if (action === "select") {
-      addQuery(`SELECT * FROM ${quoteIdent(schema, connection?.kind)}.${quoteIdent(table, connection?.kind)} LIMIT 100`, table);
+      addQuery(`SELECT * FROM ${quoteIdent(schema, connection?.kind)}.${quoteIdent(table, connection?.kind)}${connection?.kind === "oracle" ? " FETCH FIRST 100 ROWS ONLY" : " LIMIT 100"}`, table);
       return;
     }
     const existing = tabs.find((t) => t.kind === "table" && t.schema === schema && t.table === table);
@@ -172,8 +176,11 @@ export default function QueryPage() {
             <button className="btn small" onClick={() => setShowCreate((v) => !v)} aria-expanded={showCreate}>Create…</button>
             {showCreate && (
               <div className="popover menu">
-                <button onClick={() => { setCreating("database"); setShowCreate(false); }}>New database</button>
-                {connection?.kind !== "mysql" && (
+                {/* An Oracle database and its schemas (users) are made by a DBA, not here. */}
+                {connection?.kind !== "oracle" && (
+                  <button onClick={() => { setCreating("database"); setShowCreate(false); }}>New database</button>
+                )}
+                {connection?.kind === "postgres" && (
                   <button onClick={() => { setCreating("schema"); setShowCreate(false); }}>New schema</button>
                 )}
                 <button onClick={() => { setCreating("table"); setShowCreate(false); }}>New table</button>

@@ -11,7 +11,9 @@
 //
 // Requirements on the source: binary logging in ROW format with full row
 // images, and an account with SELECT, RELOAD, REPLICATION SLAVE and
-// REPLICATION CLIENT.
+// REPLICATION CLIENT. An offline job copies from the snapshot and finishes
+// without following the binary log: it needs neither binary logging nor the
+// replication privileges, and RELOAD only to copy with more than one worker.
 package mymy
 
 import (
@@ -40,6 +42,10 @@ func (pipeline) Run(ctx context.Context, jobID string, cfg migrate.Config, state
 		_ = json.Unmarshal(state, &st)
 	}
 	return Run(ctx, jobID, cfg, st, src, dst, rep)
+}
+
+func (pipeline) Preview(ctx context.Context, src, dst connector.Config, cfg migrate.Config) ([]migrate.Statement, error) {
+	return Preview(ctx, src, dst, cfg)
 }
 
 // Position is a point in the source's binary log.
@@ -83,6 +89,20 @@ type State struct {
 	LastCommitTime time.Time `json:"last_commit_time"`
 	SourceVersion  string    `json:"source_version"`
 	TargetVersion  string    `json:"target_version"`
+
+	// What the job does about objects that were on the target before it
+	// started. It is decided once, in the schema phase, from the policy
+	// chosen for the job: later the job's own objects exist as well, and
+	// nothing on the target tells the two apart.
+	//
+	// SkippedTables are the tables left out of the migration because the
+	// target's are kept, named as the job's table selection names them.
+	SkippedTables []string `json:"skipped_tables,omitempty"`
+	// KeptObjects are the other objects that are kept: the plan does not
+	// create them.
+	KeptObjects []string `json:"kept_objects,omitempty"`
+	// DropFirst are the statements that remove what the job replaces.
+	DropFirst []string `json:"drop_first,omitempty"`
 }
 
 // checkpointTable lives in the target database while a job runs.

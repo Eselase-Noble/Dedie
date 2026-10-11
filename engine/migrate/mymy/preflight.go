@@ -41,6 +41,8 @@ func variable(ctx context.Context, db *sql.DB, name string) string {
 // CheckSource records every finding about the source side: version, binary
 // log settings, privileges and the tables selected. It is shared by all
 // pipelines that read from MySQL. It returns the source's version string.
+// An offline job never reads the binary log, so none of the checks on it
+// apply.
 func CheckSource(ctx context.Context, src *sql.DB, plan *Plan, cfg migrate.Config, r *migrate.Report) (string, error) {
 	var srcVer string
 	if err := src.QueryRowContext(ctx, "SELECT VERSION()").Scan(&srcVer); err != nil {
@@ -54,6 +56,47 @@ func CheckSource(ctx context.Context, src *sql.DB, plan *Plan, cfg migrate.Confi
 		r.Add("Source version", "fail", "MySQL "+srcVer+" is too old; version 5.6 or newer is required")
 	}
 
+	if cfg.Offline() {
+		r.Add("Offline copy", "warn", offlineNote)
+	} else {
+		checkBinlog(ctx, src, r)
+	}
+
+	if len(plan.Tables) == 0 {
+		r.Add("Tables", "fail", "no table can be migrated from database "+plan.Database)
+	} else {
+		r.Add("Tables", "ok", fmt.Sprintf("%d table(s) will be migrated from database %s", len(plan.Tables), plan.Database))
+	}
+	if len(plan.Missing) > 0 {
+		r.Add("Selected tables", "fail", "these tables were selected but do not exist in "+plan.Database+": "+strings.Join(plan.Missing, ", "))
+	}
+	if len(plan.Skipped) > 0 {
+		lines := make([]string, len(plan.Skipped))
+		for i, s := range plan.Skipped {
+			lines[i] = s.Name + ": " + s.Reason
+		}
+		r.Add("Tables that will be skipped", "warn", strings.Join(lines, "\n"))
+	}
+	// The remaining findings concern the stream and the cutover, which an
+	// offline job does not have.
+	if len(plan.NoKey) > 0 && !cfg.Offline() {
+		r.Add("Tables without a primary key", "warn", strings.Join(plan.NoKey, ", ")+
+			"\nChanges to these tables are matched on every column, which is slow on large tables and can miss rows that hold approximate numbers. Add a primary key if you can.")
+	}
+	if cfg.FenceSource && srcNum < 80022 && !cfg.Offline() {
+		r.Add("Read-only cutover", "fail", "making a single database read-only needs MySQL 8.0.22 or newer on the source; turn the option off and stop application writes yourself at cutover")
+	}
+	if !mysql.Encrypted(ctx, src) {
+		r.Add("Source encryption", "warn", "the connection is not using TLS; data will cross the network in clear text")
+	}
+	return srcVer, nil
+}
+
+// offlineNote is what the operator must know before starting an offline job.
+const offlineNote = "the tables are copied once, from a single snapshot; changes made to the source after the copy starts are not carried over. Stop application writes to the source before starting"
+
+// checkBinlog records whether the source's binary log can feed the stream.
+func checkBinlog(ctx context.Context, src *sql.DB, r *migrate.Report) {
 	if strings.EqualFold(variable(ctx, src, "log_bin"), "ON") {
 		r.Add("Binary logging", "ok", "enabled")
 	} else {
@@ -78,33 +121,6 @@ func CheckSource(ctx context.Context, src *sql.DB, plan *Plan, cfg migrate.Confi
 	if id := variable(ctx, src, "server_id"); id == "0" {
 		r.Add("Server id", "fail", "server_id is 0 on the source; replication clients cannot connect until it is set")
 	}
-
-	if len(plan.Tables) == 0 {
-		r.Add("Tables", "fail", "no table can be migrated from database "+plan.Database)
-	} else {
-		r.Add("Tables", "ok", fmt.Sprintf("%d table(s) will be migrated from database %s", len(plan.Tables), plan.Database))
-	}
-	if len(plan.Missing) > 0 {
-		r.Add("Selected tables", "fail", "these tables were selected but do not exist in "+plan.Database+": "+strings.Join(plan.Missing, ", "))
-	}
-	if len(plan.Skipped) > 0 {
-		lines := make([]string, len(plan.Skipped))
-		for i, s := range plan.Skipped {
-			lines[i] = s.Name + ": " + s.Reason
-		}
-		r.Add("Tables that will be skipped", "warn", strings.Join(lines, "\n"))
-	}
-	if len(plan.NoKey) > 0 {
-		r.Add("Tables without a primary key", "warn", strings.Join(plan.NoKey, ", ")+
-			"\nChanges to these tables are matched on every column, which is slow on large tables and can miss rows that hold approximate numbers. Add a primary key if you can.")
-	}
-	if cfg.FenceSource && srcNum < 80022 {
-		r.Add("Read-only cutover", "fail", "making a single database read-only needs MySQL 8.0.22 or newer on the source; turn the option off and stop application writes yourself at cutover")
-	}
-	if !mysql.Encrypted(ctx, src) {
-		r.Add("Source encryption", "warn", "the connection is not using TLS; data will cross the network in clear text")
-	}
-	return srcVer, nil
 }
 
 func preflight(ctx context.Context, src, dst *sql.DB, plan *Plan, cfg migrate.Config) (*migrate.Report, error) {
@@ -126,33 +142,13 @@ func preflight(ctx context.Context, src, dst *sql.DB, plan *Plan, cfg migrate.Co
 		r.Add("Versions", "ok", srcVer+" → "+dstVer)
 	}
 
-	var dstDB sql.NullString
-	if err := dst.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&dstDB); err != nil {
+	// The target database must not already hold the tables being migrated,
+	// nor anything else under a name the plan is going to take.
+	found, err := FindExisting(ctx, dst, plan.objects())
+	if err != nil {
 		return nil, err
 	}
-	names := make([]any, 0, len(plan.Tables)+1)
-	names = append(names, dstDB.String)
-	marks := make([]string, 0, len(plan.Tables))
-	for _, t := range plan.Tables {
-		names = append(names, t.Name)
-		marks = append(marks, "?")
-	}
-	if len(marks) > 0 {
-		existing, err := QueryStrings(ctx, dst, `SELECT table_name FROM information_schema.tables
-			WHERE table_schema = ? AND table_name IN (`+strings.Join(marks, ",")+`) ORDER BY 1`, names...)
-		if err != nil {
-			return nil, err
-		}
-		if len(existing) > 0 {
-			list := make([]string, len(existing))
-			for i, e := range existing {
-				list[i] = e[0]
-			}
-			r.Add("Target is empty", "fail", "these tables already exist in the target database: "+strings.Join(list, ", "))
-		} else {
-			r.Add("Target is empty", "ok", "no conflicting tables in target database "+dstDB.String)
-		}
-	}
+	ReportExisting(r, found, cfg.Existing())
 
 	// Objects the pipeline does not carry over. Reported, never silently dropped.
 	r.Add("Not migrated", "warn", "recreate these on the target yourself: user accounts and privileges. Views, routines, triggers and events are created under the migrating account, not their original DEFINER")

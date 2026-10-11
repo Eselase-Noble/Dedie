@@ -127,6 +127,10 @@ func (a *App) Login(ctx context.Context, in LoginInput) (LoginResult, error) {
 	}
 	a.Store.RecordLogin(ctx, u.ID, true, maxLoginFails, lockoutPeriod)
 	a.Store.PurgeExpiredSessions(ctx)
+	// The sessions still open say where this account is normally used
+	// from. Nothing more is kept, so a first sign-in, or one after signing
+	// out everywhere, has nothing to be compared with.
+	known, _ := a.Store.LiveSessionAddresses(ctx, u.ID)
 	policy := a.policy(ctx, u.OrgID)
 	token := secure.NewToken(32)
 	// Only a hash of the token is stored: a copy of the database does not
@@ -135,6 +139,10 @@ func (a *App) Login(ctx context.Context, in LoginInput) (LoginResult, error) {
 		return LoginResult{}, err
 	}
 	a.audit(ctx, actor, "auth.login", u.ID, nil)
+	if in.IP != "" && len(known) > 0 && !contains(known, in.IP) {
+		a.Notify(ctx, store.Notification{OrgID: u.OrgID, UserID: u.ID, Kind: NoteNewSignIn, Level: LevelWarning, Title: "New sign-in from " + in.IP,
+			Body: "Your account was signed in to from an address none of your other sessions use. End the session and change your password if this was not you.", Link: accountLink})
+	}
 	return LoginResult{Token: token, User: u, TTL: policy.sessionTTL(), MustEnroll: policy.RequireTOTP && !u.TOTPEnabled}, nil
 }
 
@@ -154,6 +162,15 @@ func (a *App) checkSecondFactor(ctx context.Context, u *store.User, code string)
 			u.RecoveryCodes = append(u.RecoveryCodes[:i:i], u.RecoveryCodes[i+1:]...)
 			a.Store.SetTOTP(ctx, u.ID, u.TOTPSecretEnc, true, u.RecoveryCodes)
 			a.audit(ctx, Actor{User: *u}, "auth.recovery_code_used", u.ID, map[string]int{"remaining": len(u.RecoveryCodes)})
+			return true
+		}
+	}
+	return false
+}
+
+func contains(list []string, v string) bool {
+	for _, have := range list {
+		if have == v {
 			return true
 		}
 	}
