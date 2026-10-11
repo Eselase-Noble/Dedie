@@ -10,6 +10,7 @@ import type { MigrationAction, MigrationDetail, OnExisting, PreflightReport } fr
 import ApplyRate from "@/components/migrations/ApplyRate";
 import CopyProgress from "@/components/migrations/CopyProgress";
 import ExistingObjectsDialog from "@/components/migrations/ExistingObjects";
+import MigrationForm from "@/components/MigrationForm";
 import SchemaPreview from "@/components/migrations/SchemaPreview";
 import { download } from "@/lib/csv";
 import { copyText } from "@/lib/desktop";
@@ -122,6 +123,9 @@ function Detail({ id }: { id: string }) {
   const [preflighting, setPreflighting] = useState(false);
   const [asking, setAsking] = useState(false);
   const [previewing, setPreviewing] = useState(false);
+  // Duplicating opens the new-migration form filled in from this job;
+  // "replace" is the same with existing objects on the target replaced.
+  const [duplicating, setDuplicating] = useState<"" | "copy" | "replace">("");
 
   if (loading && !job) return <div className="content"><Loading /></div>;
   if (!job) return <div className="content"><Banner tone="error">{error || "Migration not found."}</Banner></div>;
@@ -181,6 +185,9 @@ function Detail({ id }: { id: string }) {
   // An offline migration copies once and finishes by itself; there is no
   // stream to cut over from.
   const offline = job.config.mode === "offline";
+  // Every pipeline copies once per job: a retry after the copy carries on
+  // from the indexes or the validation and never reads the source again.
+  const copyStands = offline && status === "failed" && !!st.snapshot_done;
   const confirmations: Record<"cutover" | "abort" | "delete", Confirm> = {
     cutover: {
       action: "cutover",
@@ -263,6 +270,8 @@ function Detail({ id }: { id: string }) {
             )}
             {canAbort && <button className="btn danger" disabled={!!busy || job.desired === "abort"} onClick={() => setConfirm(confirmations.abort)}>Abort</button>}
             {canDelete && <button className="btn" disabled={!!busy} onClick={() => setConfirm(confirmations.delete)}>Delete</button>}
+            <button className="btn" onClick={() => setDuplicating("copy")}
+              title="Open the new migration form filled in from this one">Duplicate</button>
           </>
         )}
       </PageHeader>
@@ -270,6 +279,15 @@ function Detail({ id }: { id: string }) {
       {error && <Banner tone="error">{error}</Banner>}
       {actionError && <Banner tone="error">{actionError}</Banner>}
       {job.error && <Banner tone="error"><strong>Failed:</strong> <span className="pre-line">{job.error}</span></Banner>}
+      {copyStands && (
+        <Banner tone="warn">
+          The rows were copied before this failed, and Retry does not copy them again: it repeats only the steps after
+          the copy, on the rows already there. If the copy itself is what is wrong, as when the source was written to
+          while it ran, stop those writes, then empty the target (or choose to replace existing objects) and create the
+          migration again.{" "}
+          {manage && <button className="btn small" onClick={() => setDuplicating("replace")}>Create again</button>}
+        </Banner>
+      )}
       {status === "running" && job.desired && job.desired !== "run" && (
         <Banner tone="info">Requested: {job.desired}. The worker picks this up within a couple of seconds.</Banner>
       )}
@@ -438,6 +456,19 @@ function Detail({ id }: { id: string }) {
         </div>
       </div>
 
+      {duplicating && connections.data && (
+        <MigrationForm
+          connections={connections.data}
+          template={{
+            name: `${job.name} (copy)`,
+            source_id: job.source_id,
+            target_id: job.target_id,
+            config: duplicating === "replace" ? { ...job.config, on_existing: "replace" } : job.config,
+          }}
+          onClose={() => setDuplicating("")}
+          onCreated={(created) => router.push(`/migrations/detail/?id=${encodeURIComponent(created.id)}`)}
+        />
+      )}
       {previewing && <SchemaPreview jobId={job.id} name={job.name} onClose={() => setPreviewing(false)} />}
       {asking && (
         <ExistingObjectsDialog jobId={job.id} objects={existing} current={onExisting}

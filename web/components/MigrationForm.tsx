@@ -2,7 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
-import type { ColumnSpec, Connection, Migration, Validation, OnExisting } from "@/lib/types";
+import type { ColumnSpec, Connection, Migration, MigrationConfig, Validation, OnExisting } from "@/lib/types";
 import { Banner, Checkbox, Field, Modal } from "./ui";
 
 /** Splits a comma or newline separated list, dropping blanks. */
@@ -54,20 +54,34 @@ const OFFLINE_HINTS: Record<string, string> = {
   oracle: "Read as of one moment with flashback queries. Needs only an account that can read the tables; no LogMiner.",
 };
 
-export default function MigrationForm({ connections, onClose, onCreated, initialMode = "migrate" }: {
+/** An existing migration to start the form from, when one is being duplicated. */
+export interface MigrationTemplate {
+  name: string;
+  source_id: string;
+  target_id: string;
+  config: Partial<MigrationConfig>;
+}
+
+export default function MigrationForm({ connections, onClose, onCreated, initialMode = "migrate", template }: {
   connections: Connection[]; onClose: () => void; onCreated: (job: Migration) => void;
   initialMode?: "migrate" | "sync" | "offline";
+  /** Fills the form in from another migration. Nothing is created until it is submitted. */
+  template?: MigrationTemplate;
 }) {
   // Migrations run between two databases of the same kind, or across the
   // two engines in either direction.
   const candidates = connections.filter((c) => c.kind in TARGET_KINDS);
-  const [name, setName] = useState("");
-  const [mode, setMode] = useState<"migrate" | "sync" | "offline">(initialMode);
-  const [onExisting, setOnExisting] = useState<OnExisting>("fail");
-  const [sourceId, setSourceId] = useState((candidates.find((c) => c.kind !== "mongodb") ?? candidates[0])?.id ?? "");
+  const from = template?.config ?? {};
+  // A connection the template names may have been deleted since, or be
+  // one this user is not shown; the form then falls back to its defaults.
+  const templateSource = candidates.find((c) => c.id === template?.source_id);
+  const [name, setName] = useState(template?.name ?? "");
+  const [mode, setMode] = useState<"migrate" | "sync" | "offline">(from.mode || initialMode);
+  const [onExisting, setOnExisting] = useState<OnExisting>(from.on_existing || "fail");
+  const [sourceId, setSourceId] = useState((templateSource ?? candidates.find((c) => c.kind !== "mongodb") ?? candidates[0])?.id ?? "");
   const source = candidates.find((c) => c.id === sourceId);
   const targets = candidates.filter((c) => c.id !== sourceId && (TARGET_KINDS[source?.kind ?? ""] ?? []).includes(c.kind));
-  const [chosenTarget, setTargetId] = useState("");
+  const [chosenTarget, setTargetId] = useState(template?.target_id ?? "");
   // Until one is chosen, or when the source changes kind, offer a target
   // of the source's own engine first: a version upgrade is the common case,
   // and moving between engines should be a deliberate choice.
@@ -80,18 +94,19 @@ export default function MigrationForm({ connections, onClose, onCreated, initial
   const oracle = source?.kind === "oracle";
   const crossEngine = !!source && !!targetId && candidates.find((c) => c.id === targetId)?.kind !== source.kind;
   // What to migrate: the whole database, selected schemas, or selected tables.
-  const [scope, setScope] = useState<"database" | "schema" | "table">("database");
-  const [schemas, setSchemas] = useState("");
-  const [tables, setTables] = useState("");
-  const [exclude, setExclude] = useState("");
-  const [workers, setWorkers] = useState(4);
-  const [validation, setValidation] = useState<Validation>("checksum");
-  const [fence, setFence] = useState(false);
-  const [keepSlot, setKeepSlot] = useState(false);
-  const [timeout, setTimeoutSeconds] = useState(300);
+  const [scope, setScope] = useState<"database" | "schema" | "table">(
+    from.tables?.length ? "table" : from.schemas?.length ? "schema" : "database");
+  const [schemas, setSchemas] = useState((from.schemas ?? []).join(", "));
+  const [tables, setTables] = useState((from.tables ?? []).join(", "));
+  const [exclude, setExclude] = useState((from.exclude_tables ?? []).join(", "));
+  const [workers, setWorkers] = useState(from.snapshot_workers || 4);
+  const [validation, setValidation] = useState<Validation>(from.validation || "checksum");
+  const [fence, setFence] = useState(!!from.fence_source);
+  const [keepSlot, setKeepSlot] = useState(!!from.keep_slot);
+  const [timeout, setTimeoutSeconds] = useState(from.cutover_timeout_seconds || 300);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [columns, setColumns] = useState("");
+  const [columns, setColumns] = useState(formatColumns(from.columns ?? {}));
   const [suggesting, setSuggesting] = useState(false);
 
   const suggest = async () => {
@@ -167,6 +182,14 @@ export default function MigrationForm({ connections, onClose, onCreated, initial
             Moving between engines translates the schema: tables, keys, indexes and foreign keys are recreated
             with equivalent types on the target. Views, routines and triggers are not translated. The preflight
             check lists every difference before anything is changed.
+          </Banner>
+        )}
+        {template && (
+          <Banner tone="info">
+            Filled in from “{template.name.replace(/ \(copy\)$/, "")}”. Change anything that should differ; it is created as a
+            new migration and the original is left as it is.
+            {(!templateSource || !targets.some((c) => c.id === template.target_id)) &&
+              " A connection the original used is no longer available, so check the source and target."}
           </Banner>
         )}
         <p className="hint" style={{ marginBottom: 12 }}>
