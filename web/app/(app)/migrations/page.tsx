@@ -4,11 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { api } from "@/lib/api";
-import { formatBytes, formatTime } from "@/lib/format";
+import { formatBytes, formatDuration, formatTime } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 import MigrationForm from "@/components/MigrationForm";
 import { useSession } from "@/components/session";
-import { Banner, Loading, PageHeader, StatusBadge } from "@/components/ui";
+import { Badge, Banner, Loading, PageHeader, StatusBadge } from "@/components/ui";
 
 export default function MigrationsPage() {
   const { can } = useSession();
@@ -43,12 +43,16 @@ export default function MigrationsPage() {
               <tbody>
                 {data.jobs.map((m) => (
                   <tr key={m.id}>
-                    <td><Link href={`/migrations/detail/?id=${encodeURIComponent(m.id)}`}><strong>{m.name}</strong></Link></td>
+                    <td>
+                      <Link href={`/migrations/detail/?id=${encodeURIComponent(m.id)}`}><strong>{m.name}</strong></Link>{" "}
+                      {m.config.mode === "sync" && <Badge tone="info">sync</Badge>}
+                    </td>
                     <td>{nameOf(m.source_id)}</td>
                     <td>{nameOf(m.target_id)}</td>
                     <td><StatusBadge status={m.status} /></td>
                     <td>{m.phase || <span className="faint">—</span>}</td>
-                    <td className="num">{m.phase === "streaming" || m.phase === "cutover" ? formatBytes(m.state.lag_bytes ?? 0) : "—"}</td>
+                    <td className="num">{m.phase !== "streaming" && m.phase !== "cutover" ? "—"
+                      : m.state.lag_seconds !== undefined ? formatDuration(m.state.lag_seconds) : formatBytes(m.state.lag_bytes ?? 0)}</td>
                     <td className="nowrap muted">{formatTime(m.updated_at)}</td>
                   </tr>
                 ))}

@@ -80,6 +80,8 @@ export default function QueryTab({ connection, mayWrite, completions, sql, onSql
     }
   };
 
+  // MongoDB takes commands as JSON; the SQL tools do not apply to it.
+  const mongo = connection.kind === "mongodb";
   const current = response?.results[Math.min(resultTab, (response?.results.length ?? 1) - 1)] ?? null;
 
   return (
@@ -102,11 +104,15 @@ export default function QueryTab({ connection, mayWrite, completions, sql, onSql
             Run
           </button>
         )}
-        <button className="btn small" disabled={running || !sql.trim()} onClick={() => void run(undefined, (s) => explain(s, connection.kind, false))}
-          title="Show how the database would run the statement, without running it">Explain</button>
-        <button className="btn small" disabled={running || !sql.trim()} onClick={() => void run(undefined, (s) => explain(s, connection.kind, true))}
-          title="Run the statement in a read-only transaction and show where the time went">Analyze</button>
-        <button className="btn small" disabled={!sql.trim()} onClick={format}>Format</button>
+        {!mongo && (
+          <>
+            <button className="btn small" disabled={running || !sql.trim()} onClick={() => void run(undefined, (s) => explain(s, connection.kind, false))}
+              title="Show how the database would run the statement, without running it">Explain</button>
+            <button className="btn small" disabled={running || !sql.trim()} onClick={() => void run(undefined, (s) => explain(s, connection.kind, true))}
+              title="Run the statement in a read-only transaction and show where the time went">Analyze</button>
+            <button className="btn small" disabled={!sql.trim()} onClick={format}>Format</button>
+          </>
+        )}
         <button className="btn small" disabled={!sql.trim()} onClick={onSave}>Save</button>
         {running && <span className="hint">Running…</span>}
         <label className="hint inline">
@@ -157,7 +163,9 @@ export default function QueryTab({ connection, mayWrite, completions, sql, onSql
         {error && <Banner tone="error"><pre>{error}</pre></Banner>}
         {!response && !error && (
           <div className="empty">
-            Run a statement to see its result here. Click a table on the left to browse its rows.
+            {mongo
+              ? <>Write a MongoDB command as JSON, for example <code>{'{"find": "orders", "filter": {"status": "open"}, "limit": 50}'}</code>. Click a collection on the left to start from one.</>
+              : "Run a statement to see its result here. Click a table on the left to browse its rows."}
           </div>
         )}
         {response && (

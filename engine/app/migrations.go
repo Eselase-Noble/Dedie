@@ -73,6 +73,15 @@ func (a *App) CreateMigration(ctx context.Context, actor Actor, in MigrationInpu
 	default:
 		return store.Job{}, invalid("validation must be checksum, count or none")
 	}
+	switch in.Config.Mode {
+	case "", "migrate":
+		in.Config.Mode = "migrate"
+	case "sync":
+		// A sync leaves the source in service by definition.
+		in.Config.FenceSource = false
+	default:
+		return store.Job{}, invalid("mode must be migrate or sync")
+	}
 	_, _, kind, err := a.endpoints(ctx, actor.User.OrgID, in.SourceID, in.TargetID)
 	if err != nil {
 		return store.Job{}, err

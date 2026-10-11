@@ -23,9 +23,13 @@ func (c *cli) migrateCreate(args []string) error {
 	fs.IntVar(&in.Config.SnapshotWorkers, "workers", 4, "tables copied in parallel during the initial copy")
 	fs.StringVar(&in.Config.Validation, "validation", "checksum", "cutover validation: checksum, count or none")
 	fs.BoolVar(&in.Config.FenceSource, "fence", false, "at cutover, make the source read-only and disconnect its clients")
+	sync := fs.Bool("sync", false, "keep the target following the source continuously instead of planning a cutover")
 	fs.BoolVar(&in.Config.KeepSlot, "keep-slot", false, "keep the replication slot on the source after completion")
 	fs.Parse(args)
 	in.Config.Schemas, in.Config.Tables, in.Config.ExcludeTables = splitList(*schemas), splitList(*tables), splitList(*exclude)
+	if *sync {
+		in.Config.Mode = "sync"
+	}
 	j, err := c.be.CreateMigration(in)
 	if err != nil {
 		return err
@@ -157,8 +161,13 @@ func (c *cli) migrateStatus(args []string) error {
 		fmt.Printf("  %s -> %s\n", st.SourceVersion, st.TargetVersion)
 	}
 	if st.AppliedLSN != "" {
-		fmt.Printf("  applied %s of %s (lag %s), %d transactions, %d row changes, %d anomalies\n",
-			st.AppliedLSN, st.SourceLSN, humanBytes(st.LagBytes), st.TxApplied, st.RowsApplied, st.Anomalies)
+		position := "applied " + st.AppliedLSN
+		// Sources that report a position of their own also report lag
+		// against it.
+		if st.SourceLSN != "" {
+			position += " of " + st.SourceLSN + " (lag " + humanBytes(st.LagBytes) + ")"
+		}
+		fmt.Printf("  %s, %d transactions, %d row changes, %d anomalies\n", position, st.TxApplied, st.RowsApplied, st.Anomalies)
 	}
 	fmt.Println()
 	var rows [][]string

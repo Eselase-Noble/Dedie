@@ -133,7 +133,15 @@ export default function QueryPage() {
   };
   const patchTab = (id: string, change: Partial<Tab>) => setTabs((list) => list.map((t) => (t.id === id ? { ...t, ...change } : t)));
 
+  const mongo = connection?.kind === "mongodb";
+
   const onTree = (action: TableAction, schema: string, table: string) => {
+    // A collection is read with a find command; there is no SQL to write
+    // and no table grid to page through.
+    if (mongo && action !== "details") {
+      addQuery(JSON.stringify({ find: table, filter: {}, limit: 100 }, null, 2), table);
+      return;
+    }
     if (action === "details") {
       const t = findTable(schema, table);
       if (t) setDetails({ schema, table: t });
@@ -159,7 +167,7 @@ export default function QueryPage() {
         {connection?.read_only && <Badge>read-only connection</Badge>}
         <span className="spacer" />
         <button className="btn small" onClick={() => setShowSaved(true)}>Saved queries{saved && saved.length > 0 ? ` (${saved.length})` : ""}</button>
-        {mayWrite && (
+        {mayWrite && !mongo && (
           <div className="popover-anchor">
             <button className="btn small" onClick={() => setShowCreate((v) => !v)} aria-expanded={showCreate}>Create…</button>
             {showCreate && (
