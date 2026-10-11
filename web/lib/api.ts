@@ -17,6 +17,7 @@ import type {
   ConnectionStatus,
   DbAccounts,
   IdlePolicy,
+  LocationInput,
   Migration,
   MigrationAction,
   MigrationDetail,
@@ -207,7 +208,7 @@ export const api = {
   // A plain link: the browser downloads the decrypted archive as a file.
   backupDownloadUrl: (backupId: string) => `${BASE}/backups/${id(backupId)}/download`,
   backupLocations: () => get<BackupLocations>("/backup-locations"),
-  createBackupLocation: (name: string, path: string) => post<BackupLocation>("/backup-locations", { name, path }),
+  createBackupLocation: (body: LocationInput) => post<BackupLocation>("/backup-locations", body),
   deleteBackupLocation: (locationId: string) => request<{ ok: boolean }>("DELETE", `/backup-locations/${id(locationId)}`),
   schedules: () => get<Schedule[]>("/schedules"),
   saveSchedule: (scheduleId: string, body: ScheduleInput) =>

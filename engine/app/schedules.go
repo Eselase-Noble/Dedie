@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"log"
-	"os"
 	"strings"
 	"time"
 
@@ -231,7 +230,7 @@ func (a *App) applyRetention(ctx context.Context, actor Actor, sc store.Schedule
 		if n, err := a.Store.BackupDependents(ctx, b.ID); err != nil || n > 0 {
 			continue
 		}
-		if err := os.Remove(b.Path); err != nil && !os.IsNotExist(err) {
+		if err := a.removeBackupFile(ctx, b); err != nil {
 			return removed, err
 		}
 		if err := a.Store.DeleteBackup(ctx, b.OrgID, b.ID); err != nil {

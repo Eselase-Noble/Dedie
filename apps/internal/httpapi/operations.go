@@ -107,14 +107,11 @@ func (s *Server) listLocations(w http.ResponseWriter, r *http.Request, actor app
 }
 
 func (s *Server) createLocation(w http.ResponseWriter, r *http.Request, actor app.Actor) {
-	var in struct {
-		Name string `json:"name"`
-		Path string `json:"path"`
-	}
+	var in app.LocationInput
 	if !decode(w, r, &in) {
 		return
 	}
-	l, err := s.app.CreateLocation(r.Context(), actor, in.Name, in.Path)
+	l, err := s.app.CreateLocation(r.Context(), actor, in)
 	if err != nil {
 		fail(w, err)
 		return

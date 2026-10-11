@@ -612,6 +612,8 @@ export type BackupLevel = "full" | "differential" | "incremental";
 export interface BackupLocation {
   id: string;
   name: string;
+  kind: "dir" | "s3";
+  /** The directory, or a description of the bucket without credentials. */
   path: string;
   created_by: string;
   created_at: string;
@@ -621,4 +623,11 @@ export interface BackupLocation {
 export interface BackupLocations {
   default_path: string;
   locations: BackupLocation[];
+}
+
+export interface LocationInput {
+  name: string;
+  kind: "dir" | "s3";
+  path: string;
+  s3: { endpoint: string; region: string; bucket: string; prefix: string; access_key: string; secret_key: string };
 }

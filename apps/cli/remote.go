@@ -332,8 +332,8 @@ func (r *remote) ListLocations() (string, []store.Location, error) {
 	return out.Default, out.Locations, err
 }
 
-func (r *remote) CreateLocation(name, path string) (l store.Location, err error) {
-	err = r.send("POST", "/backup-locations", map[string]string{"name": name, "path": path}, &l)
+func (r *remote) CreateLocation(in app.LocationInput) (l store.Location, err error) {
+	err = r.send("POST", "/backup-locations", in, &l)
 	return
 }
 

@@ -138,6 +138,8 @@ var columns = []struct{ table, name, def string }{
 	{"backups", "position", "TEXT NOT NULL DEFAULT ''"},
 	{"backups", "encrypted", "INTEGER NOT NULL DEFAULT 1"},
 	{"backups", "location_id", "TEXT NOT NULL DEFAULT ''"},
+	{"backup_locations", "kind", "TEXT NOT NULL DEFAULT 'dir'"},
+	{"backup_locations", "config_enc", "BLOB"},
 	{"backup_schedules", "level", "TEXT NOT NULL DEFAULT 'full'"},
 	{"backup_schedules", "location_id", "TEXT NOT NULL DEFAULT ''"},
 	{"backup_schedules", "encrypted", "INTEGER NOT NULL DEFAULT 1"},

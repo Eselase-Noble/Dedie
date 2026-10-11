@@ -46,7 +46,7 @@ type backend interface {
 	// ListLocations returns the default backup directory and the
 	// locations added besides it.
 	ListLocations() (string, []store.Location, error)
-	CreateLocation(name, path string) (store.Location, error)
+	CreateLocation(in app.LocationInput) (store.Location, error)
 	DeleteLocation(name string) error
 
 	SaveSchedule(id string, in app.ScheduleInput) (store.Schedule, error)
@@ -119,8 +119,8 @@ func (l *local) ListLocations() (string, []store.Location, error) {
 	list, err := l.app.ListLocations(l.ctx, l.actor)
 	return l.app.DefaultLocation(), list, err
 }
-func (l *local) CreateLocation(name, path string) (store.Location, error) {
-	return l.app.CreateLocation(l.ctx, l.actor, name, path)
+func (l *local) CreateLocation(in app.LocationInput) (store.Location, error) {
+	return l.app.CreateLocation(l.ctx, l.actor, in)
 }
 func (l *local) DeleteLocation(name string) error { return l.app.DeleteLocation(l.ctx, l.actor, name) }
 func (l *local) SaveSchedule(id string, in app.ScheduleInput) (store.Schedule, error) {
