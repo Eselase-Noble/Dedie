@@ -21,8 +21,9 @@ const PHASE_LABELS: Record<string, string> = {
 
 function Stepper({ job }: { job: MigrationDetail }) {
   // An offline migration has no streaming phase, and what the engine
-  // calls cutover is its validation.
+  // calls cutover is its validation. A sync is finished, not cut over.
   const offline = job.config.mode === "offline";
+  const cutover = offline ? "Validation" : job.config.mode === "sync" ? "Finish" : PHASE_LABELS.cutover;
   const phases = offline ? PHASES.filter((p) => p !== "streaming") : PHASES;
   const current = job.status === "completed" ? phases.length : phases.indexOf(job.phase);
   return (
@@ -34,7 +35,7 @@ function Stepper({ job }: { job: MigrationDetail }) {
         return (
           <div key={phase} className={`step ${cls}`}>
             <div className="dot">{i < current ? "✓" : i + 1}</div>
-            {offline && phase === "cutover" ? "Validation" : PHASE_LABELS[phase]}
+            {phase === "cutover" ? cutover : PHASE_LABELS[phase]}
           </div>
         );
       })}
@@ -292,18 +293,23 @@ function Detail({ id }: { id: string }) {
       <div className="card">
         <Stepper job={job} />
         <div className="figures">
-          <Figure label="Replication lag">
-            {job.phase !== "streaming" && job.phase !== "cutover" ? "—"
-              : st.lag_seconds !== undefined ? formatDuration(st.lag_seconds) : formatBytes(st.lag_bytes ?? 0)}
-          </Figure>
-          <Figure label="Applied position"><span className="mono">{st.applied_lsn || "—"}</span></Figure>
-          <Figure label="Source position"><span className="mono">{st.source_lsn || "—"}</span></Figure>
-          <Figure label="Transactions applied">{formatNumber(st.tx_applied ?? 0)}</Figure>
-          <Figure label="Row changes applied">{formatNumber(st.rows_applied ?? 0)}</Figure>
-          <Figure label="Apply anomalies">
-            <span style={{ color: (st.anomalies ?? 0) > 0 ? "var(--danger)" : undefined }}>{formatNumber(st.anomalies ?? 0)}</span>
-          </Figure>
-          <Figure label="Last applied commit">{formatTime(st.last_commit_time)}</Figure>
+          {/* An offline copy follows no changes, so it has no stream to report on. */}
+          {!offline && (
+            <>
+              <Figure label="Replication lag">
+                {job.phase !== "streaming" && job.phase !== "cutover" ? "—"
+                  : st.lag_seconds !== undefined ? formatDuration(st.lag_seconds) : formatBytes(st.lag_bytes ?? 0)}
+              </Figure>
+              <Figure label="Applied position"><span className="mono">{st.applied_lsn || "—"}</span></Figure>
+              <Figure label="Source position"><span className="mono">{st.source_lsn || "—"}</span></Figure>
+              <Figure label="Transactions applied">{formatNumber(st.tx_applied ?? 0)}</Figure>
+              <Figure label="Row changes applied">{formatNumber(st.rows_applied ?? 0)}</Figure>
+              <Figure label="Apply anomalies">
+                <span style={{ color: (st.anomalies ?? 0) > 0 ? "var(--danger)" : undefined }}>{formatNumber(st.anomalies ?? 0)}</span>
+              </Figure>
+              <Figure label="Last applied commit">{formatTime(st.last_commit_time)}</Figure>
+            </>
+          )}
           <Figure label="Source version"><span title={st.source_version}>{st.source_version || "—"}</span></Figure>
           <Figure label="Target version"><span title={st.target_version}>{st.target_version || "—"}</span></Figure>
           {st.slot && <Figure label="Replication slot"><span className="mono">{st.slot}</span></Figure>}
@@ -328,13 +334,23 @@ function Detail({ id }: { id: string }) {
         </div>
         {existing.length > 0 && (
           <div className="card-body">
-            <Banner tone={onExisting === "fail" ? "error" : "warn"}>
-              The target already has {existing.length} object{existing.length === 1 ? "" : "s"} this migration would create.{" "}
-              {onExisting === "fail" ? "The migration will not start until you decide what to do with them."
-                : onExisting === "skip" ? "They will be kept as they are and left out of the migration."
-                  : "They will be dropped and created again from the source when the migration starts."}{" "}
-              {manage && canDecide && <button className="btn small" onClick={() => setAsking(true)}>{onExisting === "fail" ? "Decide…" : "Change…"}</button>}
-            </Banner>
+            {st.schema_done && onExisting !== "fail" ? (
+              // The report was made before the job created anything; by now
+              // the choice has been carried out.
+              <Banner tone="info">
+                The target had {existing.length} object{existing.length === 1 ? "" : "s"} this migration would create.{" "}
+                {onExisting === "skip" ? "They were kept as they were and left out of the migration."
+                  : "They were dropped and created again from the source when the migration started."}
+              </Banner>
+            ) : (
+              <Banner tone={onExisting === "fail" ? "error" : "warn"}>
+                The target already has {existing.length} object{existing.length === 1 ? "" : "s"} this migration would create.{" "}
+                {onExisting === "fail" ? "The migration will not start until you decide what to do with them."
+                  : onExisting === "skip" ? "They will be kept as they are and left out of the migration."
+                    : "They will be dropped and created again from the source when the migration starts."}{" "}
+                {manage && canDecide && <button className="btn small" onClick={() => setAsking(true)}>{onExisting === "fail" ? "Decide…" : "Change…"}</button>}
+              </Banner>
+            )}
           </div>
         )}
         <div className="card-body flush table-wrap">
@@ -386,6 +402,7 @@ function Detail({ id }: { id: string }) {
       <div className="card">
         <div className="card-head"><h2>Configuration</h2></div>
         <div className="figures" style={{ borderTop: "none" }}>
+          <Figure label="Purpose">{sync ? "continuous sync" : offline ? "offline copy" : "online migration"}</Figure>
           <Figure label="Level">{job.config.tables?.length ? "table" : job.config.schemas?.length ? "schema" : "database"}</Figure>
           <Figure label="Schemas">{job.config.schemas?.length ? job.config.schemas.join(", ") : "all"}</Figure>
           <Figure label="Tables">
@@ -396,10 +413,10 @@ function Detail({ id }: { id: string }) {
           </Figure>
           <Figure label="Snapshot workers">{job.config.snapshot_workers || 4}</Figure>
           <Figure label="Validation">{job.config.validation || "checksum"}</Figure>
-          <Figure label="Fence source at cutover">{fenced ? "yes" : "no"}</Figure>
+          {!offline && !sync && <Figure label="Fence source at cutover">{fenced ? "yes" : "no"}</Figure>}
           <Figure label="Objects already on the target">{onExisting === "skip" ? "keep and skip" : onExisting === "replace" ? "replace" : "refuse"}</Figure>
-          {job.kind === "postgres-postgres" && <Figure label="Keep replication slot">{job.config.keep_slot ? "yes" : "no"}</Figure>}
-          <Figure label="Cutover timeout">{job.config.cutover_timeout_seconds || 300}s</Figure>
+          {job.kind === "postgres-postgres" && !offline && <Figure label="Keep replication slot">{job.config.keep_slot ? "yes" : "no"}</Figure>}
+          {!offline && <Figure label="Cutover timeout">{job.config.cutover_timeout_seconds || 300}s</Figure>}
         </div>
       </div>
 

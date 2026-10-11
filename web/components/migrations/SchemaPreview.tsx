@@ -69,7 +69,10 @@ export default function SchemaPreview({ jobId, name, onClose }: { jobId: string;
             target. Nothing has been run: reading this changes neither database.
           </p>
           <div className="preflight-bar" style={{ padding: "8px 0" }}>
-            <span><strong>{list.length}</strong> statement{list.length === 1 ? "" : "s"}</span>
+            <span>
+              {kind && <><strong>{shown.length}</strong> of{" "}</>}
+              <strong>{list.length}</strong> statement{list.length === 1 ? "" : "s"}
+            </span>
             <span className="spacer" />
             <select className="select" style={{ width: "auto" }} value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Show one kind of object">
               <option value="">Every kind</option>

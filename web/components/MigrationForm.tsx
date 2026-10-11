@@ -68,8 +68,11 @@ export default function MigrationForm({ connections, onClose, onCreated, initial
   const source = candidates.find((c) => c.id === sourceId);
   const targets = candidates.filter((c) => c.id !== sourceId && (TARGET_KINDS[source?.kind ?? ""] ?? []).includes(c.kind));
   const [chosenTarget, setTargetId] = useState("");
-  // Fall back to the first valid target when the source changes kind.
-  const targetId = targets.some((c) => c.id === chosenTarget) ? chosenTarget : targets[0]?.id ?? "";
+  // Until one is chosen, or when the source changes kind, offer a target
+  // of the source's own engine first: a version upgrade is the common case,
+  // and moving between engines should be a deliberate choice.
+  const targetId = targets.some((c) => c.id === chosenTarget) ? chosenTarget
+    : (targets.find((c) => c.kind === source?.kind) ?? targets[0])?.id ?? "";
   const mysql = source?.kind === "mysql";
   const mongo = source?.kind === "mongodb";
   const sync = mode === "sync";
@@ -190,7 +193,7 @@ export default function MigrationForm({ connections, onClose, onCreated, initial
               {candidates.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.kind}, {c.database})</option>)}
             </select>
           </Field>
-          <Field label="Target" hint="Must not already contain the tables being migrated.">
+          <Field label="Target" hint="Best empty. What happens to objects it already has is chosen below.">
             <select className="select" value={targetId} onChange={(e) => setTargetId(e.target.value)} required>
               {targets.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.kind}, {c.database})</option>)}
             </select>

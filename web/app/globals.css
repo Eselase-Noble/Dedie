@@ -136,8 +136,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .stat .value { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; }
 .stat .label { color: var(--text-muted); font-weight: 500; }
 .stat .sub { color: var(--text-muted); font-size: 12.5px; margin-top: 4px; }
-.figures { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 1px; background: var(--border); border-top: 1px solid var(--border); }
-.figure { background: var(--bg); padding: 10px 14px; min-width: 0; }
+/* Each figure draws its own outline into the one-pixel gaps, so a last row
+   that is not full ends in white rather than in a block of the line colour. */
+.figures { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 1px; overflow: hidden; border-top: 1px solid var(--border); }
+.figure { background: var(--bg); padding: 10px 14px; min-width: 0; box-shadow: 0 0 0 1px var(--border); }
 .figure .k { color: var(--text-muted); font-size: 12px; }
 .figure .v { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -183,6 +185,8 @@ table.data td.nowrap { white-space: nowrap; }
 .banner.ok { background: var(--ok-soft); border-color: #bfe2cd; color: var(--ok); }
 .banner.info { background: var(--accent-soft); border-color: #c9dbf8; color: #1a4a9e; }
 .banner pre { font-size: 12.5px; }
+/* A banner that closes a card's body leaves the spacing to the card. */
+.card-body > .banner:last-child { margin-bottom: 0; }
 
 .progress { height: 6px; background: var(--bg-muted); border-radius: 3px; overflow: hidden; min-width: 80px; }
 .progress > span { display: block; height: 100%; background: var(--accent); }
@@ -287,7 +291,7 @@ body.dragging-y, body.dragging-y * { cursor: row-resize !important; }
 .result-grid th .ctype { display: block; font-weight: 400; color: var(--text-faint); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
 /* One fixed-height line per row: the grid renders only the rows in view and
    relies on every row being the same height. */
-.result-grid td { height: 28px; padding: 0 10px; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default; }
+.result-grid td { height: 28px; padding: 0 10px; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); white-space: pre; overflow: hidden; text-overflow: ellipsis; cursor: default; }
 .result-grid tbody tr:hover td { background: #f5f8fe; }
 .result-grid tbody tr.selected td { background: var(--accent-soft); }
 .result-grid tr.spacer-row td { padding: 0; border: none; height: auto; background: none !important; }
@@ -392,6 +396,10 @@ body.dragging-y, body.dragging-y * { cursor: row-resize !important; }
   .results-pane { min-height: 420px; }
   .result-grid { max-height: 70vh; }
   .event { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  /* All six steps of a migration fit across a phone without scrolling. */
+  .stepper { padding: 14px 6px; }
+  .step { min-width: 54px; font-size: 11.5px; }
+  .card-head { flex-wrap: wrap; }
 }
 .menu-toggle { display: none; }
 
@@ -421,7 +429,7 @@ body.dragging-y, body.dragging-y * { cursor: row-resize !important; }
 
 /* Query browser: document tabs, tree actions, grid tools */
 .tab-area { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.doc-tabs { flex: none; display: flex; align-items: flex-end; gap: 2px; overflow-x: auto; border-bottom: 1px solid var(--border); margin-bottom: 8px; scrollbar-width: thin; }
+.doc-tabs { flex: none; display: flex; align-items: flex-end; gap: 2px; overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid var(--border); margin-bottom: 8px; scrollbar-width: thin; }
 .doc-tab { display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 10px; border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; color: var(--text-muted); cursor: pointer; white-space: nowrap; max-width: 220px; }
 .doc-tab:hover { background: var(--bg-subtle); }
 .doc-tab.active { background: var(--bg); border-color: var(--border); color: var(--text); font-weight: 600; margin-bottom: -1px; padding-bottom: 7px; }

@@ -139,7 +139,10 @@ export default function ConnectionForm({ existing, kinds, onClose, onSaved }: {
             <div className="span2">
               <Banner tone="warn">
                 SSL mode <strong>{form.sslmode}</strong> does not guarantee encryption. Credentials and data may cross
-                the network in clear text. Use <strong>require</strong> or stricter outside a trusted local network.
+                the network in clear text.{" "}
+                {form.kind === "oracle"
+                  ? <>Outside a trusted local network, connect to a TCPS listener with <strong>require</strong> or stricter.</>
+                  : <>Use <strong>require</strong> or stricter outside a trusted local network.</>}
               </Banner>
             </div>
           )}

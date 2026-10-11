@@ -31,7 +31,7 @@ export default function MigrationPaths() {
               <tr key={p.from + p.to}>
                 <td><strong>{p.from}</strong></td>
                 <td>{p.to}</td>
-                <td>{p.moves}</td>
+                <td className="wrap" style={{ minWidth: 220 }}>{p.moves}</td>
                 <td>{p.follows}</td>
               </tr>
             ))}
