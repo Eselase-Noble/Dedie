@@ -1,10 +1,12 @@
 import type {
+  AlertChannel,
   ApiToken,
   AuditEntry,
   AuditVerification,
   Backup,
   BackupInput,
   Catalog,
+  ChannelInput,
   ColumnDef,
   Connection,
   ConnectionAccess,
@@ -14,6 +16,7 @@ import type {
   MigrationAction,
   MigrationDetail,
   MigrationInput,
+  Monitoring,
   Overview,
   PreflightReport,
   QueryResponse,
@@ -169,6 +172,14 @@ export const api = {
   verifyBackup: (backupId: string) => post<{ ok: boolean }>(`/backups/${id(backupId)}/verify`),
   restoreBackup: (backupId: string, body: RestoreInput) => post<Restore>(`/backups/${id(backupId)}/restore`, body),
   restores: () => get<Restore[]>("/restores"),
+
+  // Monitoring and alerts
+  monitoring: () => get<Monitoring>("/monitoring"),
+  alertChannels: () => get<AlertChannel[]>("/alerts/channels"),
+  saveAlertChannel: (channelId: string, body: ChannelInput) =>
+    channelId ? request<AlertChannel>("PUT", `/alerts/channels/${id(channelId)}`, { body }) : post<AlertChannel>("/alerts/channels", body),
+  deleteAlertChannel: (channelId: string) => request<{ ok: boolean }>("DELETE", `/alerts/channels/${id(channelId)}`),
+  testAlertChannel: (channelId: string) => post<{ ok: boolean }>(`/alerts/channels/${id(channelId)}/test`),
 
   // Audit
   audit: (before: number, limit: number) => get<AuditEntry[]>(`/audit?before=${before}&limit=${limit}`),

@@ -93,6 +93,20 @@ CREATE TABLE IF NOT EXISTS connection_grants (
   connection_id TEXT NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   PRIMARY KEY (connection_id, user_id));
+CREATE TABLE IF NOT EXISTS alert_channels (
+  id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id),
+  name TEXT NOT NULL, kind TEXT NOT NULL, config_enc BLOB NOT NULL, summary TEXT NOT NULL DEFAULT '',
+  events TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1,
+  last_sent_at TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(org_id, name));
+CREATE TABLE IF NOT EXISTS alert_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, org_id TEXT NOT NULL, ts TEXT NOT NULL,
+  type TEXT NOT NULL, subject TEXT NOT NULL, message TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS alert_events_org ON alert_events(org_id, id);
+CREATE TABLE IF NOT EXISTS health_samples (
+  connection_id TEXT NOT NULL, ts TEXT NOT NULL, online INTEGER NOT NULL,
+  latency_ms INTEGER NOT NULL, error TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS health_samples_conn ON health_samples(connection_id, ts);
 `
 
 // columns lists columns added to existing tables after the first release.

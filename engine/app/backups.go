@@ -120,6 +120,10 @@ func (a *App) startBackup(ctx context.Context, actor Actor, in BackupInput, sche
 		if err != nil {
 			os.Remove(b.Path)
 			a.Store.FinishBackup(bg, b.ID, "failed", err.Error(), 0, "")
+			// A schedule reports its own failures, with its name.
+			if scheduleID == "" {
+				a.emit(b.OrgID, Event{Type: EventBackupFailed, Subject: "Backup of " + c.Name + " failed", Message: err.Error()})
+			}
 			return
 		}
 		a.Store.FinishBackup(bg, b.ID, "completed", "", size, sum)

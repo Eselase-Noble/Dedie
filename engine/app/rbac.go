@@ -17,6 +17,7 @@ const (
 	PermRestore           Permission = "backups.restore"
 	PermManageUsers       Permission = "users.manage"
 	PermViewAudit         Permission = "audit.view"
+	PermManageAlerts      Permission = "alerts.manage"
 )
 
 // Roles, from most to least privileged.
@@ -34,8 +35,8 @@ var operatorPerms = []Permission{
 }
 
 var rolePerms = map[string][]Permission{
-	RoleOwner:    append([]Permission{PermManageUsers, PermViewAudit}, operatorPerms...),
-	RoleAdmin:    append([]Permission{PermManageUsers, PermViewAudit}, operatorPerms...),
+	RoleOwner:    append([]Permission{PermManageUsers, PermViewAudit, PermManageAlerts}, operatorPerms...),
+	RoleAdmin:    append([]Permission{PermManageUsers, PermViewAudit, PermManageAlerts}, operatorPerms...),
 	RoleOperator: operatorPerms,
 	RoleAnalyst:  {PermViewConnections, PermQueryRead, PermViewMigrations},
 	RoleViewer:   {PermViewConnections, PermViewMigrations},
