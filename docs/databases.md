@@ -120,7 +120,7 @@ GRANT EXECUTE_CATALOG_ROLE TO migrator;      -- to call DBMS_LOGMNR
 GRANT SELECT ANY DICTIONARY TO migrator;     -- V$DATABASE, V$TRANSACTION, V$LOGMNR_CONTENTS, V$LOG
 ```
 
-**3. Redo that stays long enough.** In `NOARCHIVELOG` mode only the online redo logs exist, and they are reused once full. A job that keeps running keeps up, but one that is paused, or falls behind by more than the logs hold, cannot continue and must start over. For any migration that matters, run the source in `ARCHIVELOG` mode and keep the archived logs until the job has read them:
+**3. Redo that stays long enough.** In `NOARCHIVELOG` mode only the online redo logs exist, and they are reused once full. From inside a pluggable database it is stricter still: LogMiner can read only the *current* online log, so the job follows changes until a log switch happens while it still has earlier changes to read, and then stops for good. On a busy database that is minutes. For any online migration that matters, run the source in `ARCHIVELOG` mode and keep the archived logs until the job has read them:
 
 ```sql
 -- as SYSDBA, in a maintenance window: this restarts the database
@@ -130,7 +130,9 @@ ALTER DATABASE ARCHIVELOG;
 ALTER DATABASE OPEN;
 ```
 
-Every followed table needs a primary key. A table without one is copied, and preflight warns that later changes to it are not followed.
+Every followed table needs a primary key. A table without one is copied, and preflight warns that later changes to it are not followed. The same goes for a table with a `JSON` or `BOOLEAN` column (23ai), whose changes LogMiner does not describe.
+
+For **Oracle to Oracle**, the source account also needs `SELECT_CATALOG_ROLE` to read the definitions of objects in schemas other than its own.
 
 ### Oracle 12c
 
@@ -146,6 +148,6 @@ The pipelines are tested end to end against Oracle 23ai. The 12c behaviour above
 |---|---|---|
 | PostgreSQL | `CREATE` on the database; ownership of what it creates | `ENCODING 'UTF8'`; none of the tables being migrated |
 | MySQL | all privileges on the target database | `utf8mb4`; none of the tables being migrated |
-| Oracle | to be the schema that receives the tables, with `CREATE TABLE`, `CREATE SEQUENCE` and a quota on its tablespace | none of the tables being migrated |
+| Oracle | to be the schema that receives the objects, with `CREATE TABLE`, `CREATE SEQUENCE`, `CREATE VIEW`, `CREATE PROCEDURE`, `CREATE TRIGGER`, `CREATE SYNONYM`, `CREATE TYPE` and a quota on its tablespace; or the `ANY` forms of those to create in other schemas | the same release as the source or newer; the receiving schemas (users) already created |
 
-A target is never emptied for you: preflight fails if a table to be migrated already exists there.
+A target is never emptied without being told to. If a table or another object to be migrated already exists there, preflight lists it and the migration waits for your choice: refuse, keep it and skip it, or replace it.

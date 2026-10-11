@@ -36,7 +36,7 @@ test:
 # itself when its variables are not set; see the integration_test.go file of
 # each pipeline under engine/migrate.
 test-integration:
-	go test -tags noui -count=1 -v -run TestMigration ./engine/migrate/...
+	go test -tags noui -count=1 -p 1 -v -run TestMigration ./engine/migrate/...
 	go test -tags noui -count=1 -v -run TestBackupToObjectStorage ./engine/app
 
 lint:

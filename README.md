@@ -6,7 +6,7 @@ A query browser, administration console and migration engine for PostgreSQL, MyS
 
 Website: https://eselase-noble.github.io/Dedie/ · Downloads: https://github.com/Eselase-Noble/Dedie/releases · Guides: [setting up Dedie](docs/setup.md), [preparing your databases](docs/databases.md)
 
-Dedie moves a production database to a newer server version, or to a different database engine, while the old one stays online. It copies a consistent snapshot, follows the source's replication log to stay in step, and switches over in a write pause measured in seconds. The same engine powers a query browser with data editing, scheduled encrypted backups with verified restore, health monitoring with alerts, and administration of database users and connections, behind role-based access control, two-factor sign-in and a tamper-evident audit log.
+Dedie moves a production database to a newer server version, or to a different database engine, while the old one stays online, or as a one-time offline copy. It copies a consistent snapshot, follows the source's replication log to stay in step, and switches over in a write pause measured in seconds. The same engine powers a query browser with data editing, scheduled encrypted backups with verified restore, health monitoring with alerts, and administration of database users and connections, behind role-based access control, two-factor sign-in and a tamper-evident audit log.
 
 ## Contents
 
@@ -64,23 +64,23 @@ Dedie moves a production database to a newer server version, or to a different d
 
 ## Status
 
-| Capability | PostgreSQL | MySQL | MongoDB |
-|---|---|---|---|
-| Online version upgrade | Working (source 10+) | Working (source 5.6+) | — |
-| Query browser and schema explorer | Working | Working | Working (commands as JSON) |
-| Edit rows in the grid | Working | Working | — |
-| Logical backups: whole database, structure, data, selected tables | Working | Working | — |
-| Physical backup of the whole server | Working | Working (Dedie on the database host) | — |
-| Point-in-time recovery | Working (12+) | — | — |
-| Backups in S3-compatible object storage | Working | Working | — |
-| Differential and incremental backups | Working (physical, 17+) | Working (logical, from the binary log) | — |
-| Backup storage locations, plain or encrypted files | Working | Working | — |
-| Connection pool view, manual and automatic closing of idle connections | Working | Working | — |
-| Scheduled backups with retention | Working | Working | — |
-| Health monitoring and alerts | Working | Working | Working |
-| Database users, roles, connection limits | Working | Working | — |
-| Change object owners | Working | not applicable | not applicable |
-| Server console | Working | Working | Working |
+| Capability | PostgreSQL | MySQL | Oracle | MongoDB |
+|---|---|---|---|---|
+| Online version upgrade | Working (source 10+) | Working (source 5.6+) | Working (source 12c+; tested on 23ai) | — |
+| Query browser and schema explorer | Working | Working | Working | Working (commands as JSON) |
+| Edit rows in the grid | Working | Working | Working | — |
+| Logical backups: whole database, structure, data, selected tables | Working | Working | — | — |
+| Physical backup of the whole server | Working | Working (Dedie on the database host) | — | — |
+| Point-in-time recovery | Working (12+) | — | — | — |
+| Backups in S3-compatible object storage | Working | Working | — | — |
+| Differential and incremental backups | Working (physical, 17+) | Working (logical, from the binary log) | — | — |
+| Backup storage locations, plain or encrypted files | Working | Working | — | — |
+| Connection pool view, manual and automatic closing of idle connections | Working | Working | — | — |
+| Scheduled backups with retention | Working | Working | — | — |
+| Health monitoring and alerts | Working | Working | Working | Working |
+| Database users, roles, connection limits | Working | Working | — | — |
+| Change object owners | Working | not applicable | not applicable | not applicable |
+| Server console | Working | Working | Working (sessions, cancel, end) | Working |
 
 | Migration or sync path | State |
 |---|---|
@@ -88,11 +88,14 @@ Dedie moves a production database to a newer server version, or to a different d
 | MySQL → MySQL | Working |
 | MySQL → PostgreSQL | Working: tables, keys, indexes and foreign keys are translated; views, routines and triggers are not |
 | PostgreSQL → MySQL | Working: tables, keys, indexes and foreign keys are translated; views, functions and triggers are not |
+| Oracle → Oracle | Working: everything in the schema is taken from Oracle's own definitions, PL/SQL and triggers included |
+| Oracle → PostgreSQL | Working: tables, keys, sequences, identity columns, indexes, check constraints and foreign keys are translated; views and PL/SQL are not |
+| Oracle → MySQL | Working: tables, keys, identity columns, indexes, check constraints and foreign keys are translated; sequences, views and PL/SQL are not |
 | MongoDB → PostgreSQL | Working: each collection becomes a table holding every document as `jsonb`, with chosen fields lifted into typed columns; indexes and validators are not translated |
 
-All five pipelines are covered by end-to-end tests that migrate a database under write load, pause and resume mid-stream, cut over and compare the result. The PostgreSQL test runs 16 → 18; the cross-engine tests run MySQL 8.0 → PostgreSQL 18, PostgreSQL 16 → MySQL 8.0 and MongoDB 8.0 → PostgreSQL 18. MySQL versions other than 8.0 and MongoDB versions other than 8.0 have not been exercised yet.
+All eight pipelines are covered by end-to-end tests that migrate a database under write load, pause and resume mid-stream, cut over and compare the result, and by a second test that runs each one offline. The PostgreSQL test runs 16 → 18; the cross-engine tests run MySQL 8.0 → PostgreSQL 18, PostgreSQL 16 → MySQL 8.0 and MongoDB 8.0 → PostgreSQL 18; the Oracle tests run from Oracle 23ai to PostgreSQL 18, MySQL 8.0 and Oracle 23ai. MySQL and MongoDB versions other than 8.0, and Oracle releases other than 23ai (12c included), have not been exercised yet.
 
-Not built yet: Oracle as a source, two-way sync with conflict handling, backups of MongoDB, single sign-on, and external key management. See the [roadmap](#roadmap).
+Not built yet: SQL Server, two-way sync with conflict handling, backups of Oracle and MongoDB, single sign-on, and external key management. See the [roadmap](#roadmap).
 
 ## Programs
 
@@ -465,7 +468,7 @@ Requirements for following changes (an [offline](#offline-migration) migration n
 - minimal supplemental logging on the database, switched on once by a DBA without a restart
 - an account with `LOGMINING`, `SELECT ANY TRANSACTION`, `EXECUTE_CATALOG_ROLE` and `SELECT ANY DICTIONARY`
 - a primary key on every followed table. A table without one is copied, and preflight warns that later changes to it are not followed
-- `ARCHIVELOG` mode for anything that matters. Without it only the online redo logs exist; a job that is paused or falls behind for longer than they last must start over
+- `ARCHIVELOG` mode for anything that matters. Without it only the online redo logs exist, and from inside a pluggable database LogMiner can read only the current one: the job follows changes until a log switch happens while it still has earlier changes to read, then stops for good and must start over. On a busy database that is a matter of minutes. Preflight warns when this applies
 
 When the job starts it switches on primary key supplemental logging for the tables it follows, and switches it off again when it finishes (`--keep-slot` leaves it on). That is a brief `ALTER TABLE`, which waits up to 30 seconds for transactions holding the table.
 
@@ -473,8 +476,39 @@ Notes:
 
 - The source cannot be fenced. Stop the applications that write to it before asking for cutover.
 - Inside a pluggable database of a current release LogMiner finds its redo logs by itself. In a database that is not a container, and on 12c, Dedie registers the online and archived logs that cover the range it needs. A pluggable database on 12c can be migrated offline only, because that release runs LogMiner from the container root alone.
+- A table with a `JSON` or `BOOLEAN` column (Oracle 23ai) is copied, but LogMiner does not describe changes to such tables, so they are not followed. Preflight names them; stop writes to them, or migrate offline.
 - Validation compares row counts and, where the primary key is a number, text or date, the set of keys.
+- A time zone given by region name (`Europe/Paris`) arrives as its offset at that instant, and a date before the common era loses its era.
 - The paths are tested end to end against Oracle 23ai. A 12c server has not been part of the test runs; run preflight and a trial migration of a copy first.
+
+### Oracle to Oracle
+
+This is the upgrade path: from 12c or newer to the same or a newer release, on another server or in another pluggable database. The source side is as described under [Oracle](#oracle). Nothing is translated: every definition is taken from the source itself with `DBMS_METADATA`, so tables arrive with their partitioning, identity and virtual columns, and function-based indexes, and stored code arrives as written.
+
+| When | What is created |
+|---|---|
+| Before the copy | sequences and tables |
+| After the copy | types, functions, procedures, packages, views and synonyms; then indexes; then primary key, unique, check and `NOT NULL` constraints; then comments |
+| At the end, after validation | sequence and identity positions, foreign keys, triggers, `GENERATED ALWAYS` restored on identity columns; invalid objects are compiled and whatever stays invalid is reported |
+
+Triggers and foreign keys wait until the end so that neither fires nor rejects while rows are still arriving. A table and its primary key must be created; anything else that fails is reported with Oracle's message and the job goes on.
+
+Where the objects go:
+
+- A source schema goes to the schema of the same name on the target, which must already exist: Dedie creates no users. The target account must be that schema or hold the `ANY` privileges (`CREATE ANY TABLE` and its companions).
+- When exactly one schema is migrated and that is not possible, its objects go into the target connection's own schema, and references to the old schema name in the definitions are rewritten. Preflight states the mapping it will use. A reference a person wrote without quotes inside PL/SQL or a view (`hr.employees`) is not rewritten; preflight lists the objects that contain one.
+
+What to know:
+
+- The target must be the same release or newer. An older target fails preflight; the same release is reported as a move, not an upgrade.
+- Physical attributes (tablespaces, storage clauses, LOB storage, compression) are not carried over; the target's defaults apply.
+- Values are carried exactly: `NUMBER` to full precision, `TIMESTAMP` to the nanosecond, large objects of any size, and the difference between an empty large object and `NULL`. The end-to-end tests compare every row byte for byte.
+- A `LONG` or `LONG RAW` value longer than 4000 bytes (32767 with extended strings) fails the job rather than being cut short; preflight names such columns. Convert them to `CLOB` or `BLOB` first.
+- Not migrated: users, roles, grants, profiles, tablespaces, database links, scheduler jobs, queues, public synonyms, materialized views, external tables, and schema- or database-level triggers. Preflight counts what it found of each.
+- A table-level migration takes the listed tables with their indexes, constraints and triggers, and the schema's sequences; views, stored code and synonyms are left out.
+- To read definitions in schemas other than its own, the source account needs `SELECT_CATALOG_ROLE`.
+- While a job runs, a small table named `DEDIE_CHECKPOINT` exists in the receiving schema; it is dropped when the job ends.
+- Tested from one schema to another on Oracle 23ai. A 12c source and a cross-release upgrade have not been part of the test runs.
 
 ### Oracle to PostgreSQL
 
@@ -920,6 +954,15 @@ export DEDIE_TEST_MYSQL_TARGET=mysql://root@127.0.0.1:33162
 # initiated by the test. It migrates into DEDIE_TEST_TARGET.
 export DEDIE_TEST_MONGO_SOURCE=mongodb://127.0.0.1:27117
 
+# Oracle: an account whose own schema the tests may fill and empty. The
+# online tests also need supplemental logging on the database and the
+# LogMiner privileges; see docs/databases.md. Oracle to PostgreSQL and
+# Oracle to MySQL both read DEDIE_TEST_ORACLE_SOURCE; Oracle to Oracle goes
+# from the schema of one account to the schema of another.
+export DEDIE_TEST_ORACLE_SOURCE=oracle://dedie_test:secret@127.0.0.1:1521/FREEPDB1
+export DEDIE_TEST_ORACLE_SOURCE_C=oracle://dedie_test_c:secret@127.0.0.1:1521/FREEPDB1
+export DEDIE_TEST_ORACLE_TARGET=oracle://dedie_test_d:secret@127.0.0.1:1521/FREEPDB1
+
 make test-integration
 ```
 
@@ -927,7 +970,7 @@ To check a desktop build without watching the window, run it with `-Ddedie.smoke
 
 ### Continuous integration
 
-`.github/workflows/ci.yml` lints, runs the unit tests, runs the PostgreSQL 16 → 18 and MongoDB 8.0 → PostgreSQL 18 migration tests, builds the server and CLI for Linux, macOS and Windows, and builds the desktop application on a runner of each operating system. Pushing a tag that starts with `v` publishes everything as a GitHub release with checksums. The MySQL migration tests are run locally for now.
+`.github/workflows/ci.yml` lints, runs the unit tests, runs the PostgreSQL 16 → 18 and MongoDB 8.0 → PostgreSQL 18 migration tests, builds the server and CLI for Linux, macOS and Windows, and builds the desktop application on a runner of each operating system. Pushing a tag that starts with `v` publishes everything as a GitHub release with checksums. The MySQL and Oracle migration tests are run locally for now.
 
 ### Branching
 
@@ -965,7 +1008,7 @@ What the data directory holds:
 
 ## Roadmap
 
-1. **Oracle → PostgreSQL**: schema translation and an online migration through LogMiner.
+1. **SQL Server** as a source and a target, and Oracle 12c and 19c in the test matrix.
 2. **Two-way sync** between two databases, with conflict handling.
 3. **Encrypted and off-host log archives**: the write-ahead log archive sealed like backups are, and kept in object storage.
 4. **Backups of MongoDB**, and incremental MySQL backups that do not depend on the binary log being retained.
