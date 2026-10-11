@@ -292,3 +292,31 @@ func (c *cli) migrateExisting(args []string) error {
 	fmt.Printf("%s: objects that already exist on the target will be handled with %q. Next: dedie migrate preflight %s\n", args[0], args[1], args[0])
 	return nil
 }
+
+// migratePreview prints what the migration would run on the target as a
+// script: readable on a terminal, and reviewable in a change request when
+// redirected to a file.
+func (c *cli) migratePreview(args []string) error {
+	id, err := oneArg(args, "migration id")
+	if err != nil {
+		return err
+	}
+	list, err := c.be.PreviewMigration(id)
+	if err != nil {
+		return err
+	}
+	phase := ""
+	for _, st := range list {
+		if st.Phase != phase {
+			phase = st.Phase
+			fmt.Printf("-- ===== %s =====\n\n", map[string]string{
+				migrate.PhaseSchema:   "before the copy",
+				migrate.PhaseIndexing: "after the copy",
+				migrate.PhaseCutover:  "at the end, after validation",
+			}[phase])
+		}
+		fmt.Printf("-- %s %s\n%s;\n\n", st.Kind, st.Name, strings.TrimRight(strings.TrimSpace(st.SQL), ";"))
+	}
+	fmt.Fprintf(os.Stderr, "%d statement(s). Nothing was run.\n", len(list))
+	return nil
+}

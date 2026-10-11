@@ -48,6 +48,8 @@ Migrations
   migrate preflight <id>       check both databases without changing them; if
                                the target already has some of the objects,
                                it lists them and asks what to do
+  migrate preview <id>         print the statements the migration would run
+                               on the target, as a script, without running them
   migrate existing <id> fail|skip|replace
                                answer that question without a prompt
   migrate run <id>             run in the foreground until paused or complete
@@ -182,6 +184,8 @@ func (c *cli) dispatch(args []string) error {
 			return c.migratePreflight(rest)
 		case "existing":
 			return c.migrateExisting(rest)
+		case "preview":
+			return c.migratePreview(rest)
 		case "run":
 			return c.migrateRun(rest)
 		case "status":

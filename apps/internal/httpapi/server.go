@@ -96,6 +96,7 @@ func New(a *app.App, opts Options) http.Handler {
 	mux.HandleFunc("GET /api/v1/migrations/{id}", s.authed(s.getMigration))
 	mux.HandleFunc("POST /api/v1/migrations/{id}/preflight", s.authed(s.preflightMigration))
 	mux.HandleFunc("POST /api/v1/migrations/{id}/on-existing", s.authed(s.setOnExisting))
+	mux.HandleFunc("GET /api/v1/migrations/{id}/preview", s.authed(s.previewMigration))
 	mux.HandleFunc("POST /api/v1/migrations/{id}/actions/{action}", s.authed(s.migrationAction))
 
 	mux.HandleFunc("GET /api/v1/backups", s.authed(s.listBackups))

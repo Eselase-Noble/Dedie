@@ -215,6 +215,11 @@ func (r *remote) PreflightMigration(id string) (*migrate.Report, error) {
 	return &report, err
 }
 
+func (r *remote) PreviewMigration(id string) (list []migrate.Statement, err error) {
+	err = r.send("GET", "/migrations/"+seg(id)+"/preview", nil, &list)
+	return
+}
+
 func (r *remote) SetOnExisting(id, policy string) error {
 	return r.send("POST", "/migrations/"+seg(id)+"/on-existing", map[string]string{"policy": policy}, nil)
 }

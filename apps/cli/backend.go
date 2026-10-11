@@ -29,6 +29,7 @@ type backend interface {
 	GetMigration(id string) (app.MigrationDetail, error)
 	PreflightMigration(id string) (*migrate.Report, error)
 	SetOnExisting(id, policy string) error
+	PreviewMigration(id string) ([]migrate.Statement, error)
 	MigrationAction(id, action string) error
 	// RunJob returns when the job stops running: completed, paused or
 	// failed. Locally the job executes in this process; remotely the
@@ -96,6 +97,9 @@ func (l *local) GetMigration(id string) (app.MigrationDetail, error) {
 }
 func (l *local) PreflightMigration(id string) (*migrate.Report, error) {
 	return l.app.PreflightMigration(l.ctx, l.actor, id)
+}
+func (l *local) PreviewMigration(id string) ([]migrate.Statement, error) {
+	return l.app.PreviewMigration(l.ctx, l.actor, id)
 }
 func (l *local) SetOnExisting(id, policy string) error {
 	_, err := l.app.SetOnExisting(l.ctx, l.actor, id, policy)

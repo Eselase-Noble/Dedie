@@ -170,6 +170,40 @@ func (a *App) PreflightMigration(ctx context.Context, actor Actor, id string) (*
 	return report, nil
 }
 
+// PreviewMigration returns the statements the migration would run on the
+// target, without running them.
+func (a *App) PreviewMigration(ctx context.Context, actor Actor, id string) ([]migrate.Statement, error) {
+	if err := actor.require(PermManageMigrations); err != nil {
+		return nil, err
+	}
+	j, err := a.Store.GetJob(ctx, actor.User.OrgID, id)
+	if err != nil {
+		return nil, wrap(err)
+	}
+	src, dst, kind, err := a.endpoints(ctx, j.OrgID, j.SourceID, j.TargetID)
+	if err != nil {
+		return nil, err
+	}
+	pipeline, err := migrate.Lookup(kind)
+	if err != nil {
+		return nil, invalid("%s", err.Error())
+	}
+	previewer, ok := pipeline.(migrate.Previewer)
+	if !ok {
+		return nil, invalid("a preview of the statements is not available for %s migrations", kind)
+	}
+	var cfg migrate.Config
+	_ = json.Unmarshal(j.Config, &cfg)
+	list, err := previewer.Preview(ctx, src, dst, cfg)
+	if err != nil {
+		return nil, &Error{Status: 502, Message: err.Error()}
+	}
+	if list == nil {
+		list = []migrate.Statement{}
+	}
+	return list, nil
+}
+
 // SetOnExisting records the administrator's decision about objects that
 // already exist on the target: refuse, leave them and skip them, or drop
 // and recreate them. It can be changed only while the job has not created

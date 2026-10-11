@@ -228,6 +228,24 @@ type Pipeline interface {
 	Run(ctx context.Context, jobID string, cfg Config, state json.RawMessage, src, dst connector.Config, rep Reporter) (Outcome, error)
 }
 
+// Statement is one statement a migration would run on the target.
+type Statement struct {
+	// Phase is when it runs: PhaseSchema, PhaseIndexing or PhaseCutover.
+	Phase string `json:"phase"`
+	// Kind is what it creates: "schema", "table", "index", "foreign key"...
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	SQL  string `json:"sql"`
+}
+
+// Previewer is implemented by pipelines that can show the statements they
+// would run on the target, in order, without running any of them. It is
+// how an administrator reads a translated schema before agreeing to it.
+// Like preflight, a preview changes neither database.
+type Previewer interface {
+	Preview(ctx context.Context, src, dst connector.Config, cfg Config) ([]Statement, error)
+}
+
 var pipelines = map[string]Pipeline{}
 
 // Kind names the pipeline for a source and target database kind.

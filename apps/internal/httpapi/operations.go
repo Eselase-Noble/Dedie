@@ -51,6 +51,16 @@ func (s *Server) preflightMigration(w http.ResponseWriter, r *http.Request, acto
 	writeJSON(w, http.StatusOK, report)
 }
 
+// previewMigration lists the statements the migration would run on the target.
+func (s *Server) previewMigration(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	list, err := s.app.PreviewMigration(r.Context(), actor, r.PathValue("id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
 // setOnExisting records what the migration should do about objects that
 // already exist on the target.
 func (s *Server) setOnExisting(w http.ResponseWriter, r *http.Request, actor app.Actor) {
