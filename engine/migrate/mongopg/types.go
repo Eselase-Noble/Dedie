@@ -73,6 +73,21 @@ type State struct {
 	LastCommitTime time.Time `json:"last_commit_time"`
 	SourceVersion  string    `json:"source_version"`
 	TargetVersion  string    `json:"target_version"`
+
+	// What the job does about tables that were on the target before it
+	// started. It is decided once, in the schema phase, from the policy
+	// chosen for the job: later the job's own tables exist as well, and
+	// nothing on the target tells the two apart.
+	//
+	// SkippedTables are the collections left out of the migration because
+	// the target's tables of their names are kept.
+	SkippedTables []string `json:"skipped_tables,omitempty"`
+	// DropFirst are the statements that remove what the job replaces.
+	DropFirst []string `json:"drop_first,omitempty"`
+	// Tables are the collections whose tables the schema phase prepared.
+	// The copy empties and fills those and no others: a collection that
+	// appears later arrives through the stream.
+	Tables []string `json:"tables,omitempty"`
 }
 
 // targetSchema is where the collections' tables are created.
@@ -85,6 +100,14 @@ const checkpointDDL = `CREATE SCHEMA IF NOT EXISTS ` + metaSchema + `;
 CREATE TABLE IF NOT EXISTS ` + metaSchema + `.mongo_checkpoint (
 	job_id text PRIMARY KEY, resume_token bytea NOT NULL,
 	updated_at timestamptz NOT NULL DEFAULT now())`
+
+// checkpointMark records that a job has started preparing the target,
+// before it creates anything there, so that a retry can tell its own
+// leftovers from somebody else's tables. The empty token is no position: a
+// position left by an earlier run of the job would send the stream to the
+// wrong place.
+const checkpointMark = `INSERT INTO ` + metaSchema + `.mongo_checkpoint (job_id, resume_token) VALUES ($1, '')
+	ON CONFLICT (job_id) DO UPDATE SET resume_token = '', updated_at = now()`
 
 const checkpointUpsert = `INSERT INTO ` + metaSchema + `.mongo_checkpoint (job_id, resume_token) VALUES ($1, $2)
 	ON CONFLICT (job_id) DO UPDATE SET resume_token = excluded.resume_token, updated_at = now()`

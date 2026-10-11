@@ -47,9 +47,11 @@ func (r *runner) stream(ctx context.Context) (string, error) {
 	var token []byte
 	err := r.dst.QueryRow(ctx, `SELECT resume_token FROM `+metaSchema+`.mongo_checkpoint WHERE job_id=$1`, r.jobID).Scan(&token)
 	switch {
-	case err == nil:
+	case err == nil && len(token) > 0:
 		opts.SetResumeAfter(bson.Raw(token))
-	case errors.Is(err, pgx.ErrNoRows):
+	case err == nil || errors.Is(err, pgx.ErrNoRows):
+		// Nothing was applied yet; the row, if there is one, only marks
+		// the target as this job's.
 		opts.SetStartAtOperationTime(&bson.Timestamp{T: r.st.StartT, I: r.st.StartI})
 	default:
 		return "", err
@@ -163,7 +165,7 @@ func (r *runner) apply(ctx context.Context, batch []change, token bson.Raw, know
 		default:
 			continue // index and other definition changes are not translated
 		}
-		if !r.scope.includes(name) {
+		if !r.scope.includes(name) || r.skipped[name] {
 			continue
 		}
 		if !known[name] {

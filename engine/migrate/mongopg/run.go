@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -14,6 +15,7 @@ import (
 	"dedie/engine/connector/mongodb"
 	"dedie/engine/connector/postgres"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/pgpg"
 )
 
 // maxStreamRetries is how many times in a row the stream is restarted
@@ -30,6 +32,9 @@ type runner struct {
 	// columns holds the fields lifted into columns, by collection.
 	columns map[string][]column
 	list    []Collection
+	// skipped holds the collections left out because the target's tables
+	// of their names are kept; see State.SkippedTables.
+	skipped map[string]bool
 	client  *mongo.Client
 	db      *mongo.Database
 	dst     *pgx.Conn
@@ -58,7 +63,7 @@ func Run(ctx context.Context, jobID string, cfg migrate.Config, st State, srcCfg
 		return "", fmt.Errorf("target: %w", err)
 	}
 	defer func() { r.dst.Close(context.WithoutCancel(ctx)) }()
-	if r.list, err = collections(ctx, r.db, r.scope); err != nil {
+	if r.list, err = r.collections(ctx); err != nil {
 		return "", err
 	}
 	if err := checkNames(r.list); err != nil {
@@ -69,6 +74,53 @@ func Run(ctx context.Context, jobID string, cfg migrate.Config, st State, srcCfg
 
 func (r *runner) save() { r.rep.SaveState(*r.st) }
 
+// collections lists the collections the job covers: those in scope, less
+// the ones whose tables were on the target before the job and are kept.
+func (r *runner) collections(ctx context.Context) ([]Collection, error) {
+	list, err := collections(ctx, r.db, r.scope)
+	if err != nil {
+		return nil, err
+	}
+	r.skipped = map[string]bool{}
+	for _, name := range r.st.SkippedTables {
+		r.skipped[name] = true
+	}
+	out := list[:0]
+	for _, c := range list {
+		if !r.skipped[c.Name] {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// copyList is what the copy covers: the collections whose tables the
+// schema phase prepared. One created since then has no table yet, and a
+// table of its name on the target would not be this job's to empty; its
+// documents arrive through the stream, which starts before it existed. An
+// offline job has no stream and answers only for what it copies.
+func (r *runner) copyList() []Collection {
+	if r.st.Tables == nil {
+		return r.list
+	}
+	prepared := map[string]bool{}
+	for _, name := range r.st.Tables {
+		prepared[name] = true
+	}
+	var out []Collection
+	for _, c := range r.list {
+		if prepared[c.Name] {
+			out = append(out, c)
+		} else if r.cfg.Offline() {
+			r.rep.Event("warn", "collection "+c.Name+" was created after the job started and is not part of this copy")
+		}
+	}
+	if r.cfg.Offline() {
+		r.list = out
+	}
+	return out
+}
+
 func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 	if !r.st.SchemaDone {
 		if err := r.schemaPhase(ctx); err != nil {
@@ -77,8 +129,9 @@ func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 	}
 	if !r.st.SnapshotDone {
 		r.rep.SetPhase(migrate.PhaseSnapshot)
-		r.rep.Event("info", fmt.Sprintf("copying %d collection(s) with %d worker(s)", len(r.list), r.cfg.SnapshotWorkers))
-		altered, dropped, err := snapshot(ctx, r.db, r.dstCfg, r.list, r.columns, r.cfg.SnapshotWorkers, r.rep)
+		list := r.copyList()
+		r.rep.Event("info", fmt.Sprintf("copying %d collection(s) with %d worker(s)", len(list), r.cfg.SnapshotWorkers))
+		altered, dropped, err := snapshot(ctx, r.db, r.dstCfg, list, r.columns, r.cfg.SnapshotWorkers, r.rep)
 		if errors.Is(err, errInterrupted) {
 			if r.rep.Desired() == "abort" {
 				return r.abort(ctx), nil
@@ -186,20 +239,60 @@ func (r *runner) schemaPhase(ctx context.Context) error {
 		r.st.StartT, r.st.StartI = t, i
 	}
 
+	// The tables must be new, unless the job was told to keep or replace
+	// what is there, or they are this job's own: a retry after an
+	// interrupted schema phase finds the tables it created the first time.
+	// What was there before the job is settled now, while it can still be
+	// told from what the job creates, and remembered from here on.
+	var ours bool
+	_ = r.dst.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM `+metaSchema+`.mongo_checkpoint WHERE job_id=$1)`, r.jobID).Scan(&ours)
+	if !ours {
+		found, err := pgpg.FindExisting(ctx, r.dst, claims(r.list))
+		if err != nil {
+			return err
+		}
+		report := &migrate.Report{}
+		pgpg.ReportExisting(report, found, r.cfg.Existing(), targetPlace)
+		var blocking []string
+		for _, c := range report.Checks {
+			if c.Status == "fail" {
+				blocking = append(blocking, c.Name+": "+c.Detail)
+			}
+		}
+		if len(blocking) > 0 {
+			return fmt.Errorf("preflight failed: %s", strings.Join(blocking, "; "))
+		}
+		r.st.SkippedTables, _, r.st.DropFirst = pgpg.Decide(r.cfg.Existing(), found)
+		r.save()
+		if n := len(r.st.SkippedTables); n > 0 {
+			if r.list, err = r.collections(ctx); err != nil {
+				return err
+			}
+			r.rep.Event("warn", fmt.Sprintf("kept %d existing table(s) on the target as they are, as chosen; their collections are left out of the migration", n))
+			if len(r.list) == 0 {
+				return errors.New("every collection to be migrated already has a table on the target, which is kept; nothing is left to migrate")
+			}
+		}
+	}
+	// Mark the target as ours before creating anything.
+	if _, err := r.dst.Exec(ctx, checkpointDDL); err != nil {
+		return err
+	}
+	if _, err := r.dst.Exec(ctx, checkpointMark, r.jobID); err != nil {
+		return err
+	}
+	if err := pgpg.DropExisting(ctx, r.dst, r.st.DropFirst, r.rep); err != nil {
+		return err
+	}
+
 	progress := make([]migrate.TableProgress, len(r.list))
+	r.st.Tables = make([]string, len(r.list))
 	for n, c := range r.list {
 		if _, err := r.dst.Exec(ctx, tableDDL(c.Name, r.columns[c.Name])); err != nil {
 			return fmt.Errorf("create table for %s: %w", c.Name, err)
 		}
 		progress[n] = migrate.TableProgress{Schema: targetSchema, Table: c.Name, EstRows: c.EstDocs}
-	}
-	if _, err := r.dst.Exec(ctx, checkpointDDL); err != nil {
-		return err
-	}
-	// A checkpoint left by an earlier run of this job would send the
-	// stream to the wrong place.
-	if _, err := r.dst.Exec(ctx, `DELETE FROM `+metaSchema+`.mongo_checkpoint WHERE job_id=$1`, r.jobID); err != nil {
-		return err
+		r.st.Tables[n] = c.Name
 	}
 	r.rep.ResetTables(progress)
 	r.rep.Event("info", fmt.Sprintf("%s to %s: created %d table(s)", r.st.SourceVersion, r.st.TargetVersion, len(r.list)))
@@ -239,7 +332,7 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 	list := r.list
 	if !offline {
 		var err error
-		if list, err = collections(ctx, r.db, r.scope); err != nil {
+		if list, err = r.collections(ctx); err != nil {
 			return false, err
 		}
 	}

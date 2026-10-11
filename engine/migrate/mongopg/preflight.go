@@ -10,6 +10,7 @@ import (
 	"dedie/engine/connector/mongodb"
 	"dedie/engine/connector/postgres"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/pgpg"
 )
 
 // Preflight inspects both databases without changing either.
@@ -89,17 +90,12 @@ func Preflight(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate
 	} else {
 		rep.Add("Target privileges", "ok", "may create tables")
 	}
-	var existing []string
-	for _, c := range list {
-		var n int64
-		if dst.QueryRow(ctx, `SELECT count(*) FROM pg_tables WHERE schemaname=$1 AND tablename=$2`, targetSchema, c.Name).Scan(&n) == nil && n > 0 {
-			existing = append(existing, c.Name)
-		}
-	}
-	if len(existing) > 0 {
-		rep.Add("Target tables", "warn", "these tables already exist in the target and will be emptied by the copy: "+strings.Join(existing, ", "))
+	// The target must not already hold a table for any of the collections,
+	// nor anything else under one of their names.
+	if found, err := pgpg.FindExisting(ctx, dst, claims(list)); err != nil {
+		rep.Add("Target is empty", "fail", err.Error())
 	} else {
-		rep.Add("Target tables", "ok", "no table names are taken")
+		pgpg.ReportExisting(rep, found, cfg.Existing(), targetPlace)
 	}
 	rep.Add("Mapping", "ok", "each collection becomes a table with _id (text, primary key) and doc (jsonb). Indexes, validators and views are not translated")
 	if cols, err := allColumns(cfg); err != nil {
@@ -126,4 +122,18 @@ func Preflight(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate
 		rep.Add("Cutover", "warn", "a MongoDB source cannot be made read-only by this tool; stop the applications that write to it before cutting over")
 	}
 	return rep, nil
+}
+
+// targetPlace says where the collections' tables are looked for.
+const targetPlace = "in schema " + targetSchema + " on the target"
+
+// claims lists the names the collections' tables take on the target. A
+// table is all a collection becomes; its primary key gets a free name from
+// PostgreSQL.
+func claims(list []Collection) []pgpg.Claim {
+	out := make([]pgpg.Claim, len(list))
+	for i, c := range list {
+		out[i] = pgpg.Claim{Kind: "table", Name: c.Name, Ident: qname(c.Name)}
+	}
+	return out
 }

@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"dedie/engine/connector"
 	"dedie/engine/connector/mongodb"
@@ -466,4 +469,314 @@ func TestMigrationOffline(t *testing.T) {
 	if phase, _ := rep.snapshot(); phase == migrate.PhaseStreaming {
 		t.Error("offline job went to streaming")
 	}
+}
+
+// existingTables prepares a source with three collections and a target on
+// which two of their names are taken: one by a table that holds a row, the
+// other by a view.
+func existingTables(t *testing.T, ctx context.Context) (srcCfg, dstCfg connector.Config, db *mongo.Database, dst *pgx.Conn) {
+	t.Helper()
+	srcCfg, dstCfg = testConfig(t, "DEDIE_TEST_MONGO_SOURCE"), testConfig(t, "DEDIE_TEST_TARGET")
+	client, err := mongodb.Connect(ctx, srcCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Disconnect(context.Background()) })
+	name := fmt.Sprintf("dedie_mongo_%d", time.Now().UnixNano()%1e9)
+	srcCfg.Database = name
+	db = client.Database(name)
+	t.Cleanup(func() { db.Drop(context.Background()) })
+	for coll, n := range map[string]int{"users": 3, "notes": 1, "orders": 2} {
+		for i := 1; i <= n; i++ {
+			if _, err := db.Collection(coll).InsertOne(ctx, bson.D{{Key: "_id", Value: int64(i)}, {Key: "of", Value: coll}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	admin, err := postgres.Connect(ctx, dstCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(ctx, `CREATE DATABASE `+name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		admin.Exec(context.Background(), `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`)
+		admin.Close(context.Background())
+	})
+	dstCfg.Database = name
+	if dst, err = postgres.Connect(ctx, dstCfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { dst.Close(context.Background()) })
+
+	// A target that holds none of the names passes, and lists nothing.
+	report, err := Preflight(ctx, srcCfg, dstCfg, migrate.Config{Mode: migrate.ModeOffline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := findCheck(t, report, "Existing objects"); c.Status != "ok" || !report.OK || len(report.Existing) != 0 {
+		t.Fatalf("clean target: ok=%v, existing objects %s: %s, listed %v", report.OK, c.Status, c.Detail, report.Existing)
+	}
+	if c := findCheck(t, report, "Target is empty"); c.Status != "ok" {
+		t.Fatalf("clean target: target is empty %s: %s", c.Status, c.Detail)
+	}
+
+	if _, err := dst.PgConn().Exec(ctx, `
+		CREATE TABLE users (other int);
+		INSERT INTO users VALUES (42);
+		CREATE VIEW notes AS SELECT 1 AS one;
+	`).ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	return srcCfg, dstCfg, db, dst
+}
+
+func findCheck(t *testing.T, r *migrate.Report, name string) migrate.Check {
+	t.Helper()
+	for _, c := range r.Checks {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("preflight has no %q check", name)
+	return migrate.Check{}
+}
+
+// existingList is the preflight's list of what the target already has.
+func existingList(r *migrate.Report) string {
+	var out []string
+	for _, e := range r.Existing {
+		out = append(out, e.Kind+" "+e.Name)
+	}
+	sort.Strings(out)
+	return strings.Join(out, "; ")
+}
+
+// wantExisting is what the preflight must list on the target existingTables
+// prepares.
+const wantExisting = "table public.users; view public.notes"
+
+// definitions describes the relations of the target's schema, the columns
+// of the table that was there, what it holds, and a checkpoint if a job
+// left one.
+func definitions(t *testing.T, ctx context.Context, dst *pgx.Conn) string {
+	t.Helper()
+	var s string
+	if err := dst.QueryRow(ctx, `SELECT concat_ws(' | ',
+		(SELECT string_agg(relname || ':' || relkind::text, ',' ORDER BY relname COLLATE "C") FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind <> 'i'),
+		(SELECT string_agg(viewname || ':' || md5(definition), ',') FROM pg_views WHERE schemaname = 'public'),
+		(SELECT string_agg(attname, ',' ORDER BY attnum) FROM pg_attribute WHERE attrelid = 'users'::regclass AND attnum > 0),
+		(SELECT string_agg(u::text, ',') FROM users u),
+		(SELECT to_regclass('dedie.mongo_checkpoint')::text))`).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// TestMigrationExistingObjects is the default policy: a table that is
+// already on the target stops the job, which used to empty it.
+func TestMigrationExistingObjects(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	srcCfg, dstCfg, _, dst := existingTables(t, ctx)
+	cfg := migrate.Config{Mode: migrate.ModeOffline}
+	before := definitions(t, ctx, dst)
+
+	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range report.Checks {
+		if c.Status == "fail" {
+			t.Logf("preflight %-5s %s: %s", c.Status, c.Name, c.Detail)
+		}
+	}
+	if report.OK {
+		t.Error("preflight passed over a target that has the collections' names taken")
+	}
+	if got := existingList(report); got != wantExisting {
+		t.Errorf("existing objects listed:\n got %s\nwant %s", got, wantExisting)
+	}
+	if c := findCheck(t, report, "Target is empty"); c.Status != "fail" || !strings.Contains(c.Detail, "these tables already exist in schema public on the target: users") {
+		t.Errorf("target is empty: %s: %s", c.Status, c.Detail)
+	}
+	if c := findCheck(t, report, "Existing objects"); c.Status != "fail" || !strings.Contains(c.Detail, "tables: notes (the name of a view)") ||
+		!strings.Contains(c.Detail, "never replaces or merges") {
+		t.Errorf("existing objects: %s: %s", c.Status, c.Detail)
+	}
+
+	rep := &memReporter{t: t, desired: "run", tables: map[string]map[string]any{}}
+	out, err := Run(ctx, "exist1", cfg, State{}, srcCfg, dstCfg, rep)
+	if err == nil || !strings.Contains(err.Error(), "preflight failed") ||
+		!strings.Contains(err.Error(), "Existing objects") || !strings.Contains(err.Error(), "Target is empty") {
+		t.Fatalf("run over existing tables: %v %v", out, err)
+	}
+	// The table still holds its row, and nothing was created beside it.
+	if after := definitions(t, ctx, dst); after != before {
+		t.Errorf("the refused job changed the target:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// TestMigrationExistingSkip keeps the tables the target has, while the
+// source stays in use: their collections are neither copied nor followed,
+// and the remaining one arrives with the changes made to it meanwhile.
+func TestMigrationExistingSkip(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	srcCfg, dstCfg, db, dst := existingTables(t, ctx)
+	cfg := migrate.Config{OnExisting: migrate.ExistingSkip}
+	before := definitions(t, ctx, dst)
+
+	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range report.Checks {
+		if c.Status == "fail" {
+			t.Errorf("preflight %s: %s", c.Name, c.Detail)
+		}
+	}
+	if got := existingList(report); got != wantExisting {
+		t.Errorf("existing objects listed:\n got %s\nwant %s", got, wantExisting)
+	}
+	for _, name := range []string{"Target is empty", "Existing objects"} {
+		c := findCheck(t, report, name)
+		t.Logf("preflight %-5s %s: %s", c.Status, c.Name, c.Detail)
+		if c.Status != "warn" || !strings.Contains(c.Detail, "kept exactly as they are") || !strings.Contains(c.Detail, "left out of the migration") {
+			t.Errorf("%s: %s: %s", name, c.Status, c.Detail)
+		}
+	}
+
+	rep := &memReporter{t: t, desired: "run", tables: map[string]map[string]any{}}
+	type result struct {
+		out migrate.Outcome
+		err error
+	}
+	start := func(st State) chan result {
+		ch := make(chan result, 1)
+		go func() {
+			out, err := Run(ctx, "skip1", cfg, st, srcCfg, dstCfg, rep)
+			ch <- result{out, err}
+		}()
+		return ch
+	}
+	waitStreaming := func() {
+		t.Helper()
+		for i := 0; i < 400; i++ {
+			if phase, _ := rep.snapshot(); phase == migrate.PhaseStreaming {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatal("the job did not reach the streaming phase")
+	}
+	done := start(State{})
+	waitStreaming()
+	// Changes to a kept collection must go nowhere; the others are followed.
+	for _, coll := range []string{"users", "notes", "orders"} {
+		if _, err := db.Collection(coll).InsertOne(ctx, bson.D{{Key: "_id", Value: int64(100)}, {Key: "of", Value: "the stream"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(time.Second)
+
+	// Pause and resume: the job must still know what it left out, now that
+	// its own table exists as well.
+	rep.SetDesired("pause")
+	if r := <-done; r.err != nil || r.out != migrate.Paused {
+		t.Fatalf("pause: %v %v", r.out, r.err)
+	}
+	if _, err := db.Collection("users").InsertOne(ctx, bson.D{{Key: "_id", Value: int64(101)}}); err != nil {
+		t.Fatal(err)
+	}
+	_, st := rep.snapshot()
+	sort.Strings(st.SkippedTables)
+	if strings.Join(st.SkippedTables, ",") != "notes,users" || len(st.DropFirst) != 0 || strings.Join(st.Tables, ",") != "orders" {
+		t.Errorf("remembered: skipped %v, drop %v, tables %v", st.SkippedTables, st.DropFirst, st.Tables)
+	}
+	rep.SetDesired("run")
+	done = start(st)
+	waitStreaming()
+	rep.SetDesired("cutover")
+	if r := <-done; r.err != nil || r.out != migrate.Completed {
+		t.Fatalf("cutover: %v %v", r.out, r.err)
+	}
+
+	want := strings.Replace(before, "notes:v,users:r", "notes:v,orders:r,users:r", 1)
+	if after := definitions(t, ctx, dst); after != want {
+		t.Errorf("after keeping what was there:\nwant %s\ngot  %s", want, after)
+	}
+	var orders string
+	if err := dst.QueryRow(ctx, `SELECT string_agg(_id, ',' ORDER BY _id::int) FROM orders`).Scan(&orders); err != nil || orders != "1,2,100" {
+		t.Errorf("the collection whose name was free holds %q: %v", orders, err)
+	}
+	if v, _ := rep.tables["orders"]["validation"].(string); len(rep.tables) != 1 || !strings.Contains(v, "match") || v == "mismatch" {
+		t.Errorf("collections copied and validated: %v", rep.tables)
+	}
+}
+
+// TestMigrationExistingReplace drops what the target has under the
+// collections' names and creates their tables in its place.
+func TestMigrationExistingReplace(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	srcCfg, dstCfg, _, dst := existingTables(t, ctx)
+	cfg := migrate.Config{Mode: migrate.ModeOffline, OnExisting: migrate.ExistingReplace}
+
+	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.OK {
+		t.Error("preflight failed although the job replaces what is there")
+	}
+	if got := existingList(report); got != wantExisting {
+		t.Errorf("existing objects listed:\n got %s\nwant %s", got, wantExisting)
+	}
+	for name, object := range map[string]string{"Target is empty": "users", "Existing objects": "notes (the name of a view)"} {
+		c := findCheck(t, report, name)
+		t.Logf("preflight %-5s %s: %s", c.Status, c.Name, c.Detail)
+		if c.Status != "warn" || !strings.Contains(c.Detail, "DROPPED") || !strings.Contains(c.Detail, object) {
+			t.Errorf("%s: %s: %s", name, c.Status, c.Detail)
+		}
+	}
+
+	var dropped bool
+	rep := &eventReporter{memReporter: &memReporter{t: t, desired: "run", tables: map[string]map[string]any{}}, on: func(msg string) {
+		dropped = dropped || strings.Contains(msg, "dropped 1 existing table(s) and 1 other object(s) on the target, as chosen")
+	}}
+	out, err := Run(ctx, "replace1", cfg, State{}, srcCfg, dstCfg, rep)
+	if err != nil || out != migrate.Completed {
+		t.Fatalf("run: %v %v", out, err)
+	}
+	if !dropped {
+		t.Error("the job did not report what it dropped")
+	}
+	const want = "notes:r,orders:r,users:r | _id,doc | " +
+		`(1,"{""of"": ""users"", ""_id"": 1}"),(2,"{""of"": ""users"", ""_id"": 2}"),(3,"{""of"": ""users"", ""_id"": 3}")`
+	if after := definitions(t, ctx, dst); after != want {
+		t.Errorf("after replacing:\nwant %s\ngot  %s", want, after)
+	}
+	var notes int
+	if err := dst.QueryRow(ctx, `SELECT count(*) FROM notes WHERE doc->>'of' = 'notes'`).Scan(&notes); err != nil || notes != 1 {
+		t.Errorf("the table that replaced the view holds %d document(s): %v", notes, err)
+	}
+	for name, tbl := range rep.tables {
+		if v, _ := tbl["validation"].(string); !strings.Contains(v, "match") || v == "mismatch" {
+			t.Errorf("collection %s validation = %v", name, tbl["validation"])
+		}
+	}
+}
+
+// eventReporter lets a test see the events of a job.
+type eventReporter struct {
+	*memReporter
+	on func(msg string)
+}
+
+func (e *eventReporter) Event(level, msg string) {
+	e.on(msg)
+	e.memReporter.Event(level, msg)
 }
