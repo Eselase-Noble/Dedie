@@ -214,6 +214,7 @@ export interface MigrationConfig {
   fence_source: boolean;
   validation: Validation | "";
   keep_slot: boolean;
+  on_existing?: OnExisting | "";
   cutover_timeout_seconds: number;
 }
 
@@ -248,10 +249,20 @@ export interface PreflightCheck {
   detail: string;
 }
 
+/** Something on the target with the name of an object being migrated. */
+export interface ExistingObject {
+  kind: string;
+  name: string;
+}
+
+/** What a migration does about objects the target already has. */
+export type OnExisting = "fail" | "skip" | "replace";
+
 export interface PreflightReport {
   ok: boolean;
   checks: PreflightCheck[];
   tables: number;
+  existing?: ExistingObject[];
 }
 
 export interface Migration {

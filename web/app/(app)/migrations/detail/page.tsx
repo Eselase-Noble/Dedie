@@ -6,7 +6,8 @@ import { Suspense, useState, type ReactNode } from "react";
 import { api, errorMessage } from "@/lib/api";
 import { formatBytes, formatDuration, formatNumber, formatTime } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
-import type { MigrationAction, MigrationDetail, PreflightReport } from "@/lib/types";
+import type { MigrationAction, MigrationDetail, OnExisting, PreflightReport } from "@/lib/types";
+import ExistingObjectsDialog from "@/components/migrations/ExistingObjects";
 import { useSession } from "@/components/session";
 import { Banner, ConfirmDialog, Loading, PageHeader, Progress, StatusBadge } from "@/components/ui";
 
@@ -84,6 +85,7 @@ function Detail({ id }: { id: string }) {
   const [busy, setBusy] = useState("");
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [preflighting, setPreflighting] = useState(false);
+  const [asking, setAsking] = useState(false);
 
   if (loading && !job) return <div className="content"><Loading /></div>;
   if (!job) return <div className="content"><Banner tone="error">{error || "Migration not found."}</Banner></div>;
@@ -116,12 +118,15 @@ function Detail({ id }: { id: string }) {
     }
   };
 
-  const runPreflight = async () => {
+  const runPreflight = async (ask = true) => {
     setPreflighting(true);
     setActionError("");
     try {
-      await api.preflight(job.id);
+      const result = await api.preflight(job.id);
       await reload();
+      // Objects already on the target are the administrator's call; ask
+      // as soon as they are found, unless an answer was already given.
+      if (ask && (result.existing?.length ?? 0) > 0 && onExisting === "fail") setAsking(true);
     } catch (err) {
       setActionError(errorMessage(err));
     } finally {
@@ -130,6 +135,10 @@ function Detail({ id }: { id: string }) {
   };
 
   const fenced = !!job.config.fence_source;
+  const onExisting: OnExisting = job.config.on_existing || "fail";
+  // The choice is acted on when the job creates its objects, so it can
+  // only be made before that.
+  const canDecide = status === "draft" || (status === "failed" && job.phase === "schema");
   // A continuous sync is the same job with a different intent: it is not
   // expected to end, and ending it is called finishing rather than cutover.
   const sync = job.config.mode === "sync";
@@ -191,6 +200,7 @@ function Detail({ id }: { id: string }) {
   const totalEst = job.tables.reduce((n, t) => n + t.est_rows, 0);
   const totalCopied = job.tables.reduce((n, t) => n + t.rows_copied, 0);
   const report = job.preflight ?? null;
+  const existing = report?.existing ?? [];
 
   return (
     <div className="content">
@@ -273,12 +283,23 @@ function Detail({ id }: { id: string }) {
           <div className="actions">
             {report && <StatusBadge status={report.ok ? "ok" : "fail"} />}
             {manage && (
-              <button className="btn small" onClick={runPreflight} disabled={preflighting}>
+              <button className="btn small" onClick={() => runPreflight()} disabled={preflighting}>
                 {preflighting ? "Checking…" : report ? "Run again" : "Run preflight"}
               </button>
             )}
           </div>
         </div>
+        {existing.length > 0 && (
+          <div className="card-body">
+            <Banner tone={onExisting === "fail" ? "error" : "warn"}>
+              The target already has {existing.length} object{existing.length === 1 ? "" : "s"} this migration would create.{" "}
+              {onExisting === "fail" ? "The migration will not start until you decide what to do with them."
+                : onExisting === "skip" ? "They will be kept as they are and left out of the migration."
+                  : "They will be dropped and created again from the source when the migration starts."}{" "}
+              {manage && canDecide && <button className="btn small" onClick={() => setAsking(true)}>{onExisting === "fail" ? "Decide…" : "Change…"}</button>}
+            </Banner>
+          </div>
+        )}
         <div className="card-body flush table-wrap">
           {report
             ? <Preflight report={report} />
@@ -339,6 +360,7 @@ function Detail({ id }: { id: string }) {
           <Figure label="Snapshot workers">{job.config.snapshot_workers || 4}</Figure>
           <Figure label="Validation">{job.config.validation || "checksum"}</Figure>
           <Figure label="Fence source at cutover">{fenced ? "yes" : "no"}</Figure>
+          <Figure label="Objects already on the target">{onExisting === "skip" ? "keep and skip" : onExisting === "replace" ? "replace" : "refuse"}</Figure>
           {job.kind === "postgres-postgres" && <Figure label="Keep replication slot">{job.config.keep_slot ? "yes" : "no"}</Figure>}
           <Figure label="Cutover timeout">{job.config.cutover_timeout_seconds || 300}s</Figure>
         </div>
@@ -358,6 +380,10 @@ function Detail({ id }: { id: string }) {
         </div>
       </div>
 
+      {asking && (
+        <ExistingObjectsDialog jobId={job.id} objects={existing} current={onExisting}
+          onClose={() => setAsking(false)} onChosen={() => runPreflight(false)} />
+      )}
       {confirm && (
         <ConfirmDialog
           title={confirm.title}

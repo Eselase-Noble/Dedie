@@ -399,3 +399,15 @@ a.btn.primary { color: #fff; }
 .segmented button:disabled { color: var(--text-faint); cursor: not-allowed; background: var(--bg-subtle); }
 ul.plain { margin: 0 0 12px; padding-left: 20px; color: var(--text-muted); }
 ul.plain li { margin-bottom: 6px; }
+
+/* The list of objects a migration found on its target, and the choices
+   offered about them. */
+.existing-list { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 12px 0; max-height: 180px; overflow: auto; display: grid; gap: 8px; }
+.existing-list > div { display: grid; gap: 2px; }
+.existing-list .mono { font-size: 12.5px; color: var(--text-muted); word-break: break-word; }
+.choice-list { display: grid; gap: 8px; margin-bottom: 14px; }
+.choice { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; cursor: pointer; }
+.choice input { margin-top: 3px; }
+.choice > span { display: grid; gap: 2px; }
+.choice.selected { border-color: var(--accent); background: var(--accent-soft); }
+.choice.danger.selected { border-color: var(--danger); background: var(--danger-soft); }
