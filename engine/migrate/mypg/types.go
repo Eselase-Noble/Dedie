@@ -44,6 +44,10 @@ func (pipeline) Run(ctx context.Context, jobID string, cfg migrate.Config, state
 	return Run(ctx, jobID, cfg, st, src, dst, rep)
 }
 
+func (pipeline) Preview(ctx context.Context, src, dst connector.Config, cfg migrate.Config) ([]migrate.Statement, error) {
+	return Preview(ctx, src, dst, cfg)
+}
+
 // targetSchema is where the migrated tables are created.
 const targetSchema = "public"
 
