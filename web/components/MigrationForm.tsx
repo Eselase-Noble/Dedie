@@ -36,7 +36,7 @@ const TARGET_KINDS: Record<string, string[]> = {
   postgres: ["postgres", "mysql"],
   mysql: ["mysql", "postgres"],
   mongodb: ["postgres"],
-  oracle: ["postgres"],
+  oracle: ["oracle", "postgres", "mysql"],
 };
 
 const SOURCE_HINTS: Record<string, string> = {
@@ -147,7 +147,7 @@ export default function MigrationForm({ connections, onClose, onCreated }: {
       <form id="migration-form" onSubmit={submit}>
         {error && <Banner tone="error">{error}</Banner>}
         {!targetId && (
-          <Banner tone="warn">A migration needs a source and an empty target. PostgreSQL and MySQL can each be migrated to either engine, and MongoDB and Oracle to PostgreSQL.</Banner>
+          <Banner tone="warn">A migration needs a source and an empty target. PostgreSQL and MySQL can each be migrated to either engine, Oracle to a newer Oracle, PostgreSQL or MySQL, and MongoDB to PostgreSQL.</Banner>
         )}
         {mongo && (
           <Banner tone="info">
