@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"dedie/engine/backup"
 	"dedie/engine/secure"
@@ -30,14 +31,31 @@ func (a *App) ListRestores(ctx context.Context, actor Actor) ([]store.Restore, e
 	return a.Store.ListRestores(ctx, actor.User.OrgID)
 }
 
-// CreateBackup starts a logical backup of a connection's database and returns
+// BackupInput describes a backup to take.
+type BackupInput struct {
+	ConnectionID string `json:"connection_id"`
+	Note         string `json:"note"`
+	// Type is full (the default), schema, data, tables or physical.
+	Type   string   `json:"type"`
+	Tables []string `json:"tables"`
+}
+
+// CreateBackup starts a backup of a connection's database and returns
 // immediately; the backup's status moves from "running" to "completed" or
 // "failed". With wait set the call blocks until it finishes.
-func (a *App) CreateBackup(ctx context.Context, actor Actor, connID, note string, wait bool) (store.Backup, error) {
+func (a *App) CreateBackup(ctx context.Context, actor Actor, in BackupInput, wait bool) (store.Backup, error) {
 	if err := actor.require(PermBackup); err != nil {
 		return store.Backup{}, err
 	}
-	c, sess, err := a.open(ctx, actor.User.OrgID, connID)
+	return a.startBackup(ctx, actor, in, "", wait)
+}
+
+// startBackup does the work of CreateBackup for a user or for a schedule.
+func (a *App) startBackup(ctx context.Context, actor Actor, in BackupInput, scheduleID string, wait bool) (store.Backup, error) {
+	if in.Type == "" {
+		in.Type = backup.TypeFull
+	}
+	c, sess, err := a.open(ctx, actor.User.OrgID, in.ConnectionID)
 	if err != nil {
 		return store.Backup{}, err
 	}
@@ -49,17 +67,25 @@ func (a *App) CreateBackup(ctx context.Context, actor Actor, connID, note string
 	if !backup.Supported(c.Kind) {
 		return store.Backup{}, invalid("backups are not supported for %s connections yet", c.Kind)
 	}
+	opts := backup.Options{Type: in.Type, Tables: in.Tables}
+	if in.Type != backup.TypeTables {
+		opts.Tables = nil
+	}
+	if err := backup.CheckOptions(c.Kind, opts); err != nil {
+		return store.Backup{}, invalid("%s", err.Error())
+	}
 	cfg, err := a.config(c)
 	if err != nil {
 		return store.Backup{}, err
 	}
 	b := store.Backup{ID: secure.NewID("bak"), OrgID: c.OrgID, ConnectionID: c.ID, ConnectionName: c.Name, Database: c.Database,
-		Kind: c.Kind, ServerVersion: info.Version, Status: "running", Note: note, CreatedBy: actor.User.Email}
+		Kind: c.Kind, Type: opts.Type, Format: backup.Format(c.Kind, opts.Type), Tables: opts.Tables, ScheduleID: scheduleID,
+		ServerVersion: info.Version, Status: "running", Note: in.Note, CreatedBy: actor.User.Email}
 	b.Path = filepath.Join(a.dataDir, "backups", b.ID+".dediebak")
 	if err := a.Store.CreateBackup(ctx, b); err != nil {
 		return b, err
 	}
-	a.audit(ctx, actor, "backup.create", b.ID, map[string]string{"connection": c.Name, "database": c.Database})
+	a.audit(ctx, actor, "backup.create", b.ID, map[string]any{"connection": c.Name, "database": c.Database, "type": b.Type, "tables": b.Tables})
 
 	run := func() {
 		bg := context.Background()
@@ -76,7 +102,7 @@ func (a *App) CreateBackup(ctx context.Context, actor Actor, connID, note string
 			if err != nil {
 				return 0, "", err
 			}
-			if err := backup.Dump(bg, c.Kind, cfg, info.VersionNum, enc); err != nil {
+			if err := backup.Dump(bg, c.Kind, cfg, info.VersionNum, opts, enc); err != nil {
 				return 0, "", err
 			}
 			if err := enc.Close(); err != nil {
@@ -138,7 +164,97 @@ func (a *App) VerifyBackup(ctx context.Context, actor Actor, id string) error {
 	if err != nil {
 		return wrap(err)
 	}
-	return a.verifyBackupFile(b)
+	if err := a.verifyBackupFile(b); err != nil {
+		return err
+	}
+	return a.Store.MarkBackupVerified(ctx, b.ID)
+}
+
+// openBackup returns the decrypted contents of a completed backup.
+func (a *App) openBackup(b store.Backup) (io.ReadCloser, error) {
+	if b.Status != "completed" {
+		return nil, conflict("the backup is %s", b.Status)
+	}
+	f, err := os.Open(b.Path)
+	if err != nil {
+		return nil, conflict("the backup file is missing from the data directory")
+	}
+	dec, err := secure.NewStreamReader(a.keyring, f, backupAAD(b.OrgID, b.ID))
+	if err != nil {
+		f.Close()
+		return nil, conflict("%s", err.Error())
+	}
+	return struct {
+		io.Reader
+		io.Closer
+	}{dec, f}, nil
+}
+
+// ExportBackup verifies a backup and returns its decrypted archive, in the
+// database's own format, with a file name to save it under. The copy leaves
+// Dedie's protection, so it needs the restore permission and is audited.
+func (a *App) ExportBackup(ctx context.Context, actor Actor, id string) (io.ReadCloser, string, error) {
+	if err := actor.require(PermRestore); err != nil {
+		return nil, "", err
+	}
+	b, err := a.Store.GetBackup(ctx, actor.User.OrgID, id)
+	if err != nil {
+		return nil, "", wrap(err)
+	}
+	if err := a.verifyBackupFile(b); err != nil {
+		return nil, "", err
+	}
+	r, err := a.openBackup(b)
+	if err != nil {
+		return nil, "", err
+	}
+	name := safeFileName(b.Database) + "-" + b.CreatedAt.UTC().Format("20060102-150405") + backup.Extension(b.Format)
+	if b.Format == "" {
+		name = safeFileName(b.Database) + "-" + b.CreatedAt.UTC().Format("20060102-150405") + backup.Extension(backup.Format(b.Kind, ""))
+		if b.Kind == "mysql" {
+			name = strings.TrimSuffix(name, ".gz")
+		}
+	}
+	a.audit(ctx, actor, "backup.export", b.ID, map[string]string{"connection": b.ConnectionName, "database": b.Database})
+	return r, name, nil
+}
+
+func safeFileName(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' {
+			return r
+		}
+		return '_'
+	}, s)
+}
+
+// ExtractBackup unpacks a physical backup into an empty directory on this
+// machine, ready for PostgreSQL to be started on it.
+func (a *App) ExtractBackup(ctx context.Context, actor Actor, id, dir string) (int, error) {
+	if err := actor.require(PermRestore); err != nil {
+		return 0, err
+	}
+	b, err := a.Store.GetBackup(ctx, actor.User.OrgID, id)
+	if err != nil {
+		return 0, wrap(err)
+	}
+	if b.Format != backup.FormatPGBase {
+		return 0, invalid("only physical backups are extracted; restore this one into a connection")
+	}
+	if err := a.verifyBackupFile(b); err != nil {
+		return 0, err
+	}
+	r, err := a.openBackup(b)
+	if err != nil {
+		return 0, err
+	}
+	defer r.Close()
+	files, err := backup.ExtractPhysical(r, dir)
+	if err != nil {
+		return files, invalid("%s", err.Error())
+	}
+	a.audit(ctx, actor, "backup.extract", b.ID, map[string]string{"connection": b.ConnectionName, "directory": dir})
+	return files, nil
 }
 
 func (a *App) verifyBackupFile(b store.Backup) error {
@@ -164,17 +280,24 @@ func (a *App) verifyBackupFile(b store.Backup) error {
 	return nil
 }
 
-// RestoreInput describes a restore. Confirm must repeat the target database
-// name: a restore with Clean replaces existing objects and cannot be undone.
+// RestoreInput describes a restore. Confirm must repeat the name of the
+// database being written to: a restore with Clean replaces existing objects
+// and cannot be undone.
 type RestoreInput struct {
-	TargetID   string `json:"target_id"`
-	Clean      bool   `json:"clean"`
-	KeepOwners bool   `json:"keep_owners"`
-	Confirm    string `json:"confirm"`
+	TargetID string `json:"target_id"`
+	// NewDatabase, when set, is created on the target's server and the
+	// backup is restored into it, leaving the connection's own database
+	// untouched.
+	NewDatabase string `json:"new_database"`
+	// Tables restores only these tables (PostgreSQL archives).
+	Tables     []string `json:"tables"`
+	Clean      bool     `json:"clean"`
+	KeepOwners bool     `json:"keep_owners"`
+	Confirm    string   `json:"confirm"`
 }
 
-// RestoreBackup verifies a backup and applies it to the target connection in
-// one transaction. It returns once the restore has started unless wait is set.
+// RestoreBackup verifies a backup and applies it to the target connection.
+// It returns once the restore has started unless wait is set.
 func (a *App) RestoreBackup(ctx context.Context, actor Actor, backupID string, in RestoreInput, wait bool) (store.Restore, error) {
 	if err := actor.require(PermRestore); err != nil {
 		return store.Restore{}, err
@@ -182,6 +305,9 @@ func (a *App) RestoreBackup(ctx context.Context, actor Actor, backupID string, i
 	b, err := a.Store.GetBackup(ctx, actor.User.OrgID, backupID)
 	if err != nil {
 		return store.Restore{}, wrap(err)
+	}
+	if b.Format == backup.FormatPGBase {
+		return store.Restore{}, invalid("a physical backup is a copy of the server's data files and is not restored into a running database; extract it with `dedie backup extract %s <directory>` and start PostgreSQL on that directory", b.ID)
 	}
 	target, err := a.Store.GetConnection(ctx, actor.User.OrgID, in.TargetID)
 	if err != nil {
@@ -193,8 +319,16 @@ func (a *App) RestoreBackup(ctx context.Context, actor Actor, backupID string, i
 	if target.ReadOnly {
 		return store.Restore{}, &Error{Status: 403, Message: "the target connection is marked read-only"}
 	}
-	if in.Confirm != target.Database {
-		return store.Restore{}, invalid("type the target database name (%s) to confirm the restore", target.Database)
+	in.NewDatabase = strings.TrimSpace(in.NewDatabase)
+	database := target.Database
+	if in.NewDatabase != "" {
+		database = in.NewDatabase
+	}
+	if in.Confirm != database {
+		return store.Restore{}, invalid("type the target database name (%s) to confirm the restore", database)
+	}
+	if len(in.Tables) > 0 && b.Format != backup.FormatPGCustom && !(b.Format == "" && b.Kind == "postgres") {
+		return store.Restore{}, invalid("restoring selected tables is available for PostgreSQL backups only")
 	}
 	if err := a.verifyBackupFile(b); err != nil {
 		return store.Restore{}, err
@@ -203,26 +337,35 @@ func (a *App) RestoreBackup(ctx context.Context, actor Actor, backupID string, i
 	if err != nil {
 		return store.Restore{}, err
 	}
+	if in.NewDatabase != "" {
+		_, sess, err := a.open(ctx, target.OrgID, target.ID)
+		if err != nil {
+			return store.Restore{}, err
+		}
+		err = sess.CreateDatabase(ctx, in.NewDatabase)
+		sess.Close(context.WithoutCancel(ctx))
+		if err != nil {
+			return store.Restore{}, &Error{Status: 422, Message: err.Error()}
+		}
+		a.audit(ctx, actor, "object.create_database", target.ID, map[string]string{"connection": target.Name, "database": in.NewDatabase})
+		cfg.Database = in.NewDatabase
+	}
 	r := store.Restore{ID: secure.NewID("rst"), OrgID: b.OrgID, BackupID: b.ID, TargetID: target.ID, TargetName: target.Name,
-		Status: "running", CreatedBy: actor.User.Email}
+		Database: database, Status: "running", CreatedBy: actor.User.Email}
 	if err := a.Store.CreateRestore(ctx, r); err != nil {
 		return r, err
 	}
-	a.audit(ctx, actor, "backup.restore", b.ID, map[string]any{"target": target.Name, "database": target.Database, "clean": in.Clean})
+	a.audit(ctx, actor, "backup.restore", b.ID, map[string]any{"target": target.Name, "database": database, "clean": in.Clean, "tables": in.Tables})
 
 	run := func() {
 		bg := context.Background()
 		out, err := func() (string, error) {
-			f, err := os.Open(b.Path)
+			src, err := a.openBackup(b)
 			if err != nil {
 				return "", err
 			}
-			defer f.Close()
-			dec, err := secure.NewStreamReader(a.keyring, f, backupAAD(b.OrgID, b.ID))
-			if err != nil {
-				return "", err
-			}
-			return backup.Restore(bg, b.Kind, cfg, dec, backup.RestoreOptions{Clean: in.Clean, KeepOwners: in.KeepOwners})
+			defer src.Close()
+			return backup.Restore(bg, b.Kind, b.Format, cfg, src, backup.RestoreOptions{Clean: in.Clean, KeepOwners: in.KeepOwners, Tables: in.Tables})
 		}()
 		if err != nil {
 			a.Store.FinishRestore(bg, r.ID, "failed", err.Error(), out)
@@ -230,22 +373,17 @@ func (a *App) RestoreBackup(ctx context.Context, actor Actor, backupID string, i
 		}
 		a.Store.FinishRestore(bg, r.ID, "completed", "", out)
 	}
-	if wait {
-		run()
-		restores, err := a.Store.ListRestores(ctx, r.OrgID)
-		if err != nil {
-			return r, err
-		}
-		for _, done := range restores {
-			if done.ID == r.ID {
-				if done.Status != "completed" {
-					return done, fmt.Errorf("%s", done.Error)
-				}
-				return done, nil
-			}
-		}
+	if !wait {
+		go run()
 		return r, nil
 	}
-	go run()
-	return r, nil
+	run()
+	done, err := a.Store.GetRestore(ctx, r.OrgID, r.ID)
+	if err != nil {
+		return r, err
+	}
+	if done.Status != "completed" {
+		return done, fmt.Errorf("%s", done.Error)
+	}
+	return done, nil
 }

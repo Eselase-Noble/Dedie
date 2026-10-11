@@ -42,11 +42,15 @@ Migrations
   migrate pause|resume|cutover|abort <id>
 
 Backups
-  backup create <connection>   take an encrypted logical backup
+  backup create <connection>   take an encrypted backup (--type full, schema,
+                               data, tables or physical)
   backup list                  list backups
   backup verify <id>           check integrity of a backup file
-  backup restore <id>          restore into a connection
+  backup restore <id>          restore into a connection or a new database
+  backup export <id> <file>    write the decrypted archive to a file
+  backup extract <id> <dir>    unpack a physical backup into a data directory
   backup rm <id>               delete a backup
+  backup schedule add|list|rm  recurring backups with retention
 
 Audit
   audit list                   show recent audit entries
@@ -138,6 +142,23 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 			return c.backupRestore(rest)
 		case "rm":
 			return c.backupRemove(rest)
+		case "export":
+			return c.backupExport(rest)
+		case "extract":
+			return c.backupExtract(rest)
+		case "schedule":
+			action := ""
+			if len(rest) > 0 {
+				action, rest = rest[0], rest[1:]
+			}
+			switch action {
+			case "add":
+				return c.scheduleAdd(rest)
+			case "list":
+				return c.scheduleList()
+			case "rm":
+				return c.scheduleRemove(rest)
+			}
 		}
 	case "audit":
 		switch sub {

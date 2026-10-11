@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"os"
 
 	"dedie/engine/app"
 )
@@ -10,12 +13,14 @@ import (
 func (c *cli) backupCreate(args []string) error {
 	fs := flag.NewFlagSet("backup create", flag.ExitOnError)
 	note := fs.String("note", "", "a note stored with the backup")
+	typ := fs.String("type", "full", "what to back up: full, schema, data, tables or physical")
+	tables := fs.String("tables", "", "comma-separated tables for --type tables (schema.table on PostgreSQL)")
 	conn, err := oneArg(parse(fs, args), "connection name")
 	if err != nil {
 		return err
 	}
 	fmt.Println("Backing up", conn, "...")
-	b, err := c.app.CreateBackup(c.ctx, c.actor, conn, *note, true)
+	b, err := c.app.CreateBackup(c.ctx, c.actor, app.BackupInput{ConnectionID: conn, Note: *note, Type: *typ, Tables: splitList(*tables)}, true)
 	if err != nil {
 		return err
 	}
@@ -33,9 +38,9 @@ func (c *cli) backupList() error {
 	}
 	var rows [][]string
 	for _, b := range list {
-		rows = append(rows, []string{b.ID, b.ConnectionName, b.Database, b.Status, humanBytes(b.SizeBytes), b.CreatedAt.Local().Format("2006-01-02 15:04"), b.Note})
+		rows = append(rows, []string{b.ID, b.ConnectionName, b.Database, b.Type, b.Status, humanBytes(b.SizeBytes), b.CreatedAt.Local().Format("2006-01-02 15:04"), b.Note})
 	}
-	table("ID\tCONNECTION\tDATABASE\tSTATUS\tSIZE\tCREATED\tNOTE", rows)
+	table("ID\tCONNECTION\tDATABASE\tTYPE\tSTATUS\tSIZE\tCREATED\tNOTE", rows)
 	return nil
 }
 
@@ -55,13 +60,16 @@ func (c *cli) backupRestore(args []string) error {
 	fs := flag.NewFlagSet("backup restore", flag.ExitOnError)
 	var in app.RestoreInput
 	fs.StringVar(&in.TargetID, "target", "", "connection to restore into")
+	fs.StringVar(&in.NewDatabase, "new-database", "", "create this database on the target server and restore into it")
+	tables := fs.String("tables", "", "restore only these comma-separated tables (PostgreSQL)")
 	fs.BoolVar(&in.Clean, "clean", false, "drop existing objects before recreating them")
 	fs.BoolVar(&in.KeepOwners, "keep-owners", false, "restore object ownership and privileges")
-	fs.StringVar(&in.Confirm, "confirm", "", "the target database name, to confirm the restore")
+	fs.StringVar(&in.Confirm, "confirm", "", "the name of the database being restored into, to confirm")
 	id, err := oneArg(parse(fs, args), "backup id")
 	if err != nil {
 		return err
 	}
+	in.Tables = splitList(*tables)
 	fmt.Println("Restoring", id, "...")
 	if _, err := c.app.RestoreBackup(c.ctx, c.actor, id, in, true); err != nil {
 		return err
@@ -76,6 +84,95 @@ func (c *cli) backupRemove(args []string) error {
 		return err
 	}
 	if err := c.app.DeleteBackup(c.ctx, c.actor, id); err != nil {
+		return err
+	}
+	fmt.Println("Deleted", id)
+	return nil
+}
+
+// backupExport writes the decrypted archive to a file for use outside Dedie.
+func (c *cli) backupExport(args []string) error {
+	if len(args) != 2 {
+		return errors.New("usage: dedie backup export <id> <file>")
+	}
+	src, _, err := c.app.ExportBackup(c.ctx, c.actor, args[0])
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	f, err := os.OpenFile(args[1], os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	n, err := io.Copy(f, src)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(args[1])
+		return err
+	}
+	fmt.Printf("Wrote %s (%s). This copy is not encrypted; store it accordingly.\n", args[1], humanBytes(n))
+	return nil
+}
+
+// backupExtract unpacks a physical backup into an empty data directory.
+func (c *cli) backupExtract(args []string) error {
+	if len(args) != 2 {
+		return errors.New("usage: dedie backup extract <id> <directory>")
+	}
+	files, err := c.app.ExtractBackup(c.ctx, c.actor, args[0], args[1])
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Extracted %d files into %s.\nStart PostgreSQL of the same major version on it, for example:\n  pg_ctl -D %s start\n", files, args[1], args[1])
+	return nil
+}
+
+func (c *cli) scheduleAdd(args []string) error {
+	fs := flag.NewFlagSet("backup schedule add", flag.ExitOnError)
+	in := app.ScheduleInput{Enabled: true}
+	fs.StringVar(&in.Name, "name", "", "name of the schedule")
+	fs.StringVar(&in.ConnectionID, "connection", "", "connection to back up")
+	fs.StringVar(&in.Cron, "cron", "@daily", "when to run: minute hour day month weekday, or @hourly, @daily, @weekly, @monthly")
+	fs.StringVar(&in.Type, "type", "full", "full, schema, data, tables or physical")
+	tables := fs.String("tables", "", "comma-separated tables for --type tables")
+	fs.IntVar(&in.KeepLast, "keep-last", 7, "keep this many backups (0 keeps all)")
+	fs.IntVar(&in.KeepDays, "keep-days", 0, "delete backups older than this many days (0 keeps all)")
+	fs.BoolVar(&in.Verify, "verify", true, "verify each backup after it is written")
+	parse(fs, args)
+	in.Tables = splitList(*tables)
+	sc, err := c.app.SaveSchedule(c.ctx, c.actor, "", in)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Schedule %s created; next run %s. A running dedie-server takes the backups.\n", sc.ID, sc.NextRunAt.Local().Format("2006-01-02 15:04"))
+	return nil
+}
+
+func (c *cli) scheduleList() error {
+	list, err := c.app.ListSchedules(c.ctx, c.actor)
+	if err != nil {
+		return err
+	}
+	var rows [][]string
+	for _, sc := range list {
+		next := "-"
+		if sc.Enabled && !sc.NextRunAt.IsZero() {
+			next = sc.NextRunAt.Local().Format("2006-01-02 15:04")
+		}
+		rows = append(rows, []string{sc.ID, sc.Name, sc.Cron, sc.Type, fmt.Sprintf("last %d / %d days", sc.KeepLast, sc.KeepDays), sc.LastStatus, next})
+	}
+	table("ID\tNAME\tCRON\tTYPE\tKEEP\tLAST RUN\tNEXT RUN", rows)
+	return nil
+}
+
+func (c *cli) scheduleRemove(args []string) error {
+	id, err := oneArg(args, "schedule id")
+	if err != nil {
+		return err
+	}
+	if err := c.app.DeleteSchedule(c.ctx, c.actor, id); err != nil {
 		return err
 	}
 	fmt.Println("Deleted", id)
