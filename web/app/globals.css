@@ -417,3 +417,10 @@ ul.plain li { margin-bottom: 6px; }
 .preflight-bar strong { color: var(--text); }
 .preflight-bar .spacer { flex: 1; }
 .segmented.small button { padding: 3px 10px; font-size: 12.5px; }
+
+/* The statements a migration would run, grouped by when they run. */
+.preview-phase { margin-top: 14px; }
+.preview-phase h3 { font-size: 14px; margin: 0 0 8px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.preview-phase details { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 6px; }
+.preview-phase summary { padding: 7px 10px; cursor: pointer; font-size: 13px; }
+.preview-phase pre { margin: 0; padding: 10px 12px; border-top: 1px solid var(--border); background: var(--bg-subtle); font-size: 12.5px; overflow-x: auto; white-space: pre; }

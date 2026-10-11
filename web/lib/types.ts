@@ -249,6 +249,14 @@ export interface PreflightCheck {
   detail: string;
 }
 
+/** One statement a migration would run on the target. */
+export interface PreviewStatement {
+  phase: string;
+  kind: string;
+  name: string;
+  sql: string;
+}
+
 /** Something on the target with the name of an object being migrated. */
 export interface ExistingObject {
   kind: string;

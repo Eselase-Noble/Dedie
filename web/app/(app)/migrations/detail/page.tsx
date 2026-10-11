@@ -8,6 +8,7 @@ import { formatBytes, formatDuration, formatNumber, formatTime } from "@/lib/for
 import { useLoad } from "@/lib/hooks";
 import type { MigrationAction, MigrationDetail, OnExisting, PreflightReport } from "@/lib/types";
 import ExistingObjectsDialog from "@/components/migrations/ExistingObjects";
+import SchemaPreview from "@/components/migrations/SchemaPreview";
 import { download } from "@/lib/csv";
 import { copyText } from "@/lib/desktop";
 import { useSession } from "@/components/session";
@@ -117,6 +118,7 @@ function Detail({ id }: { id: string }) {
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [preflighting, setPreflighting] = useState(false);
   const [asking, setAsking] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
 
   if (loading && !job) return <div className="content"><Loading /></div>;
   if (!job) return <div className="content"><Banner tone="error">{error || "Migration not found."}</Banner></div>;
@@ -314,6 +316,10 @@ function Detail({ id }: { id: string }) {
           <div className="actions">
             {report && <StatusBadge status={report.ok ? "ok" : "fail"} />}
             {manage && (
+              <button className="btn small" onClick={() => setPreviewing(true)}
+                title="Read the statements this migration would run on the target, without running them">Preview schema</button>
+            )}
+            {manage && (
               <button className="btn small" onClick={() => runPreflight()} disabled={preflighting}>
                 {preflighting ? "Checking…" : report ? "Run again" : "Run preflight"}
               </button>
@@ -411,6 +417,7 @@ function Detail({ id }: { id: string }) {
         </div>
       </div>
 
+      {previewing && <SchemaPreview jobId={job.id} name={job.name} onClose={() => setPreviewing(false)} />}
       {asking && (
         <ExistingObjectsDialog jobId={job.id} objects={existing} current={onExisting}
           onClose={() => setAsking(false)} onChosen={() => runPreflight(false)} />

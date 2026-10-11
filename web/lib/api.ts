@@ -26,7 +26,7 @@ import type {
   Monitoring,
   Overview,
   OwnerChange,
-  OnExisting, PreflightReport,
+  OnExisting, PreviewStatement, PreflightReport,
   QueryResponse,
   Restore,
   RestoreInput,
@@ -204,6 +204,7 @@ export const api = {
   createMigration: (body: MigrationInput) => post<Migration>("/migrations", body),
   migration: (jobId: string) => get<MigrationDetail>(`/migrations/${id(jobId)}`),
   preflight: (jobId: string) => post<PreflightReport>(`/migrations/${id(jobId)}/preflight`),
+  previewMigration: (jobId: string) => get<PreviewStatement[]>(`/migrations/${id(jobId)}/preview`),
   setOnExisting: (jobId: string, policy: OnExisting) => post<Migration>(`/migrations/${id(jobId)}/on-existing`, { policy }),
   migrationAction: (jobId: string, action: MigrationAction) =>
     post<{ ok: boolean }>(`/migrations/${id(jobId)}/actions/${action}`),
