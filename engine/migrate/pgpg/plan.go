@@ -3,6 +3,7 @@ package pgpg
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -48,10 +49,12 @@ type Plan struct {
 	VersionNum int
 	Schemas    []string
 	Tables     []Table
-	Skipped    []Skipped
-	Pre        []Stmt
-	Post       []Stmt
-	Final      []Stmt
+	// Missing lists tables the operator asked for that do not exist.
+	Missing []string
+	Skipped []Skipped
+	Pre     []Stmt
+	Post    []Stmt
+	Final   []Stmt
 }
 
 const userSchemaFilter = `n.nspname NOT IN ('pg_catalog','information_schema','pg_toast','` + metaSchema + `') AND n.nspname NOT LIKE 'pg\_temp\_%' AND n.nspname NOT LIKE 'pg\_toast\_temp\_%'`
@@ -93,6 +96,21 @@ func BuildPlan(ctx context.Context, src *pgx.Conn, cfg Config) (*Plan, error) {
 	for i, t := range p.Tables {
 		oids[i] = t.OID
 	}
+	tableScope := cfg.Scope() == "table"
+	if tableScope {
+		// Only the schemas that hold a selected table are touched.
+		var used []string
+		seen := map[string]bool{}
+		for _, t := range p.Tables {
+			if !seen[t.Schema] {
+				seen[t.Schema] = true
+				used = append(used, t.Schema)
+			}
+		}
+		if len(used) > 0 {
+			p.Schemas = used
+		}
+	}
 
 	for _, s := range p.Schemas {
 		p.Pre = append(p.Pre, Stmt{Kind: "schema", Name: s, SQL: "CREATE SCHEMA IF NOT EXISTS " + qident(s)})
@@ -106,7 +124,14 @@ func BuildPlan(ctx context.Context, src *pgx.Conn, cfg Config) (*Plan, error) {
 		func() error { return p.loadConstraints(ctx, src, oids) },
 		func() error { return p.loadSequenceOwners(ctx, src, oids) },
 		func() error { return p.loadIndexes(ctx, src, oids) },
-		func() error { return p.loadViews(ctx, src) },
+		func() error {
+			// Views are standalone objects; a table-level migration
+			// moves the named tables only.
+			if tableScope {
+				return nil
+			}
+			return p.loadViews(ctx, src)
+		},
 		func() error { return p.loadTriggers(ctx, src, oids) },
 	}
 	for _, step := range steps {
@@ -149,6 +174,22 @@ func (p *Plan) loadTables(ctx context.Context, src *pgx.Conn, cfg Config) error 
 	for _, e := range cfg.ExcludeTables {
 		excluded[strings.TrimSpace(e)] = true
 	}
+	// A table may be named "schema.table", or "table" alone to match that
+	// name in any selected schema.
+	wanted := map[string]bool{}
+	for _, name := range cfg.Tables {
+		if name = strings.TrimSpace(name); name != "" {
+			wanted[name] = false
+		}
+	}
+	defer func() {
+		for name, found := range wanted {
+			if !found {
+				p.Missing = append(p.Missing, name)
+			}
+		}
+		sort.Strings(p.Missing)
+	}()
 	rows, err := src.Query(ctx, `SELECT c.oid, n.nspname, c.relname, c.relkind::text, c.relpersistence::text, c.relreplident::text,
 			greatest(c.reltuples,0)::bigint,
 			EXISTS (SELECT 1 FROM pg_catalog.pg_index i WHERE i.indrelid=c.oid AND i.indisprimary),
@@ -169,6 +210,19 @@ func (p *Plan) loadTables(ctx context.Context, src *pgx.Conn, cfg Config) error 
 		var hasPK, hasReplIdx, isChild bool
 		if err := rows.Scan(&t.OID, &t.Schema, &t.Name, &kind, &persistence, &replident, &t.EstRows, &hasPK, &hasReplIdx, &isChild, &t.HasFloat); err != nil {
 			return err
+		}
+		if len(wanted) > 0 {
+			_, full := wanted[t.Schema+"."+t.Name]
+			_, bare := wanted[t.Name]
+			if !full && !bare {
+				continue
+			}
+			if full {
+				wanted[t.Schema+"."+t.Name] = true
+			}
+			if bare {
+				wanted[t.Name] = true
+			}
 		}
 		if excluded[t.Schema+"."+t.Name] {
 			continue

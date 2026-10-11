@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 
 	"dedie/engine/backup"
-	"dedie/engine/connector/postgres"
 	"dedie/engine/secure"
 	"dedie/engine/store"
 )
@@ -47,8 +46,8 @@ func (a *App) CreateBackup(ctx context.Context, actor Actor, connID, note string
 	if err != nil {
 		return store.Backup{}, err
 	}
-	if c.Kind != postgres.Kind {
-		return store.Backup{}, invalid("backups are supported for PostgreSQL connections only in this version")
+	if !backup.Supported(c.Kind) {
+		return store.Backup{}, invalid("backups are not supported for %s connections yet", c.Kind)
 	}
 	cfg, err := a.config(c)
 	if err != nil {
@@ -77,7 +76,7 @@ func (a *App) CreateBackup(ctx context.Context, actor Actor, connID, note string
 			if err != nil {
 				return 0, "", err
 			}
-			if err := backup.Dump(bg, cfg, info.VersionNum/10000, enc); err != nil {
+			if err := backup.Dump(bg, c.Kind, cfg, info.VersionNum, enc); err != nil {
 				return 0, "", err
 			}
 			if err := enc.Close(); err != nil {
@@ -223,7 +222,7 @@ func (a *App) RestoreBackup(ctx context.Context, actor Actor, backupID string, i
 			if err != nil {
 				return "", err
 			}
-			return backup.Restore(bg, cfg, dec, backup.RestoreOptions{Clean: in.Clean, KeepOwners: in.KeepOwners})
+			return backup.Restore(bg, b.Kind, cfg, dec, backup.RestoreOptions{Clean: in.Clean, KeepOwners: in.KeepOwners})
 		}()
 		if err != nil {
 			a.Store.FinishRestore(bg, r.ID, "failed", err.Error(), out)

@@ -83,6 +83,9 @@ func preflight(ctx context.Context, src, dst *pgx.Conn, plan *Plan) (*Report, er
 	} else {
 		r.Add("Tables", "ok", fmt.Sprintf("%d table(s) will be migrated", len(plan.Tables)))
 	}
+	if len(plan.Missing) > 0 {
+		r.Add("Selected tables", "fail", "these tables were selected but do not exist on the source: "+strings.Join(plan.Missing, ", "))
+	}
 	var blocking, skipped []string
 	for _, s := range plan.Skipped {
 		line := s.Schema + "." + s.Name + ": " + s.Reason

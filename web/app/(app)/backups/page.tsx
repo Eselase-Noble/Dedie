@@ -9,7 +9,7 @@ import { useSession } from "@/components/session";
 import { Banner, Checkbox, ConfirmDialog, Field, Loading, Modal, PageHeader, StatusBadge } from "@/components/ui";
 
 function CreateBackup({ connections, onClose, onDone }: { connections: Connection[]; onClose: () => void; onDone: () => void }) {
-  const candidates = connections.filter((c) => c.kind === "postgres");
+  const candidates = connections.filter((c) => c.kind === "postgres" || c.kind === "mysql");
   const [connId, setConnId] = useState(candidates[0]?.id ?? "");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -46,7 +46,7 @@ function CreateBackup({ connections, onClose, onDone }: { connections: Connectio
         </p>
         <Field label="Connection">
           <select className="select" value={connId} onChange={(e) => setConnId(e.target.value)} required>
-            {candidates.length === 0 && <option value="">No PostgreSQL connections</option>}
+            {candidates.length === 0 && <option value="">No PostgreSQL or MySQL connections</option>}
             {candidates.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.database})</option>)}
           </select>
         </Field>
@@ -97,7 +97,9 @@ function RestoreDialog({ backup, connections, onClose, onDone }: {
         {error && <Banner tone="error">{error}</Banner>}
         <p style={{ marginBottom: 12 }}>
           Restoring <strong>{backup.database}</strong> from {backup.connection_name}, taken {formatTime(backup.created_at)}.
-          The file is verified first, and the restore runs in a single transaction: if it fails, the target is left unchanged.
+          {backup.kind === "mysql"
+            ? " The file is verified first. Tables in the target with the same names are replaced, and a MySQL restore cannot be rolled back: if it fails part-way, the tables already replaced stay replaced."
+            : " The file is verified first, and the restore runs in a single transaction: if it fails, the target is left unchanged."}
         </p>
         <Field label="Target connection" hint="Read-only connections cannot be restore targets.">
           <select className="select" value={targetId} onChange={(e) => { setTargetId(e.target.value); setConfirm(""); }} required>
@@ -105,10 +107,12 @@ function RestoreDialog({ backup, connections, onClose, onDone }: {
             {candidates.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.database} on {c.host})</option>)}
           </select>
         </Field>
+        {backup.kind !== "mysql" && <>
         <Checkbox label="Replace existing objects (clean)" checked={clean} onChange={setClean}
           hint="Drops each object in the target before recreating it from the backup. Data in those objects is lost. Without this, the restore fails if an object already exists." />
         <Checkbox label="Restore ownership and privileges" checked={keepOwners} onChange={setKeepOwners}
           hint="Requires the same roles to exist on the target server. Leave off to have everything owned by the connecting user." />
+        </>}
         {target && (
           <Field label={`Type the target database name (${target.database}) to confirm`}>
             <input className="input" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="off" spellCheck={false} />

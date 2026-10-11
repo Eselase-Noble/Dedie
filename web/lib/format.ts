@@ -41,7 +41,9 @@ export function formatDuration(seconds: number): string {
 }
 
 /** Quotes an SQL identifier the way PostgreSQL expects. */
-export function quoteIdent(name: string): string {
+export function quoteIdent(name: string, kind = "postgres"): string {
+  // MySQL quotes identifiers with backticks; double quotes there are strings.
+  if (kind === "mysql") return "`" + name.replace(/`/g, "``") + "`";
   return `"${name.replace(/"/g, '""')}"`;
 }
 

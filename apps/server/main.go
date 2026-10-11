@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -51,23 +52,33 @@ func main() {
 		}
 	}()
 
+	// Listen before announcing the address, so that port 0 ("any free
+	// port") can be reported as the port actually bound.
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		log.Fatalf("listen on %s: %v", *addr, err)
+	}
+	scheme := "http"
+	if useTLS {
+		scheme = "https"
+	}
+	url := scheme + "://" + ln.Addr().String() + "/"
+
 	srv := &http.Server{
-		Addr:              *addr,
 		Handler:           httpapi.New(a, httpapi.Options{Secure: useTLS || *behindProxy, TrustProxy: *behindProxy, UI: web.UI()}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
 	go func() {
-		scheme := "http"
-		if useTLS {
-			scheme = "https"
-		}
-		log.Printf("dedie-server listening on %s://%s (data: %s)", scheme, *addr, *dataDir)
+		log.Printf("dedie-server listening on %s (data: %s)", url, *dataDir)
+		// A stable line on standard output for programs that start the
+		// server and need its address, such as the desktop application.
+		fmt.Println("DEDIE_URL=" + url)
 		var err error
 		if useTLS {
-			err = srv.ListenAndServeTLS(*tlsCert, *tlsKey)
+			err = srv.ServeTLS(ln, *tlsCert, *tlsKey)
 		} else {
-			err = srv.ListenAndServe()
+			err = srv.Serve(ln)
 		}
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("server: %v", err)

@@ -32,11 +32,22 @@ const (
 )
 
 // Config is the operator's choices for one migration.
+//
+// What gets migrated is decided at one of three levels:
+//
+//	database  nothing listed: every schema and table of the connection's database
+//	schema    Schemas listed: everything in those schemas
+//	table     Tables listed: only those tables, with the types, sequences and
+//	          functions they may depend on, their indexes, constraints and
+//	          triggers; views and other standalone objects are left out
 type Config struct {
-	// Schemas limits the migration to these schemas; empty means all.
-	// MySQL pipelines migrate the connection's database and ignore this.
+	// Schemas limits the migration to these schemas; empty means all. In
+	// MySQL a schema is the database itself, so its pipeline ignores this.
 	Schemas []string `json:"schemas"`
-	// ExcludeTables lists "schema.table" names to leave out.
+	// Tables limits the migration to these tables, named "schema.table"
+	// for PostgreSQL and "table" for MySQL. Empty means all tables.
+	Tables []string `json:"tables"`
+	// ExcludeTables lists tables to leave out, named the same way.
 	ExcludeTables []string `json:"exclude_tables"`
 	// SnapshotWorkers is the number of tables copied in parallel.
 	SnapshotWorkers int `json:"snapshot_workers"`
@@ -51,6 +62,17 @@ type Config struct {
 	// CutoverTimeoutSeconds bounds how long cutover waits for the stream to
 	// drain before giving up and resuming normal streaming.
 	CutoverTimeoutSeconds int `json:"cutover_timeout_seconds"`
+}
+
+// Scope names the level the migration runs at: "table", "schema" or "database".
+func (c Config) Scope() string {
+	switch {
+	case len(c.Tables) > 0:
+		return "table"
+	case len(c.Schemas) > 0:
+		return "schema"
+	}
+	return "database"
 }
 
 // Defaults fills in unset options.
