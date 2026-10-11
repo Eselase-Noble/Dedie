@@ -13,6 +13,11 @@
 // "delete this key", so replaying a change that the copy already included
 // is harmless. The stream's position is committed on the target in the
 // same transaction as the changes it covers.
+//
+// An offline job copies the collections once and opens no change stream, so
+// a standalone server will do. MongoDB offers no snapshot that spans a long
+// copy, which makes it the operator's part to keep the source still: the
+// final validation fails the job if the collections changed meanwhile.
 package mongopg
 
 import (

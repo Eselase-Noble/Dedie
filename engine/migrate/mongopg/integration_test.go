@@ -347,3 +347,123 @@ func TestMigration(t *testing.T) {
 	_, final := rep.snapshot()
 	t.Logf("applied %d changes in %d transactions, %d anomalies", final.RowsApplied, final.TxApplied, final.Anomalies)
 }
+
+// TestMigrationOffline runs a one-time copy. The job must finish by itself,
+// with no cutover requested and without opening a change stream.
+func TestMigrationOffline(t *testing.T) {
+	srcCfg := testConfig(t, "DEDIE_TEST_MONGO_SOURCE")
+	dstCfg := testConfig(t, "DEDIE_TEST_TARGET")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	client, err := mongodb.Connect(ctx, srcCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Disconnect(context.Background())
+	name := fmt.Sprintf("dedie_mongo_%d", time.Now().UnixNano()%1e9)
+	srcCfg.Database = name
+	db := client.Database(name)
+	defer db.Drop(context.Background())
+
+	var users []any
+	for i := 1; i <= 3000; i++ {
+		users = append(users, bson.D{{Key: "_id", Value: int64(i)}, {Key: "name", Value: fmt.Sprintf("user %d", i)},
+			{Key: "address", Value: bson.D{{Key: "city", Value: "Accra"}, {Key: "zip", Value: i}}}})
+	}
+	if _, err := db.Collection("users").InsertMany(ctx, users); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Collection("notes").InsertOne(ctx, bson.D{{Key: "_id", Value: "only"}, {Key: "body", Value: "one document"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	admin, err := postgres.Connect(ctx, dstCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close(context.Background())
+	if _, err := admin.Exec(ctx, `CREATE DATABASE `+name); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Exec(context.Background(), `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`)
+	dstCfg.Database = name
+	dst, err := postgres.Connect(ctx, dstCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close(context.Background())
+
+	cfg := migrate.Config{Mode: migrate.ModeOffline, FenceSource: true,
+		Columns: map[string][]migrate.ColumnSpec{"users": {{Field: "address.zip", Name: "zip", Type: "bigint"}}}}
+	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var noted bool
+	for _, c := range report.Checks {
+		t.Logf("preflight %-5s %s: %s", c.Status, c.Name, c.Detail)
+		switch c.Name {
+		case "Offline copy":
+			noted = c.Status == "warn"
+		case "Replica set", "Change stream", "Cutover":
+			t.Errorf("offline preflight should not check %q", c.Name)
+		}
+	}
+	if !report.OK || !noted || report.Tables != 2 {
+		t.Fatalf("offline preflight: ok=%v, offline note=%v, collections=%d", report.OK, noted, report.Tables)
+	}
+
+	rep := &memReporter{t: t, desired: "run", tables: map[string]map[string]any{}}
+	out, err := Run(ctx, "offline1", cfg, State{}, srcCfg, dstCfg, rep)
+	if err != nil || out != migrate.Completed {
+		t.Fatalf("offline run: %v %v", out, err)
+	}
+	phase, st := rep.snapshot()
+	if phase != migrate.PhaseDone || rep.Desired() != "run" {
+		t.Errorf("finished in phase %q with the operator's instruction %q", phase, rep.Desired())
+	}
+	if st.StartT != 0 || st.TxApplied != 0 {
+		t.Errorf("offline state holds a stream position (%d) or applied changes (%d)", st.StartT, st.TxApplied)
+	}
+
+	for _, coll := range []string{"users", "notes"} {
+		want, _ := db.Collection(coll).CountDocuments(ctx, bson.D{})
+		var got int64
+		if err := dst.QueryRow(ctx, `SELECT count(*) FROM `+qname(coll)).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want || want == 0 {
+			t.Errorf("%s: %d rows in the target, %d documents in the source", coll, got, want)
+		}
+		if rep.tables[coll]["validation"] != "match" {
+			t.Errorf("%s validation: %v", coll, rep.tables[coll])
+		}
+	}
+	var city string
+	var zip int64
+	if err := dst.QueryRow(ctx, `SELECT doc->'address'->>'city', zip FROM users WHERE _id='7'`).Scan(&city, &zip); err != nil {
+		t.Fatal(err)
+	}
+	if city != "Accra" || zip != 7 {
+		t.Errorf("user 7: city %q, zip %d", city, zip)
+	}
+	var checkpoint bool
+	dst.QueryRow(ctx, `SELECT to_regclass('dedie.mongo_checkpoint') IS NOT NULL`).Scan(&checkpoint)
+	if checkpoint {
+		t.Error("the checkpoint table was left on the target")
+	}
+
+	// A job resumed after its copy goes straight to validation, which must
+	// now fail: nothing carries this document over.
+	if _, err := db.Collection("notes").InsertOne(ctx, bson.D{{Key: "_id", Value: "late write"}}); err != nil {
+		t.Fatal(err)
+	}
+	out, err = Run(ctx, "offline1", cfg, st, srcCfg, dstCfg, rep)
+	if err == nil || !strings.Contains(err.Error(), "differ") {
+		t.Errorf("resumed offline job over a changed source: %v %v", out, err)
+	}
+	if phase, _ := rep.snapshot(); phase == migrate.PhaseStreaming {
+		t.Error("offline job went to streaming")
+	}
+}

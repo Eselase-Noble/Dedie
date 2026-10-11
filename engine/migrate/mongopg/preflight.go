@@ -25,17 +25,25 @@ func Preflight(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate
 	defer client.Disconnect(context.WithoutCancel(ctx))
 	version, _ := mongodb.Version(ctx, client)
 	rep.Add("Source connection", "ok", "MongoDB "+version)
-	if mongodb.VersionNum(version) < 40000 {
-		rep.Add("Source version", "fail", "change streams over a whole database need MongoDB 4.0 or newer")
-	}
-	hello, err := mongodb.ServerHello(ctx, client)
-	switch {
-	case err != nil:
-		rep.Add("Replica set", "fail", err.Error())
-	case hello.SetName == "":
-		rep.Add("Replica set", "fail", "the source is a standalone server. Changes made during the copy can only be followed on a replica set; a single node can be one (start mongod with --replSet and run rs.initiate())")
-	default:
-		rep.Add("Replica set", "ok", "member of "+hello.SetName)
+	// Following changes takes a change stream, and so a replica set. An
+	// offline job only reads the collections, which any server allows.
+	offline := cfg.Offline()
+	var hello mongodb.Hello
+	if offline {
+		rep.Add("Offline copy", "warn", "the collections are copied once; changes made to the source after the copy starts are not carried over. Stop application writes to the source before starting")
+	} else {
+		if mongodb.VersionNum(version) < 40000 {
+			rep.Add("Source version", "fail", "change streams over a whole database need MongoDB 4.0 or newer")
+		}
+		hello, err = mongodb.ServerHello(ctx, client)
+		switch {
+		case err != nil:
+			rep.Add("Replica set", "fail", err.Error())
+		case hello.SetName == "":
+			rep.Add("Replica set", "fail", "the source is a standalone server. Changes made during the copy can only be followed on a replica set; a single node can be one (start mongod with --replSet and run rs.initiate())")
+		default:
+			rep.Add("Replica set", "ok", "member of "+hello.SetName)
+		}
 	}
 
 	list, err := collections(ctx, client.Database(srcCfg.Database), newScope(cfg))
@@ -114,7 +122,7 @@ func Preflight(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate
 		sort.Strings(parts)
 		rep.Add("Columns", "ok", "lifted into columns beside the document: "+strings.Join(parts, "; ")+". A value of another type is stored as NULL in its column and counted")
 	}
-	if cfg.FenceSource {
+	if cfg.FenceSource && !offline {
 		rep.Add("Cutover", "warn", "a MongoDB source cannot be made read-only by this tool; stop the applications that write to it before cutting over")
 	}
 	return rep, nil

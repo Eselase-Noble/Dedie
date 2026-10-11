@@ -99,7 +99,23 @@ func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 		}
 		r.st.SnapshotDone = true
 		r.save()
-		r.rep.Event("info", "initial copy finished; following changes")
+		if r.cfg.Offline() {
+			r.rep.Event("info", "copy finished")
+		} else {
+			r.rep.Event("info", "initial copy finished; following changes")
+		}
+	}
+
+	// An offline job has no stream to follow: the copy is the whole
+	// migration, and it finishes without waiting for the operator.
+	if r.cfg.Offline() {
+		if err := r.reconnect(ctx); err != nil {
+			return "", err
+		}
+		if _, err := r.finalize(ctx); err != nil {
+			return "", err
+		}
+		return migrate.Completed, nil
 	}
 
 	retries := 0
@@ -156,16 +172,19 @@ func (r *runner) schemaPhase(ctx context.Context) error {
 	r.st.SourceVersion, r.st.TargetVersion = "MongoDB "+r.st.SourceVersion, "PostgreSQL "+r.st.TargetVersion
 
 	// The cluster time is taken before anything is copied. Every change
-	// from here on is replayed, including those the copy also sees.
-	raw, err := r.db.RunCommand(ctx, bson.D{{Key: "ping", Value: 1}}).Raw()
-	if err != nil {
-		return mongodb.Friendly(err)
+	// from here on is replayed, including those the copy also sees. An
+	// offline job replays nothing, and a standalone server reports no time.
+	if !r.cfg.Offline() {
+		raw, err := r.db.RunCommand(ctx, bson.D{{Key: "ping", Value: 1}}).Raw()
+		if err != nil {
+			return mongodb.Friendly(err)
+		}
+		t, i, ok := raw.Lookup("operationTime").TimestampOK()
+		if !ok {
+			return errors.New("the source did not report a cluster time; it must be a replica set member")
+		}
+		r.st.StartT, r.st.StartI = t, i
 	}
-	t, i, ok := raw.Lookup("operationTime").TimestampOK()
-	if !ok {
-		return errors.New("the source did not report a cluster time; it must be a replica set member")
-	}
-	r.st.StartT, r.st.StartI = t, i
 
 	progress := make([]migrate.TableProgress, len(r.list))
 	for n, c := range r.list {
@@ -203,21 +222,38 @@ func (r *runner) reconnect(ctx context.Context) error {
 	return nil
 }
 
-// finalize runs once the stream has drained at cutover. It returns false
-// when validation failed and streaming should continue.
+// finalize runs once the stream has drained at cutover, or straight after
+// the copy in an offline job. It returns false when validation failed and
+// streaming should continue; an offline job has no stream to go back to and
+// fails instead.
 func (r *runner) finalize(ctx context.Context) (bool, error) {
 	r.rep.SetPhase(migrate.PhaseCutover)
-	r.rep.Event("info", "the stream is drained; validating collections ("+r.cfg.Validation+")")
-	// Collections created while the job ran are validated too.
-	list, err := collections(ctx, r.db, r.scope)
-	if err != nil {
-		return false, err
+	offline := r.cfg.Offline()
+	if offline {
+		r.rep.Event("info", "validating collections ("+r.cfg.Validation+")")
+	} else {
+		r.rep.Event("info", "the stream is drained; validating collections ("+r.cfg.Validation+")")
+	}
+	// Collections created while the job ran are validated too. An offline
+	// job is answerable only for the collections it copied.
+	list := r.list
+	if !offline {
+		var err error
+		if list, err = collections(ctx, r.db, r.scope); err != nil {
+			return false, err
+		}
 	}
 	mismatches, err := validate(ctx, r.db, r.dst, list, r.cfg.Validation, r.rep)
 	if err != nil || mismatches > 0 {
 		why := fmt.Sprintf("%d collection(s) differ between source and target", mismatches)
 		if err != nil {
 			why = err.Error()
+		}
+		if offline {
+			if err != nil {
+				return false, err
+			}
+			return false, fmt.Errorf("%s: the source was probably written to during the copy. Stop writes to the source and run the migration again", why)
 		}
 		r.rep.SetDesired("run")
 		r.rep.Event("error", "cutover cancelled: "+why+". If the source is still receiving writes, stop them and try again; streaming continues")
@@ -229,7 +265,11 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 	}
 	r.cleanup(ctx)
 	r.rep.SetPhase(migrate.PhaseDone)
-	r.rep.Event("info", "cutover complete: the target has every document of the source")
+	if offline {
+		r.rep.Event("info", "offline copy complete: the target holds the source's documents as of the copy")
+	} else {
+		r.rep.Event("info", "cutover complete: the target has every document of the source")
+	}
 	r.save()
 	return true, nil
 }
