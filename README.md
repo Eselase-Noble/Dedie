@@ -199,7 +199,10 @@ dedie conn add --kind mongodb --name events --host mongo.internal --db events --
 dedie conn list
 dedie query prod-16 "select count(*) from orders"      # read-only unless --write
 dedie backup create prod-16 --note "before upgrade"
+dedie conn add --kind oracle --name erp --host ora.internal --db ORCLPDB1 --user migrator
 dedie migrate list
+dedie migrate preview <id>                # the statements a migration would run on the target
+dedie notifications --unread              # what has happened since you last looked
 dedie logout                              # revokes the saved sign-in
 ```
 
