@@ -72,7 +72,44 @@ CREATE TABLE IF NOT EXISTS audit (
   detail TEXT NOT NULL DEFAULT '', ip TEXT NOT NULL DEFAULT '',
   prev_hash TEXT NOT NULL, hash TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS audit_org ON audit(org_id, id);
+CREATE TABLE IF NOT EXISTS backup_schedules (
+  id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id),
+  name TEXT NOT NULL, connection_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'full',
+  tables TEXT NOT NULL DEFAULT '[]', cron TEXT NOT NULL,
+  keep_last INTEGER NOT NULL DEFAULT 0, keep_days INTEGER NOT NULL DEFAULT 0,
+  verify INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1,
+  last_run_at TEXT NOT NULL DEFAULT '', last_status TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '',
+  next_run_at TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+  UNIQUE(org_id, name));
 `
+
+// columns lists columns added to existing tables after the first release.
+// SQLite has no ADD COLUMN IF NOT EXISTS, so each is added only when missing.
+var columns = []struct{ table, name, def string }{
+	{"backups", "type", "TEXT NOT NULL DEFAULT 'full'"},
+	{"backups", "format", "TEXT NOT NULL DEFAULT ''"},
+	{"backups", "tables", "TEXT NOT NULL DEFAULT '[]'"},
+	{"backups", "schedule_id", "TEXT NOT NULL DEFAULT ''"},
+	{"backups", "verified_at", "TEXT NOT NULL DEFAULT ''"},
+	{"restores", "database", "TEXT NOT NULL DEFAULT ''"},
+}
+
+// upgrade brings a database created by an older release up to date.
+func upgrade(db *sql.DB) error {
+	for _, c := range columns {
+		var n int
+		if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, c.table, c.name).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE ` + c.table + ` ADD COLUMN ` + c.name + ` ` + c.def); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // Open opens (and creates if needed) the metadata database in dataDir.
 func Open(dataDir string) (*Store, error) {
@@ -97,6 +134,10 @@ func Open(dataDir string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("init metadata db: %w", err)
+	}
+	if err := upgrade(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("upgrade metadata db: %w", err)
 	}
 	return &Store{db: db}, nil
 }

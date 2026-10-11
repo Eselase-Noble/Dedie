@@ -258,12 +258,47 @@ export interface MigrationInput {
 
 export type MigrationAction = "start" | "pause" | "resume" | "cutover" | "abort" | "delete";
 
+export type BackupType = "full" | "schema" | "data" | "tables" | "physical";
+
+export interface BackupInput {
+  connection_id: string;
+  note: string;
+  type: BackupType;
+  tables: string[];
+}
+
+export interface Schedule {
+  id: string;
+  name: string;
+  connection_id: string;
+  type: BackupType;
+  tables: string[];
+  cron: string;
+  keep_last: number;
+  keep_days: number;
+  verify: boolean;
+  enabled: boolean;
+  last_run_at: string;
+  last_status: string;
+  last_error: string;
+  next_run_at: string;
+  created_by: string;
+  created_at: string;
+}
+
+export type ScheduleInput = Pick<Schedule, "name" | "connection_id" | "type" | "tables" | "cron" | "keep_last" | "keep_days" | "verify" | "enabled">;
+
 export interface Backup {
   id: string;
   connection_id: string;
   connection_name: string;
   database: string;
   kind: string;
+  type: BackupType;
+  format: string;
+  tables: string[];
+  schedule_id: string;
+  verified_at: string;
   server_version: string;
   status: "running" | "completed" | "failed";
   error: string;
@@ -280,6 +315,7 @@ export interface Restore {
   backup_id: string;
   target_id: string;
   target_name: string;
+  database: string;
   status: "running" | "completed" | "failed";
   error: string;
   log: string;
@@ -290,6 +326,8 @@ export interface Restore {
 
 export interface RestoreInput {
   target_id: string;
+  new_database: string;
+  tables: string[];
   clean: boolean;
   keep_owners: boolean;
   confirm: string;

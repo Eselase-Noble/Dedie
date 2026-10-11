@@ -2,6 +2,7 @@ import type {
   AuditEntry,
   AuditVerification,
   Backup,
+  BackupInput,
   Catalog,
   ColumnDef,
   Connection,
@@ -16,6 +17,8 @@ import type {
   QueryResponse,
   Restore,
   RestoreInput,
+  Schedule,
+  ScheduleInput,
   ServerInfo,
   Session,
   User,
@@ -125,7 +128,14 @@ export const api = {
 
   // Backups
   backups: () => get<Backup[]>("/backups"),
-  createBackup: (connection_id: string, note: string) => post<Backup>("/backups", { connection_id, note }),
+  createBackup: (body: BackupInput) => post<Backup>("/backups", body),
+  // A plain link: the browser downloads the decrypted archive as a file.
+  backupDownloadUrl: (backupId: string) => `${BASE}/backups/${id(backupId)}/download`,
+  schedules: () => get<Schedule[]>("/schedules"),
+  saveSchedule: (scheduleId: string, body: ScheduleInput) =>
+    scheduleId ? request<Schedule>("PUT", `/schedules/${id(scheduleId)}`, { body }) : post<Schedule>("/schedules", body),
+  deleteSchedule: (scheduleId: string) => request<{ ok: boolean }>("DELETE", `/schedules/${id(scheduleId)}`),
+  runSchedule: (scheduleId: string) => post<{ ok: boolean }>(`/schedules/${id(scheduleId)}/run`),
   deleteBackup: (backupId: string) => request<{ ok: boolean }>("DELETE", `/backups/${id(backupId)}`),
   verifyBackup: (backupId: string) => post<{ ok: boolean }>(`/backups/${id(backupId)}/verify`),
   restoreBackup: (backupId: string, body: RestoreInput) => post<Restore>(`/backups/${id(backupId)}/restore`, body),

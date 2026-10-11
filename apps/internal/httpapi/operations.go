@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"io"
 	"net/http"
 	"strconv"
 
@@ -69,19 +70,69 @@ func (s *Server) listBackups(w http.ResponseWriter, r *http.Request, actor app.A
 }
 
 func (s *Server) createBackup(w http.ResponseWriter, r *http.Request, actor app.Actor) {
-	var in struct {
-		ConnectionID string `json:"connection_id"`
-		Note         string `json:"note"`
-	}
+	var in app.BackupInput
 	if !decode(w, r, &in) {
 		return
 	}
-	b, err := s.app.CreateBackup(r.Context(), actor, in.ConnectionID, in.Note, false)
+	b, err := s.app.CreateBackup(r.Context(), actor, in, false)
 	if err != nil {
 		fail(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, b)
+}
+
+// downloadBackup streams the decrypted archive as a file.
+func (s *Server) downloadBackup(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	src, name, err := s.app.ExportBackup(r.Context(), actor, r.PathValue("id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	defer src.Close()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	io.Copy(w, src)
+}
+
+// --- backup schedules ---
+
+func (s *Server) listSchedules(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	list, err := s.app.ListSchedules(r.Context(), actor)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) saveSchedule(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	var in app.ScheduleInput
+	if !decode(w, r, &in) {
+		return
+	}
+	sc, err := s.app.SaveSchedule(r.Context(), actor, r.PathValue("id"), in)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sc)
+}
+
+func (s *Server) deleteSchedule(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	if err := s.app.DeleteSchedule(r.Context(), actor, r.PathValue("id")); err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) runSchedule(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	if err := s.app.RunScheduleNow(r.Context(), actor, r.PathValue("id")); err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 
 func (s *Server) deleteBackup(w http.ResponseWriter, r *http.Request, actor app.Actor) {
