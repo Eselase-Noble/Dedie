@@ -7,8 +7,8 @@ import { Banner, Checkbox, Field, Modal } from "./ui";
 
 const SSL_MODES = ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"];
 const WEAK_SSL = ["disable", "allow", "prefer"];
-const DEFAULT_PORTS: Record<string, number> = { postgres: 5432, mysql: 3306, mongodb: 27017 };
-const KIND_LABELS: Record<string, string> = { postgres: "PostgreSQL", mysql: "MySQL", mongodb: "MongoDB" };
+const DEFAULT_PORTS: Record<string, number> = { postgres: 5432, mysql: 3306, mongodb: 27017, oracle: 1521 };
+const KIND_LABELS: Record<string, string> = { postgres: "PostgreSQL", mysql: "MySQL", mongodb: "MongoDB", oracle: "Oracle" };
 
 export function ServerInfoSummary({ info }: { info: ServerInfo }) {
   return (
@@ -103,7 +103,12 @@ export default function ConnectionForm({ existing, kinds, onClose, onSaved }: {
           </Field>
           <Field label="Database type">
             <select className="select" value={form.kind} disabled={!!existing}
-              onChange={(e) => setForm((f) => ({ ...f, kind: e.target.value, port: DEFAULT_PORTS[e.target.value] ?? f.port }))}>
+              onChange={(e) => setForm((f) => ({
+                ...f, kind: e.target.value, port: DEFAULT_PORTS[e.target.value] ?? f.port,
+                // An Oracle listener speaks TLS on a separate port, so the
+                // usual default of requiring it would not connect.
+                sslmode: e.target.value === "oracle" ? "disable" : f.sslmode === "disable" && f.kind === "oracle" ? "require" : f.sslmode,
+              }))}>
               {kinds.map((k) => <option key={k} value={k}>{KIND_LABELS[k] ?? k}</option>)}
             </select>
           </Field>
@@ -114,7 +119,8 @@ export default function ConnectionForm({ existing, kinds, onClose, onSaved }: {
             <input className="input" type="number" min={1} max={65535} value={form.port}
               onChange={(e) => set("port", Number(e.target.value))} required />
           </Field>
-          <Field label="Database">
+          <Field label={form.kind === "oracle" ? "Service name" : "Database"}
+            hint={form.kind === "oracle" ? "The service of the pluggable database, for example FREEPDB1 or ORCLPDB1; not the instance SID." : undefined}>
             <input className="input" value={form.database} onChange={(e) => set("database", e.target.value)} required />
           </Field>
           <Field label="Username" hint={form.kind === "mongodb" ? "The account is looked up in the admin database. Leave empty for a server without access control." : undefined}>
@@ -124,7 +130,7 @@ export default function ConnectionForm({ existing, kinds, onClose, onSaved }: {
             <input className="input" type="password" value={form.password} onChange={(e) => set("password", e.target.value)}
               autoComplete="new-password" />
           </Field>
-          <Field label="SSL mode">
+          <Field label="SSL mode" hint={form.kind === "oracle" ? "Choose require or stricter only for a TCPS listener, and give its port." : undefined}>
             <select className="select" value={form.sslmode} onChange={(e) => set("sslmode", e.target.value)}>
               {SSL_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>

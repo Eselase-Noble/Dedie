@@ -16,17 +16,21 @@ const PHASE_LABELS: Record<string, string> = {
 };
 
 function Stepper({ job }: { job: MigrationDetail }) {
-  const current = job.status === "completed" ? PHASES.length : PHASES.indexOf(job.phase);
+  // An offline migration has no streaming phase, and what the engine
+  // calls cutover is its validation.
+  const offline = job.config.mode === "offline";
+  const phases = offline ? PHASES.filter((p) => p !== "streaming") : PHASES;
+  const current = job.status === "completed" ? phases.length : phases.indexOf(job.phase);
   return (
     <div className="stepper">
-      {PHASES.map((phase, i) => {
+      {phases.map((phase, i) => {
         let cls = "";
         if (i < current) cls = "done";
         else if (i === current) cls = job.status === "failed" ? "failed" : "current";
         return (
           <div key={phase} className={`step ${cls}`}>
             <div className="dot">{i < current ? "✓" : i + 1}</div>
-            {PHASE_LABELS[phase]}
+            {offline && phase === "cutover" ? "Validation" : PHASE_LABELS[phase]}
           </div>
         );
       })}
@@ -129,6 +133,9 @@ function Detail({ id }: { id: string }) {
   // A continuous sync is the same job with a different intent: it is not
   // expected to end, and ending it is called finishing rather than cutover.
   const sync = job.config.mode === "sync";
+  // An offline migration copies once and finishes by itself; there is no
+  // stream to cut over from.
+  const offline = job.config.mode === "offline";
   const confirmations: Record<"cutover" | "abort" | "delete", Confirm> = {
     cutover: {
       action: "cutover",
@@ -201,11 +208,13 @@ function Detail({ id }: { id: string }) {
               </button>
             )}
             {canPause && <button className="btn" disabled={!!busy || job.desired === "pause"} onClick={() => act("pause")}>Pause</button>}
-            <button className="btn primary" disabled={!canCutover || !!busy || job.desired === "cutover"}
-              title={canCutover ? undefined : "Available while the migration is streaming changes"}
-              onClick={() => setConfirm(confirmations.cutover)}>
-              {sync ? "Finish sync" : "Cutover"}
-            </button>
+            {!offline && (
+              <button className="btn primary" disabled={!canCutover || !!busy || job.desired === "cutover"}
+                title={canCutover ? undefined : "Available while the migration is streaming changes"}
+                onClick={() => setConfirm(confirmations.cutover)}>
+                {sync ? "Finish sync" : "Cutover"}
+              </button>
+            )}
             {canAbort && <button className="btn danger" disabled={!!busy || job.desired === "abort"} onClick={() => setConfirm(confirmations.abort)}>Abort</button>}
             {canDelete && <button className="btn" disabled={!!busy} onClick={() => setConfirm(confirmations.delete)}>Delete</button>}
           </>
@@ -220,7 +229,9 @@ function Detail({ id }: { id: string }) {
       )}
       {status === "queued" && <Banner tone="info">Waiting for a worker to pick the job up.</Banner>}
       {status === "paused" && (
-        <Banner tone="warn">Paused. The source keeps WAL for this migration until it is resumed or aborted; do not leave it paused for long on a busy database.</Banner>
+        <Banner tone="warn">{offline
+          ? "Paused. The copy starts over from a new snapshot when the job is resumed."
+          : "Paused. The source keeps its change log for this migration until it is resumed or aborted; do not leave it paused for long on a busy database."}</Banner>
       )}
       {sync && status === "running" && job.phase === "streaming" && (
         <Banner tone="ok">In sync: every change on the source is being applied to the target. This continues until you pause or finish it.</Banner>
@@ -228,7 +239,9 @@ function Detail({ id }: { id: string }) {
       {st.fenced && status !== "completed" && <Banner tone="warn">The source database is currently read-only (fenced for cutover).</Banner>}
       {status === "completed" && (
         <Banner tone="ok">
-          {sync ? "Sync finished. The target is an independent, validated copy." : "Cutover complete. The target is ready for application traffic."}
+          {sync ? "Sync finished. The target is an independent, validated copy."
+            : offline ? "Offline copy complete. The target holds the source as it was when the copy started, validated."
+              : "Cutover complete. The target is ready for application traffic."}
           {st.fenced && " The source database was left read-only."}
         </Banner>
       )}

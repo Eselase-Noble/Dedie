@@ -18,6 +18,8 @@ var (
 	// statement: anonymous blocks and stored program definitions.
 	plsqlRe = regexp.MustCompile(`(?is)^\s*(begin|declare|create\s+(or\s+replace\s+)?((non)?editionable\s+)?(procedure|function|package|trigger|type)\b)`)
 	queryRe = regexp.MustCompile(`(?is)^\s*(select|with)\b`)
+	// explainRe matches a request for a statement's plan.
+	explainRe = regexp.MustCompile(`(?is)^\s*explain\s+plan\s+for\b`)
 	// commentRe matches leading comments, which may hide the first keyword.
 	commentRe = regexp.MustCompile(`(?s)^\s*(--[^\n]*\n|/\*.*?\*/)`)
 )
@@ -65,6 +67,17 @@ func (s *session) Query(ctx context.Context, text string, opts connector.QueryOp
 	defer cancel()
 
 	rs := connector.ResultSet{Columns: []connector.Column{}, Rows: [][]*string{}}
+	if explainRe.MatchString(stmt) {
+		// EXPLAIN PLAN does not run the statement. It writes the plan to
+		// the session's plan table, a temporary table of this session
+		// alone, which is then printed; a read-only transaction would
+		// refuse that write and protect nothing.
+		if _, err := s.conn.ExecContext(ctx, stmt); err != nil {
+			return nil, Friendly(err)
+		}
+		isQuery, stmt = true, `SELECT plan_table_output AS "QUERY PLAN" FROM TABLE(DBMS_XPLAN.DISPLAY())`
+		opts.ReadOnly = false
+	}
 	if opts.ReadOnly {
 		if !isQuery {
 			return nil, errors.New("this connection is read-only here: only SELECT statements can be run")

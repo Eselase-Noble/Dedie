@@ -9,6 +9,7 @@ import { Banner, Checkbox, Field, Modal } from "./ui";
 const TYPES: Record<string, string[]> = {
   postgres: ["integer", "bigint", "numeric(12,2)", "text", "varchar(255)", "boolean", "date", "timestamp", "timestamptz", "uuid", "jsonb", "bytea", "double precision"],
   mysql: ["int", "bigint", "decimal(12,2)", "varchar(255)", "text", "tinyint(1)", "date", "datetime", "timestamp", "json", "blob", "double"],
+  oracle: ["NUMBER(10)", "NUMBER(19)", "NUMBER(12,2)", "VARCHAR2(255)", "CLOB", "DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "RAW(16)", "BLOB", "BINARY_DOUBLE"],
 };
 
 type Kind = "database" | "schema" | "table";
@@ -36,10 +37,13 @@ export default function CreateObject({ what, connection, catalog, canAddConnecti
   const [name, setName] = useState("");
   const [addConnection, setAddConnection] = useState(canAddConnection);
   const [schema, setSchema] = useState(
-    connection.kind === "mysql" ? connection.database : schemas.includes("public") ? "public" : schemas[0] ?? "public",
+    connection.kind === "mysql" ? connection.database
+      // An Oracle account creates tables in the schema that bears its name.
+      : connection.kind === "oracle" ? schemas.find((s) => s === connection.username.toUpperCase()) ?? schemas[0] ?? ""
+        : schemas.includes("public") ? "public" : schemas[0] ?? "public",
   );
   const [columns, setColumns] = useState<ColumnDef[]>([
-    { name: "id", type: connection.kind === "mysql" ? "bigint" : "bigint", nullable: false, primary_key: true, default: "" },
+    { name: "id", type: connection.kind === "oracle" ? "NUMBER(19)" : "bigint", nullable: false, primary_key: true, default: "" },
     blankColumn(connection.kind),
   ]);
   const [busy, setBusy] = useState(false);
@@ -47,7 +51,7 @@ export default function CreateObject({ what, connection, catalog, canAddConnecti
   // A PostgreSQL schema or table is created inside one database. It
   // defaults to the connection's own, and any other database on the same
   // server can be chosen.
-  const pickDatabase = connection.kind !== "mysql" && what !== "database";
+  const pickDatabase = connection.kind === "postgres" && what !== "database";
   const [database, setDatabase] = useState(connection.database);
   const [databases, setDatabases] = useState<string[]>([connection.database]);
   const elsewhere = pickDatabase && database !== connection.database;

@@ -46,6 +46,7 @@ export default function MigrationsPage() {
                     <td>
                       <Link href={`/migrations/detail/?id=${encodeURIComponent(m.id)}`}><strong>{m.name}</strong></Link>{" "}
                       {m.config.mode === "sync" && <Badge tone="info">sync</Badge>}
+                      {m.config.mode === "offline" && <Badge>offline</Badge>}
                     </td>
                     <td>{nameOf(m.source_id)}</td>
                     <td>{nameOf(m.target_id)}</td>

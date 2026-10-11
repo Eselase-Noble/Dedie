@@ -22,6 +22,7 @@ import (
 	_ "dedie/engine/migrate/mongopg"
 	_ "dedie/engine/migrate/mymy"
 	_ "dedie/engine/migrate/mypg"
+	_ "dedie/engine/migrate/orapg"
 	_ "dedie/engine/migrate/pgmy"
 	_ "dedie/engine/migrate/pgpg"
 )

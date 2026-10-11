@@ -62,7 +62,7 @@ export default function ResultPanel({ result, name, kind, tableName, editor, chi
         )}
         {result.command && <span className="mono">{result.command}</span>}
         {children}
-        {result.truncated && <Badge tone="warn">truncated at {formatNumber(result.rows.length)} rows; raise the limit or add LIMIT</Badge>}
+        {result.truncated && <Badge tone="warn">truncated at {formatNumber(result.rows.length)} rows; raise the limit or narrow the query</Badge>}
         <span className="spacer" />
         {hasColumns && (
           <>

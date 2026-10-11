@@ -206,7 +206,7 @@ export interface MigrationConfig {
   /** MongoDB sources: fields lifted into typed columns, by collection. */
   columns?: Record<string, ColumnSpec[]>;
   /** "sync" keeps the target following the source; anything else ends with a cutover. */
-  mode?: "migrate" | "sync" | "";
+  mode?: "migrate" | "sync" | "offline" | "";
   schemas: string[] | null;
   tables?: string[] | null;
   exclude_tables: string[] | null;

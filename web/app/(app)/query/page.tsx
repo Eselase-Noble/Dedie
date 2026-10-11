@@ -148,7 +148,7 @@ export default function QueryPage() {
       return;
     }
     if (action === "select") {
-      addQuery(`SELECT * FROM ${quoteIdent(schema, connection?.kind)}.${quoteIdent(table, connection?.kind)} LIMIT 100`, table);
+      addQuery(`SELECT * FROM ${quoteIdent(schema, connection?.kind)}.${quoteIdent(table, connection?.kind)}${connection?.kind === "oracle" ? " FETCH FIRST 100 ROWS ONLY" : " LIMIT 100"}`, table);
       return;
     }
     const existing = tabs.find((t) => t.kind === "table" && t.schema === schema && t.table === table);
@@ -172,8 +172,11 @@ export default function QueryPage() {
             <button className="btn small" onClick={() => setShowCreate((v) => !v)} aria-expanded={showCreate}>Create…</button>
             {showCreate && (
               <div className="popover menu">
-                <button onClick={() => { setCreating("database"); setShowCreate(false); }}>New database</button>
-                {connection?.kind !== "mysql" && (
+                {/* An Oracle database and its schemas (users) are made by a DBA, not here. */}
+                {connection?.kind !== "oracle" && (
+                  <button onClick={() => { setCreating("database"); setShowCreate(false); }}>New database</button>
+                )}
+                {connection?.kind === "postgres" && (
                   <button onClick={() => { setCreating("schema"); setShowCreate(false); }}>New schema</button>
                 )}
                 <button onClick={() => { setCreating("table"); setShowCreate(false); }}>New table</button>
