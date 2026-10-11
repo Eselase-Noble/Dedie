@@ -22,6 +22,7 @@ const NAV: NavItem[] = [
   { href: "/query/", label: "Query browser", needs: "query.read", section: "Workspace" },
   { href: "/migrations/", label: "Migrations", needs: "migrations.view", section: "Workspace" },
   { href: "/backups/", label: "Backups", needs: "backups.create", section: "Administration" },
+  { href: "/monitoring/", label: "Monitoring", needs: "server.admin", section: "Administration" },
   { href: "/server/", label: "Server activity", needs: "server.admin", section: "Administration" },
   { href: "/users/", label: "Users", needs: "users.manage", section: "Administration" },
   { href: "/audit/", label: "Audit log", needs: "audit.view", section: "Administration" },

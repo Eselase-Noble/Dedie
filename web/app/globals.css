@@ -348,3 +348,9 @@ body.dragging-y, body.dragging-y * { cursor: row-resize !important; }
 .codes { font-family: var(--mono); background: var(--bg-subtle); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin: 0; column-count: 2; }
 .totp-setup { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
 .totp-setup img { border: 1px solid var(--border); border-radius: var(--radius); }
+
+/* Monitoring */
+.uptime { display: flex; align-items: flex-end; gap: 1px; height: 26px; }
+.uptime span { flex: 1; min-width: 2px; max-width: 6px; border-radius: 1px; }
+.uptime .up { background: var(--ok); opacity: 0.75; }
+.uptime .down { background: var(--danger); }

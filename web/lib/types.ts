@@ -11,7 +11,8 @@ export type Permission =
   | "backups.create"
   | "backups.restore"
   | "users.manage"
-  | "audit.view";
+  | "audit.view"
+  | "alerts.manage";
 
 export type Role = "owner" | "admin" | "operator" | "analyst" | "viewer";
 
@@ -394,4 +395,80 @@ export interface UserUpdate {
   disabled?: boolean;
   password?: string;
   reset_totp?: boolean;
+}
+
+export interface HealthSample {
+  time: string;
+  online: boolean;
+  latency_ms: number;
+  error?: string;
+}
+
+export interface ConnectionHealth {
+  connection_id: string;
+  name: string;
+  kind: string;
+  checks: number;
+  uptime_percent: number;
+  avg_latency_ms: number;
+  last: HealthSample | null;
+  samples: HealthSample[];
+}
+
+export interface MigrationHealth {
+  id: string;
+  name: string;
+  status: string;
+  phase: string;
+  lag_bytes: number;
+  rows_applied: number;
+  last_commit_time: string;
+}
+
+export interface AlertEvent {
+  id: number;
+  time: string;
+  type: string;
+  subject: string;
+  message: string;
+}
+
+export interface Monitoring {
+  connections: ConnectionHealth[];
+  migrations: MigrationHealth[];
+  events: AlertEvent[];
+}
+
+export type ChannelKind = "webhook" | "slack" | "email";
+
+export interface AlertChannel {
+  id: string;
+  name: string;
+  kind: ChannelKind;
+  summary: string;
+  events: string[];
+  enabled: boolean;
+  last_sent_at: string;
+  last_error: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface ChannelConfig {
+  url?: string;
+  secret?: string;
+  smtp_host?: string;
+  smtp_port?: number;
+  username?: string;
+  password?: string;
+  from?: string;
+  to?: string[];
+}
+
+export interface ChannelInput {
+  name: string;
+  kind: ChannelKind;
+  config: ChannelConfig;
+  events: string[];
+  enabled: boolean;
 }
