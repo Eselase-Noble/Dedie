@@ -61,6 +61,10 @@ type backend interface {
 	ListSchedules() ([]store.Schedule, error)
 	DeleteSchedule(id string) error
 
+	// Summary is the overview: the health of each connection, its last
+	// backup, and what is waiting for somebody.
+	Summary() (app.Summary, error)
+
 	ListAudit(before int64, limit int) ([]store.AuditEntry, error)
 	VerifyAudit() (app.AuditVerification, error)
 
@@ -152,6 +156,7 @@ func (l *local) SaveSchedule(id string, in app.ScheduleInput) (store.Schedule, e
 }
 func (l *local) ListSchedules() ([]store.Schedule, error) { return l.app.ListSchedules(l.ctx, l.actor) }
 func (l *local) DeleteSchedule(id string) error           { return l.app.DeleteSchedule(l.ctx, l.actor, id) }
+func (l *local) Summary() (app.Summary, error)            { return l.app.GetSummary(l.ctx, l.actor) }
 func (l *local) ListAudit(before int64, limit int) ([]store.AuditEntry, error) {
 	return l.app.ListAudit(l.ctx, l.actor, before, limit)
 }

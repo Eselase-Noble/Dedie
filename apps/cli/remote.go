@@ -380,6 +380,11 @@ func (r *remote) DeleteSchedule(id string) error {
 	return r.send("DELETE", "/schedules/"+seg(id), nil, nil)
 }
 
+func (r *remote) Summary() (out app.Summary, err error) {
+	err = r.send("GET", "/summary", nil, &out)
+	return
+}
+
 func (r *remote) ListAudit(before int64, limit int) (out []store.AuditEntry, err error) {
 	err = r.send("GET", "/audit?before="+strconv.FormatInt(before, 10)+"&limit="+strconv.Itoa(limit), nil, &out)
 	return

@@ -120,6 +120,7 @@ func New(a *app.App, opts Options) http.Handler {
 
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /metrics", s.authed(s.metrics))
+	mux.HandleFunc("GET /api/v1/summary", s.authed(s.summary))
 	mux.HandleFunc("GET /api/v1/monitoring", s.authed(s.monitoring))
 	mux.HandleFunc("GET /api/v1/alerts/events", s.authed(s.listAlertEvents))
 	mux.HandleFunc("GET /api/v1/alerts/channels", s.authed(s.listAlertChannels))

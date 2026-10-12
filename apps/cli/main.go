@@ -82,6 +82,11 @@ Backups
   backup schedule add|list|rm  recurring backups with retention
   backup location add|list|rm  directories backups may be written to
 
+Overview
+  overview                     what needs attention, then every connection
+                               with its environment, whether it answers and
+                               when it was last backed up
+
 Notifications
   notifications                list what happened recently: migrations,
                                backups, databases that stopped answering.
@@ -264,6 +269,8 @@ func (c *cli) dispatch(args []string) error {
 				return c.scheduleRemove(rest)
 			}
 		}
+	case "overview":
+		return c.overview()
 	case "notifications":
 		return c.notifications(args[1:])
 	case "audit":
