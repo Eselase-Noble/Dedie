@@ -277,13 +277,18 @@ func (e *pgEngine) query(q string) ([][]string, error) {
 		return nil, err
 	}
 	defer rows.Close()
+	const boolOID = 16
 	var out [][]string
 	for rows.Next() {
 		var row []string
-		for _, v := range rows.RawValues() {
-			if v == nil {
+		for i, v := range rows.RawValues() {
+			switch {
+			case v == nil:
 				row = append(row, null)
-			} else {
+			case rows.FieldDescriptions()[i].DataTypeOID == boolOID:
+				// MySQL has no truth values; it stores 1 and 0.
+				row = append(row, map[string]string{"t": "1", "f": "0"}[string(v)])
+			default:
 				row = append(row, normalize(string(v)))
 			}
 		}
@@ -450,7 +455,15 @@ func (e *myEngine) source(kind, name, table string) (string, error) {
 	return "", fmt.Errorf("SHOW CREATE %s %s has no definition column", kind, name)
 }
 
-func (e *myEngine) drop(kind, name, table string) { e.exec("DROP " + kind + " IF EXISTS " + name) }
+func (e *myEngine) drop(kind, name, table string) {
+	e.exec("DROP " + kind + " IF EXISTS " + name)
+	if kind == "trigger" {
+		// A trigger on several events arrives as one trigger for each.
+		for _, suffix := range []string{"_ins", "_upd", "_del"} {
+			e.exec("DROP TRIGGER IF EXISTS " + name + suffix)
+		}
+	}
+}
 
 func (e *myEngine) tables(names []string) ([]Table, error) {
 	var out []Table
