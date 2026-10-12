@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"time"
 
 	"dedie/engine/connector"
 )
@@ -103,21 +104,62 @@ func (a *App) SetConnectionLimit(ctx context.Context, actor Actor, connID string
 	return nil
 }
 
+// Terminated is the outcome of disconnecting sessions.
+type Terminated struct {
+	// Sessions is how many were disconnected.
+	Sessions int `json:"sessions"`
+	// OpenNow is how many sessions of the same user and state exist a
+	// moment later, or -1 when that was not looked at. An application
+	// that keeps a connection pool opens new connections as soon as it
+	// loses some, so the number an administrator sees afterwards can be
+	// what it was before although every session asked for was closed.
+	OpenNow int `json:"open_now"`
+}
+
+// reopenWait is how long an application is given to reconnect before
+// its sessions are counted again.
+const reopenWait = 1500 * time.Millisecond
+
 // TerminateSessions disconnects every session of a user, an application,
 // a client address or a database, and reports how many there were.
-func (a *App) TerminateSessions(ctx context.Context, actor Actor, connID string, filter connector.SessionFilter) (int, error) {
+func (a *App) TerminateSessions(ctx context.Context, actor Actor, connID string, filter connector.SessionFilter) (Terminated, error) {
+	out := Terminated{OpenNow: -1}
 	if filter.Empty() {
-		return 0, invalid("say whose sessions to disconnect")
+		return out, invalid("say whose sessions to disconnect")
 	}
 	id, name, sess, err := a.admin(ctx, actor, connID)
 	if err != nil {
-		return 0, err
+		return out, err
 	}
 	defer sess.Close(context.WithoutCancel(ctx))
 	n, err := sess.TerminateSessions(ctx, filter)
 	if err != nil {
-		return 0, &Error{Status: 422, Message: err.Error()}
+		return out, &Error{Status: 422, Message: err.Error()}
 	}
+	out.Sessions = n
 	a.audit(ctx, actor, "server.terminate_sessions", id, map[string]any{"connection": name, "filter": filter, "sessions": n})
-	return n, nil
+	if n > 0 && filter.Application == "" && filter.Database == "" && filter.Client == "" {
+		select {
+		case <-ctx.Done():
+			return out, nil
+		case <-time.After(reopenWait):
+		}
+		if acc, err := sess.Accounts(ctx); err == nil {
+			out.OpenNow = 0
+			for _, u := range acc.Accounts {
+				if filter.User != "" && u.Name != filter.User {
+					continue
+				}
+				switch filter.State {
+				case connector.StateIdle:
+					out.OpenNow += u.Idle
+				case connector.StateIdleInTransaction:
+					out.OpenNow += u.IdleInTransaction
+				default:
+					out.OpenNow += u.Connections
+				}
+			}
+		}
+	}
+	return out, nil
 }

@@ -14,6 +14,15 @@ interface Target {
   user: string;
   idle: number;
   idleInTransaction: number;
+  /** How long the longest-idle of them has been idle. */
+  oldestIdleSeconds: number;
+}
+
+/** What to tell the administrator when closed connections are back already. */
+function reopened(openNow: number): string {
+  if (openNow <= 0) return "";
+  return ` ${openNow} ${openNow === 1 ? "is" : "are"} idle now: an application with a connection pool opens new ones as soon as it loses some. ` +
+    "To hold the number down, set a connection limit for the user or lower the pool's minimum size in the application.";
 }
 
 /** Asks which idle connections to close, and closes them. */
@@ -21,7 +30,10 @@ function CloseIdle({ connection, target, onClose, onDone }: {
   connection: Connection; target: Target; onClose: () => void; onDone: (message: string) => void;
 }) {
   const postgres = connection.kind === "postgres";
-  const [minutes, setMinutes] = useState(5);
+  // A pool that pings its connections never lets them sit for minutes,
+  // so an age nothing has reached would only close nothing.
+  const [minutes, setMinutes] = useState(target.oldestIdleSeconds >= 300 ? 5 : 0);
+  const tooOld = minutes * 60 > target.oldestIdleSeconds;
   const [plainIdle, setPlainIdle] = useState(true);
   const [inTransaction, setInTransaction] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -35,11 +47,16 @@ function CloseIdle({ connection, target, onClose, onDone }: {
     const base: SessionFilter = { user: target.user, idle_seconds: Math.max(0, Math.round(minutes * 60)) };
     try {
       let closed = 0;
-      if (plainIdle) closed += (await api.terminateSessions(connection.id, { ...base, state: "idle" })).sessions;
-      if (inTransaction && postgres) closed += (await api.terminateSessions(connection.id, { ...base, state: "idle in transaction" })).sessions;
+      let openNow = 0;
+      for (const state of ["idle", "idle in transaction"] as const) {
+        if (state === "idle" ? !plainIdle : !(inTransaction && postgres)) continue;
+        const res = await api.terminateSessions(connection.id, { ...base, state });
+        closed += res.sessions;
+        openNow += Math.max(0, res.open_now);
+      }
       onDone(closed === 0
-        ? `No idle connection of that age was found${target.user ? ` for ${target.user}` : ""}.`
-        : `Closed ${closed} idle connection${closed === 1 ? "" : "s"}${target.user ? ` of ${target.user}` : ""}.`);
+        ? `No connection${target.user ? ` of ${target.user}` : ""} has been idle for ${minutes} minute${minutes === 1 ? "" : "s"}, so none was closed. Choose 0 minutes to close every idle connection.`
+        : `Closed ${closed} idle connection${closed === 1 ? "" : "s"}${target.user ? ` of ${target.user}` : ""}.${reopened(openNow)}`);
       onClose();
     } catch (err) {
       setError(errorMessage(err));
@@ -65,6 +82,13 @@ function CloseIdle({ connection, target, onClose, onDone }: {
         <Field label="Idle for at least (minutes)" hint="0 closes every idle connection, however recently it was used.">
           <input className="input" type="number" min={0} step={1} value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} style={{ maxWidth: 160 }} />
         </Field>
+        {tooOld && (
+          <Banner tone="warn">
+            None of these has been idle that long: the longest is {formatDuration(target.oldestIdleSeconds)}. Applications
+            that keep a pool test their connections every so often, which starts the idle time again.{" "}
+            <button className="link-btn" type="button" onClick={() => setMinutes(0)}>Close every idle connection instead</button>
+          </Banner>
+        )}
         <Checkbox label={`Idle connections (${target.idle} now)`} checked={plainIdle} onChange={setPlainIdle}
           hint="Open but waiting for the application. Nothing is lost by closing them." />
         {postgres && (
@@ -96,7 +120,7 @@ export default function Pools({ connection, data, readOnly, onDone }: {
     })
     .sort((x, y) => y.share - x.share || y.connections - x.connections);
 
-  const totals = pools.reduce((t, p) => ({ idle: t.idle + p.idle, tx: t.tx + p.idle_in_transaction }), { idle: 0, tx: 0 });
+  const totals = pools.reduce((t, p) => ({ idle: t.idle + p.idle, tx: t.tx + p.idle_in_transaction, oldest: Math.max(t.oldest, p.oldest_idle_seconds) }), { idle: 0, tx: 0, oldest: 0 });
   const full = pools.filter((p) => p.share >= 1 && p.own);
 
   return (
@@ -105,7 +129,7 @@ export default function Pools({ connection, data, readOnly, onDone }: {
         <h2>Connection pools</h2>
         {!readOnly && (
           <button className="btn small" disabled={totals.idle + totals.tx === 0}
-            onClick={() => setClosing({ user: "", idle: totals.idle, idleInTransaction: totals.tx })}>
+            onClick={() => setClosing({ user: "", idle: totals.idle, idleInTransaction: totals.tx, oldestIdleSeconds: totals.oldest })}>
             Close idle connections…
           </button>
         )}
@@ -149,7 +173,7 @@ export default function Pools({ connection, data, readOnly, onDone }: {
                     {!readOnly && (
                       <div className="row-actions">
                         <button className="btn small" disabled={p.idle + p.idle_in_transaction === 0}
-                          onClick={() => setClosing({ user: p.name, idle: p.idle, idleInTransaction: p.idle_in_transaction })}>
+                          onClick={() => setClosing({ user: p.name, idle: p.idle, idleInTransaction: p.idle_in_transaction, oldestIdleSeconds: p.oldest_idle_seconds })}>
                           Close idle
                         </button>
                       </div>

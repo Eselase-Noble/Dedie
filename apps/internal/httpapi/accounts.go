@@ -57,12 +57,12 @@ func (s *Server) terminateSessions(w http.ResponseWriter, r *http.Request, actor
 	if !decode(w, r, &in) {
 		return
 	}
-	n, err := s.app.TerminateSessions(r.Context(), actor, r.PathValue("id"), in)
+	out, err := s.app.TerminateSessions(r.Context(), actor, r.PathValue("id"), in)
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"sessions": n})
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) getIdlePolicy(w http.ResponseWriter, r *http.Request, actor app.Actor) {

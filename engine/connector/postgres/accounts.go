@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -306,10 +307,11 @@ func (s *session) TerminateSessions(ctx context.Context, f connector.SessionFilt
 		return 0, err
 	}
 	// "idle in transaction (aborted)" is the same condition for this
-	// purpose, so the state is matched by prefix.
-	var n int
-	err := s.conn.QueryRow(ctx, `SELECT count(*) FROM (
-			SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+	// purpose, so the state is matched by prefix. Only the backends the
+	// server agreed to signal are counted.
+	var pids []int64
+	err := s.conn.QueryRow(ctx, `SELECT coalesce(array_agg(pid) FILTER (WHERE ok), '{}') FROM (
+			SELECT pid, pg_terminate_backend(pid) AS ok FROM pg_stat_activity
 			WHERE pid <> pg_backend_pid() AND backend_type = 'client backend'
 			  AND ($1 = '' OR usename = $1) AND ($2 = '' OR application_name = $2)
 			  AND ($3 = '' OR datname = $3) AND ($4 = '' OR coalesce(host(client_addr), 'local') = $4)
@@ -317,6 +319,38 @@ func (s *session) TerminateSessions(ctx context.Context, f connector.SessionFilt
 			  AND ($6 = 0 OR now() - state_change >= make_interval(secs => $6))
 			  AND NOT (coalesce(usename, '') = ANY($7::text[])) AND NOT (coalesce(application_name, '') = ANY($8::text[]))) t`,
 		f.User, f.Application, f.Database, f.Client, f.State, f.IdleSeconds,
-		append([]string{}, f.ExcludeUsers...), append([]string{}, f.ExcludeApplications...)).Scan(&n)
-	return n, friendly(err)
+		append([]string{}, f.ExcludeUsers...), append([]string{}, f.ExcludeApplications...)).Scan(&pids)
+	if err != nil {
+		return 0, friendly(err)
+	}
+	left := s.awaitExit(ctx, pids)
+	return len(pids) - left, nil
+}
+
+// exitWait is how long a terminated backend is given to disappear. One
+// that is rolling back a large transaction can take longer.
+const exitWait = 5 * time.Second
+
+// awaitExit waits for terminated backends to leave pg_stat_activity and
+// returns how many are still there when the wait is over. Terminating
+// only sends a signal: without the wait, a list read straight afterwards
+// still shows the sessions, as if nothing had happened.
+func (s *session) awaitExit(ctx context.Context, pids []int64) int {
+	if len(pids) == 0 {
+		return 0
+	}
+	left := len(pids)
+	for deadline := time.Now().Add(exitWait); ; {
+		if err := s.conn.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE pid = ANY($1::int[])`, pids).Scan(&left); err != nil {
+			return 0
+		}
+		if left == 0 || time.Now().After(deadline) {
+			return left
+		}
+		select {
+		case <-ctx.Done():
+			return left
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
