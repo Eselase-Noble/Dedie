@@ -33,6 +33,19 @@ type Driver interface {
 	Open(ctx context.Context, cfg Config) (Session, error)
 }
 
+// Reusable is implemented by sessions that can be kept open between
+// requests instead of being opened anew for each, which on a distant or
+// TLS-protected server is most of what a request costs.
+type Reusable interface {
+	// Alive reports whether the connection still answers.
+	Alive(ctx context.Context) bool
+	// Reset returns the session to the state it was opened in, undoing
+	// whatever statements run on it may have changed: an open
+	// transaction, a role, a search path, settings. It reports false when
+	// that cannot be done, and the session must then be closed.
+	Reset(ctx context.Context) bool
+}
+
 // Session is one live connection.
 type Session interface {
 	Info(ctx context.Context) (ServerInfo, error)

@@ -108,7 +108,7 @@ func (a *App) open(ctx context.Context, actor Actor, connID string) (store.Conne
 	if err != nil {
 		return c, nil, err
 	}
-	sess, err := drv.Open(ctx, cfg)
+	sess, err := a.session(ctx, c.ID, cfg, drv)
 	if err != nil {
 		return c, nil, &Error{Status: 502, Message: "could not connect: " + err.Error()}
 	}
@@ -181,6 +181,7 @@ func (a *App) SaveConnection(ctx context.Context, actor Actor, id string, in Con
 	if err := a.Store.SaveConnection(ctx, c); err != nil {
 		return c, invalid("%s", err.Error())
 	}
+	a.sessions.drop(c.ID)
 	a.audit(ctx, actor, action, c.ID, map[string]any{"name": c.Name, "host": c.Host, "database": c.Database, "sslmode": c.SSLMode})
 	return c, nil
 }
@@ -196,6 +197,7 @@ func (a *App) DeleteConnection(ctx context.Context, actor Actor, id string) erro
 	if err := a.Store.DeleteConnection(ctx, actor.User.OrgID, c.ID); err != nil {
 		return conflict("%s", err.Error())
 	}
+	a.sessions.drop(c.ID)
 	a.audit(ctx, actor, "connection.delete", c.ID, map[string]string{"name": c.Name})
 	return nil
 }
@@ -205,6 +207,8 @@ func (a *App) TestConnection(ctx context.Context, actor Actor, id string) (conne
 	if err := actor.require(PermViewConnections); err != nil {
 		return connector.ServerInfo{}, err
 	}
+	// A test must really connect, not find a session that is already open.
+	a.sessions.drop(id)
 	_, sess, err := a.open(ctx, actor, id)
 	if err != nil {
 		return connector.ServerInfo{}, err

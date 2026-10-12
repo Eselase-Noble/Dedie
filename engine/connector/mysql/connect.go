@@ -54,6 +54,14 @@ func (s *session) Close(ctx context.Context) error {
 	return s.db.Close()
 }
 
+// Alive reports whether the server still answers on this connection.
+func (s *session) Alive(ctx context.Context) bool { return s.conn.PingContext(ctx) == nil }
+
+// Reset reports false: nothing puts a session back the way it was opened
+// once a statement has changed it, so such a session is closed instead
+// of being used again.
+func (s *session) Reset(context.Context) bool { return false }
+
 // TLSConfig maps the connection's SSL mode onto a TLS configuration. It
 // returns nil when the mode does not demand TLS ("disable", "allow",
 // "prefer"); the SQL driver negotiates opportunistic TLS for those itself.

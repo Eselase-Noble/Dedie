@@ -45,6 +45,12 @@ type session struct {
 
 func (s *session) Close(ctx context.Context) error { return s.client.Disconnect(ctx) }
 
+// Alive reports whether the server still answers.
+func (s *session) Alive(ctx context.Context) bool { return s.client.Ping(ctx, nil) == nil }
+
+// Reset has nothing to undo: a client keeps no state between commands.
+func (s *session) Reset(context.Context) bool { return true }
+
 // Connect opens a client to the server named in cfg and checks that it
 // answers.
 //

@@ -37,6 +37,8 @@ type App struct {
 	instance string
 	// wal tracks the write-ahead log receivers this process runs.
 	wal walProcs
+	// sessions keeps database sessions open between requests.
+	sessions sessionPool
 }
 
 // DefaultDataDir is where state lives unless DEDIE_DATA_DIR or a flag says otherwise.
@@ -74,7 +76,10 @@ func Open(dataDir string) (*App, error) {
 		wal: walProcs{running: map[string]context.CancelFunc{}}}, nil
 }
 
-func (a *App) Close() error { return a.Store.Close() }
+func (a *App) Close() error {
+	a.sessions.close()
+	return a.Store.Close()
+}
 
 // Error is a failure with an HTTP-style status the front ends can map
 // directly: 400 invalid input, 401 unauthenticated, 403 forbidden,
