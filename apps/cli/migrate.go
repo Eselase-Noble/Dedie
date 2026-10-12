@@ -108,11 +108,13 @@ func (c *cli) migratePreflight(args []string) error {
 }
 
 func (c *cli) migrateAction(action string, args []string) error {
-	id, err := oneArg(args, "migration id")
+	fs := flag.NewFlagSet("migrate "+action, flag.ExitOnError)
+	confirm := confirmFlag(fs)
+	id, err := oneArg(parse(fs, args), "migration id")
 	if err != nil {
 		return err
 	}
-	if err := c.be.MigrationAction(id, action); err != nil {
+	if err := c.confirmed(*confirm, func() error { return c.be.MigrationAction(id, action) }); err != nil {
 		return err
 	}
 	fmt.Printf("%s: %s requested\n", id, action)
@@ -124,7 +126,9 @@ func (c *cli) migrateAction(action string, args []string) error {
 // it back to the queue to resume from its checkpoint. Against a server the
 // server executes it, and Ctrl+C only stops watching.
 func (c *cli) migrateRun(args []string) error {
-	id, err := oneArg(args, "migration id")
+	fs := flag.NewFlagSet("migrate run", flag.ExitOnError)
+	confirm := confirmFlag(fs)
+	id, err := oneArg(parse(fs, args), "migration id")
 	if err != nil {
 		return err
 	}
@@ -133,7 +137,7 @@ func (c *cli) migrateRun(args []string) error {
 		return err
 	}
 	if d.Status != app.StatusQueued {
-		if err := c.be.MigrationAction(id, "start"); err != nil {
+		if err := c.confirmed(*confirm, func() error { return c.be.MigrationAction(id, "start") }); err != nil {
 			return err
 		}
 	}

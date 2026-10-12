@@ -32,7 +32,11 @@ type remote struct {
 	base  string // server address without a trailing slash
 	token string
 	http  *http.Client
+	// confirm is sent with every request while it is set; see Confirm.
+	confirm string
 }
+
+func (r *remote) Confirm(name string) { r.confirm = name }
 
 // apiError is an error response from the server.
 type apiError struct {
@@ -130,6 +134,9 @@ func (r *remote) raw(method, path string, body any) (*http.Response, error) {
 		// Signing in uses a short-lived session, which needs the header
 		// the server asks of browser requests.
 		req.Header.Set("X-Dedie-Request", "1")
+	}
+	if r.confirm != "" {
+		req.Header.Set("X-Dedie-Confirm", url.PathEscape(r.confirm))
 	}
 	resp, err := r.http.Do(req)
 	if err != nil {

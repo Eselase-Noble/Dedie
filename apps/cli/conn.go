@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"dedie/engine/app"
+	"dedie/engine/store"
 )
 
 func (c *cli) connAdd(args []string) error {
@@ -22,6 +23,7 @@ func (c *cli) connAdd(args []string) error {
 	fs.StringVar(&in.SSLMode, "sslmode", "", "disable, allow, prefer, require, verify-ca or verify-full (default: require; disable for Oracle, whose listener takes TLS on a separate port)")
 	caFile := fs.String("ssl-root-cert", "", "PEM file with the CA that signed the server certificate")
 	fs.BoolVar(&in.ReadOnly, "read-only", false, "never allow writes through this connection")
+	fs.StringVar(&in.Environment, "env", "", "where the database sits: production, staging or development. Destructive actions on a production connection ask for its name first")
 	fs.Parse(args)
 	if *caFile != "" {
 		pem, err := os.ReadFile(*caFile)
@@ -47,6 +49,49 @@ func (c *cli) connAdd(args []string) error {
 	return nil
 }
 
+// connEnv labels a saved connection with its environment, or takes the
+// label off with "none". Nothing else about the connection changes, and
+// the stored password is kept.
+func (c *cli) connEnv(args []string) error {
+	fs := flag.NewFlagSet("conn env", flag.ExitOnError)
+	confirm := confirmFlag(fs)
+	pos := parse(fs, args)
+	if len(pos) != 2 {
+		return fmt.Errorf("usage: dedie conn env <connection> production|staging|development|none")
+	}
+	list, err := c.be.ListConnections()
+	if err != nil {
+		return err
+	}
+	for _, x := range list {
+		if x.Name != pos[0] {
+			continue
+		}
+		in := app.ConnectionInput{Name: x.Name, Kind: x.Kind, Host: x.Host, Port: x.Port, Database: x.Database, Username: x.Username,
+			SSLMode: x.SSLMode, SSLRootCert: x.SSLRootCert, ReadOnly: x.ReadOnly, Environment: pos[1]}
+		if in.Environment == "none" {
+			in.Environment = ""
+		}
+		var saved store.Connection
+		if err := c.confirmed(*confirm, func() error {
+			saved, err = c.be.SaveConnection(x.ID, in)
+			return err
+		}); err != nil {
+			return err
+		}
+		fmt.Printf("%s is now %s.\n", saved.Name, envLabel(saved.Environment))
+		return nil
+	}
+	return fmt.Errorf("no connection named %q", pos[0])
+}
+
+func envLabel(env string) string {
+	if env == "" {
+		return "not labelled"
+	}
+	return env
+}
+
 func (c *cli) connList() error {
 	list, err := c.be.ListConnections()
 	if err != nil {
@@ -58,9 +103,13 @@ func (c *cli) connList() error {
 		if x.ReadOnly {
 			mode = "read-only"
 		}
-		rows = append(rows, []string{x.Name, x.Kind, x.Host + ":" + strconv.Itoa(x.Port), x.Database, x.Username, x.SSLMode, mode})
+		env := x.Environment
+		if env == "" {
+			env = "-"
+		}
+		rows = append(rows, []string{x.Name, env, x.Kind, x.Host + ":" + strconv.Itoa(x.Port), x.Database, x.Username, x.SSLMode, mode})
 	}
-	table("NAME\tKIND\tADDRESS\tDATABASE\tUSER\tSSL\tMODE", rows)
+	table("NAME\tENVIRONMENT\tKIND\tADDRESS\tDATABASE\tUSER\tSSL\tMODE", rows)
 	return nil
 }
 
@@ -94,11 +143,16 @@ func (c *cli) query(args []string) error {
 	fs := flag.NewFlagSet("query", flag.ExitOnError)
 	write := fs.Bool("write", false, "allow the statement to modify data")
 	maxRows := fs.Int("max-rows", 1000, "maximum rows to print per result")
+	confirm := confirmFlag(fs)
 	pos := parse(fs, args)
 	if len(pos) != 2 {
 		return fmt.Errorf("usage: dedie query [--write] <connection> <sql>")
 	}
-	resp, err := c.be.Query(pos[0], app.QueryRequest{SQL: pos[1], Write: *write, MaxRows: *maxRows})
+	var resp app.QueryResponse
+	err := c.confirmed(*confirm, func() (err error) {
+		resp, err = c.be.Query(pos[0], app.QueryRequest{SQL: pos[1], Write: *write, MaxRows: *maxRows})
+		return err
+	})
 	if err != nil {
 		return err
 	}
