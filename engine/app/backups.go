@@ -612,6 +612,13 @@ func (a *App) RestoreBackup(ctx context.Context, actor Actor, backupID string, i
 	if in.Confirm != database {
 		return store.Restore{}, invalid("type the target database name (%s) to confirm the restore", database)
 	}
+	// A restore into the connection's own database writes over what is
+	// there. Into a new database on the same server it does not.
+	if in.NewDatabase == "" {
+		if err := a.confirmProduction(ctx, actor, target, "backup.restore", "restore a backup over it"); err != nil {
+			return store.Restore{}, err
+		}
+	}
 	chain, err := a.chain(ctx, b)
 	if err != nil {
 		return store.Restore{}, err

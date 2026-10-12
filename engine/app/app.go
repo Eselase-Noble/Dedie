@@ -78,7 +78,8 @@ func (a *App) Close() error { return a.Store.Close() }
 
 // Error is a failure with an HTTP-style status the front ends can map
 // directly: 400 invalid input, 401 unauthenticated, 403 forbidden,
-// 404 not found, 409 conflict with current state.
+// 404 not found, 409 conflict with current state, 428 a confirmation the
+// caller has to supply first.
 type Error struct {
 	Status  int
 	Message string

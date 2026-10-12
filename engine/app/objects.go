@@ -10,22 +10,45 @@ import (
 	"dedie/engine/store"
 )
 
-// writable opens a connection for an operation that changes the server. It
-// requires write permission in Dedie and a connection not marked read-only;
-// whether the database account has the privilege is left to the server.
-func (a *App) writable(ctx context.Context, actor Actor, connID string) (store.Connection, connector.Session, error) {
+// writableConn loads a connection for an operation that changes the
+// server, without opening it. It requires write permission in Dedie and a
+// connection not marked read-only; whether the database account has the
+// privilege is left to the server.
+func (a *App) writableConn(ctx context.Context, actor Actor, connID string) (store.Connection, error) {
 	if err := actor.require(PermQueryWrite); err != nil {
-		return store.Connection{}, nil, err
+		return store.Connection{}, err
 	}
 	c, err := a.conn(ctx, actor, connID)
 	if err != nil {
-		return c, nil, err
+		return c, err
 	}
 	if c.ReadOnly {
-		return c, nil, &Error{Status: 403, Message: "this connection is marked read-only"}
+		return c, &Error{Status: 403, Message: "this connection is marked read-only"}
 	}
-	c, sess, err := a.open(ctx, actor, connID)
-	return c, sess, err
+	return c, nil
+}
+
+// writable is writableConn followed by opening a session.
+func (a *App) writable(ctx context.Context, actor Actor, connID string) (store.Connection, connector.Session, error) {
+	c, err := a.writableConn(ctx, actor, connID)
+	if err != nil {
+		return c, nil, err
+	}
+	return a.open(ctx, actor, connID)
+}
+
+// writableProduction is writable for an action that destroys or disrupts:
+// on a production connection the connection's name must have been typed,
+// and that is settled before the server is contacted.
+func (a *App) writableProduction(ctx context.Context, actor Actor, connID, action, what string) (store.Connection, connector.Session, error) {
+	c, err := a.writableConn(ctx, actor, connID)
+	if err != nil {
+		return c, nil, err
+	}
+	if err := a.confirmProduction(ctx, actor, c, action, what); err != nil {
+		return c, nil, err
+	}
+	return a.open(ctx, actor, connID)
 }
 
 // writableIn is writable for another database on the connection's server,
@@ -246,7 +269,7 @@ func (a *App) probe(ctx context.Context, c store.Connection) ConnectionStatus {
 // edit is audited with the row's key and the columns touched, not with the
 // values written, which may be sensitive.
 func (a *App) ChangeRow(ctx context.Context, actor Actor, connID string, change connector.RowChange) error {
-	c, sess, err := a.writable(ctx, actor, connID)
+	c, sess, err := a.writableProduction(ctx, actor, connID, "data.change_row", "edit its rows")
 	if err != nil {
 		return err
 	}

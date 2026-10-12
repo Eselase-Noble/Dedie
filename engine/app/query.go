@@ -36,12 +36,10 @@ func (a *App) Query(ctx context.Context, actor Actor, connID string, req QueryRe
 	if req.MaxRows <= 0 || req.MaxRows > 10000 {
 		req.MaxRows = 1000
 	}
-	c, sess, err := a.open(ctx, actor, connID)
+	c, err := a.conn(ctx, actor, connID)
 	if err != nil {
 		return resp, err
 	}
-	defer sess.Close(context.WithoutCancel(ctx))
-
 	if req.Write {
 		if !actor.Can(PermQueryWrite) {
 			return resp, &Error{Status: 403, Message: "your role allows read-only queries only"}
@@ -49,7 +47,18 @@ func (a *App) Query(ctx context.Context, actor Actor, connID string, req QueryRe
 		if c.ReadOnly {
 			return resp, &Error{Status: 403, Message: "this connection is marked read-only"}
 		}
+		if what := destructive(c.Kind, req.SQL); what != "" {
+			if err := a.confirmProduction(ctx, actor, c, "query.execute", "run this "+what+" on it"); err != nil {
+				return resp, err
+			}
+		}
 	}
+	_, sess, err := a.open(ctx, actor, connID)
+	if err != nil {
+		return resp, err
+	}
+	defer sess.Close(context.WithoutCancel(ctx))
+
 	resp.ReadOnly = !req.Write
 
 	stmt := req.SQL
@@ -104,7 +113,16 @@ func (a *App) CancelBackend(ctx context.Context, actor Actor, connID string, pid
 	if err := actor.require(PermServerAdmin); err != nil {
 		return err
 	}
-	c, sess, err := a.open(ctx, actor, connID)
+	c, err := a.conn(ctx, actor, connID)
+	if err != nil {
+		return err
+	}
+	if terminate {
+		if err := a.confirmProduction(ctx, actor, c, "server.cancel_backend", "end one of its sessions"); err != nil {
+			return err
+		}
+	}
+	_, sess, err := a.open(ctx, actor, connID)
 	if err != nil {
 		return err
 	}

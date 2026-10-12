@@ -25,6 +25,17 @@ func (a *App) DatabaseAccounts(ctx context.Context, actor Actor, connID string) 
 	return out, nil
 }
 
+// adminProduction is admin for an action that takes something away from
+// the server's users: on a production connection it also wants the
+// connection's name typed.
+func (a *App) adminProduction(ctx context.Context, actor Actor, connID, action, what string) (string, string, connector.Session, error) {
+	if err := actor.require(PermServerAdmin); err != nil {
+		return "", "", nil, err
+	}
+	c, sess, err := a.writableProduction(ctx, actor, connID, action, what)
+	return c.ID, c.Name, sess, err
+}
+
 // admin opens a connection for a change to the server's users or
 // sessions: the actor must administer servers and be allowed to write, and
 // the connection must not be read-only.
@@ -77,7 +88,7 @@ func (a *App) SaveDatabaseAccount(ctx context.Context, actor Actor, connID strin
 }
 
 func (a *App) DropDatabaseAccount(ctx context.Context, actor Actor, connID, user, host string, handOver bool) error {
-	id, name, sess, err := a.admin(ctx, actor, connID)
+	id, name, sess, err := a.adminProduction(ctx, actor, connID, "dbuser.drop", "drop one of its users")
 	if err != nil {
 		return err
 	}
@@ -127,7 +138,7 @@ func (a *App) TerminateSessions(ctx context.Context, actor Actor, connID string,
 	if filter.Empty() {
 		return out, invalid("say whose sessions to disconnect")
 	}
-	id, name, sess, err := a.admin(ctx, actor, connID)
+	id, name, sess, err := a.adminProduction(ctx, actor, connID, "server.terminate_sessions", "disconnect its sessions")
 	if err != nil {
 		return out, err
 	}

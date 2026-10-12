@@ -165,6 +165,7 @@ var columns = []struct{ table, name, def string }{
 	{"sessions", "user_agent", "TEXT NOT NULL DEFAULT ''"},
 	{"sessions", "last_seen_at", "TEXT NOT NULL DEFAULT ''"},
 	{"connections", "restricted", "INTEGER NOT NULL DEFAULT 0"},
+	{"connections", "environment", "TEXT NOT NULL DEFAULT ''"},
 }
 
 // upgrade brings a database created by an older release up to date.

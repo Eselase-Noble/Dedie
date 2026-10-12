@@ -60,6 +60,10 @@ type Actor struct {
 	// MustEnroll is set when the organization requires two-factor sign-in
 	// and this user has not set it up yet.
 	MustEnroll bool
+	// Confirm is what the caller typed to confirm this request: the name
+	// of the production connection it is about to change. See
+	// confirmProduction.
+	Confirm string
 }
 
 // roleRank orders roles so that one can be compared with another.
