@@ -986,6 +986,8 @@ engine/
 web/                 Next.js interface, exported statically and embedded in the server
 ```
 
+**Connections to your databases are reused.** Opening one is the slow part of most requests, above all to a distant server or over TLS, so a session is kept after a request for the next one: up to three per saved connection, for 90 seconds after they were last used, then closed. A kept session is always as good as new. One that ran a statement somebody typed is reset first (PostgreSQL: any open transaction rolled back, then `DISCARD ALL`) or, on engines that cannot restore a session completely, closed. Sessions are never shared between connections with different details, and editing, testing or deleting a connection closes those kept for it. They appear on the database server as idle connections of Dedie's own account and application name, which the [idle rule](#database-users-and-connections) spares.
+
 Every front end calls `engine/app` and nothing beneath it, so a permission check or audit entry cannot be bypassed by using a different interface.
 
 Two registries keep the engine open to new databases. A driver implements `connector.Driver` and registers under its kind, which makes it available to the query browser, the server console and connection management. A pipeline implements `migrate.Pipeline` and registers for a source and target kind; the application layer looks pipelines up by that pair and knows nothing else about them.

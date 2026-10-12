@@ -38,6 +38,31 @@ type session struct{ conn *pgx.Conn }
 
 func (s *session) Close(ctx context.Context) error { return s.conn.Close(ctx) }
 
+// Alive reports whether the server still answers on this connection.
+func (s *session) Alive(ctx context.Context) bool {
+	return !s.conn.IsClosed() && s.conn.Ping(ctx) == nil
+}
+
+// Reset ends a transaction left open and discards everything a statement
+// may have set for the session: role, search path, settings, prepared
+// statements, temporary tables and advisory locks.
+func (s *session) Reset(ctx context.Context) bool {
+	if s.conn.IsClosed() {
+		return false
+	}
+	if s.conn.PgConn().TxStatus() != 'I' {
+		if _, err := s.conn.Exec(ctx, "ROLLBACK"); err != nil {
+			return false
+		}
+	}
+	if _, err := s.conn.Exec(ctx, "DISCARD ALL"); err != nil {
+		return false
+	}
+	// The server has forgotten the statements this client prepared; the
+	// client must forget them too, or it would ask for one by name.
+	return s.conn.DeallocateAll(ctx) == nil
+}
+
 func quoteDSN(v string) string {
 	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(v) + "'"
 }
