@@ -183,7 +183,7 @@ export const api = {
   setConnectionLimit: (connId: string, body: { scope: "account" | "database"; name: string; host: string; limit: number }) =>
     post<{ ok: boolean }>(`/connections/${id(connId)}/connection-limit`, body),
   terminateSessions: (connId: string, filter: SessionFilter) =>
-    post<{ sessions: number }>(`/connections/${id(connId)}/sessions/terminate`, filter),
+    post<{ sessions: number; open_now: number }>(`/connections/${id(connId)}/sessions/terminate`, filter),
 
   idlePolicy: (connId: string) => get<IdlePolicy>(`/connections/${id(connId)}/idle-policy`),
   setIdlePolicy: (connId: string, body: Pick<IdlePolicy, "enabled" | "idle_minutes" | "tx_minutes" | "min_usage_percent" | "exclude_users">) =>
@@ -251,6 +251,7 @@ export const api = {
   },
   readNotification: (notificationId: number) => post<{ unread: number }>(`/notifications/${notificationId}/read`),
   readAllNotifications: () => post<{ unread: number }>("/notifications/read-all"),
+  testNotification: () => post<{ unread: number }>("/notifications/test"),
 
   // Audit
   audit: (before: number, limit: number) => get<AuditEntry[]>(`/audit?before=${before}&limit=${limit}`),

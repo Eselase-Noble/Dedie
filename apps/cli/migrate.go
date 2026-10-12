@@ -315,6 +315,10 @@ func (c *cli) migratePreview(args []string) error {
 				migrate.PhaseCutover:  "at the end, after validation",
 			}[phase])
 		}
+		if st.End != "" {
+			fmt.Printf("-- %s %s\n%s\n%s\n\n", st.Kind, st.Name, strings.TrimSpace(st.SQL), st.End)
+			continue
+		}
 		fmt.Printf("-- %s %s\n%s;\n\n", st.Kind, st.Name, strings.TrimRight(strings.TrimSpace(st.SQL), ";"))
 	}
 	fmt.Fprintf(os.Stderr, "%d statement(s). Nothing was run.\n", len(list))

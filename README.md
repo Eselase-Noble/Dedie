@@ -280,7 +280,7 @@ Against a Dedie server, `dedie migrate run` starts the job on the server and fol
 dedie migrate preview <id> > target-schema.sql      # attach it to the change request
 ```
 
-The statements are grouped by when they run: before the copy (schemas, sequences, tables), after it (indexes, constraints, views, routines) and at the very end (foreign keys on the Oracle paths, triggers on the same-engine ones). The preview follows the choice made for [objects that already exist](#when-the-target-already-has-some-of-the-objects): skipped objects are left out, and replaced ones are preceded by their `DROP`. What the job does for its own bookkeeping (its checkpoint table, emptying its own tables before a recopy, moving sequences to the source's position at the end) is not part of it.
+The statements are grouped by when they run: before the copy (schemas, sequences, tables), after it (indexes, constraints, views, routines) and at the very end (foreign keys on the Oracle paths, triggers on the same-engine ones). All eight paths have a preview; for Oracle to Oracle it shows the definitions the source writes for its own objects, rewritten for the schema that receives them, with each program unit closed by a `/` so that the script runs in SQL*Plus or SQLcl as it is. The preview follows the choice made for [objects that already exist](#when-the-target-already-has-some-of-the-objects): skipped objects are left out, and replaced ones are preceded by their `DROP`. What the job does for its own bookkeeping (its checkpoint table, emptying its own tables before a recopy, moving sequences to the source's position at the end) is not part of it.
 
 ### When the target already has some of the objects
 
@@ -482,26 +482,31 @@ All three Oracle paths read the source the same way.
 
 **The copy** reads every table with a flashback query as of one system change number (SCN), so the tables are consistent with each other and no lock is held. It uses undo data: if copying a table takes longer than `UNDO_RETENTION`, Oracle answers "snapshot too old" and the retention has to be raised.
 
-**Following changes** uses LogMiner, and uses it for one thing only: to learn which rows each committed transaction touched. Every such row is then read back from the source by primary key, as it stood when that transaction committed, and stored whole on the target; a row that is no longer there is deleted. An insert, an update and a delete are therefore the same instruction, which has three consequences worth knowing:
+**Following changes** means finding the rows that committed transactions touched after the copy. Every such row is then read back from the source by primary key and stored whole on the target; a row that is no longer there is deleted. An insert, an update and a delete are therefore the same instruction, which has three consequences worth knowing:
 
-- large objects and every data type take exactly the path they took in the copy; nothing depends on how LogMiner prints a value
-- applying a change twice is harmless, so a restart simply reads the redo again from the checkpoint, which is committed on the target together with the rows it covers
+- large objects and every data type take exactly the path they took in the copy; nothing depends on how a change is described
+- applying a change twice is harmless, so a restart simply reads again from the checkpoint, which is committed on the target together with the rows it covers
 - rows are applied table by table rather than statement by statement, so foreign keys are created at the very end, after validation
 
-Requirements for following changes (an [offline](#offline-migration) migration needs none of them), with the statements to run in [Preparing your databases](docs/databases.md#oracle-as-a-source):
+Dedie has two ways of finding the changed rows and picks between them by itself. Preflight says which a job will use, under **Following changes**.
 
-- minimal supplemental logging on the database, switched on once by a DBA without a restart
-- an account with `LOGMINING`, `SELECT ANY TRANSACTION`, `EXECUTE_CATALOG_ROLE` and `SELECT ANY DICTIONARY`
-- a primary key on every followed table. A table without one is copied, and preflight warns that later changes to it are not followed
-- `ARCHIVELOG` mode for anything that matters. Without it only the online redo logs exist, and from inside a pluggable database LogMiner can read only the current one: the job follows changes until a log switch happens while it still has earlier changes to read, then stops for good and must start over. On a busy database that is a matter of minutes. Preflight warns when this applies
+| | The redo stream, with LogMiner | Row versions, from undo data |
+|---|---|---|
+| Needs on the source | minimal supplemental logging; an account with `LOGMINING`, `SELECT ANY TRANSACTION`, `EXECUTE_CATALOG_ROLE` and `SELECT ANY DICTIONARY`; redo that stays readable, which in practice means `ARCHIVELOG` mode | nothing beyond what the copy needs |
+| Cost | reads only what changed | reads the primary key index of every followed table on each pass, so a large or busy source is followed less closely |
+| Used for | every table, when the source is set up for it | tables with a `JSON` or `BOOLEAN` column, which LogMiner does not describe; and every table when LogMiner is not set up, not allowed through the connection (a pluggable database on 12c), or has lost its redo |
 
-When the job starts it switches on primary key supplemental logging for the tables it follows, and switches it off again when it finishes (`--keep-slot` leaves it on). That is a brief `ALTER TABLE`, which waits up to 30 seconds for transactions holding the table.
+The last case matters on a source that does not archive its redo logs. From inside a pluggable database LogMiner can then read only the current online log, and a log switch puts earlier changes out of its reach. A job in that position does not stop: it carries on from its last checkpoint through row versions, records the switch in its events, and loses nothing. The one limit of row versions is `UNDO_RETENTION`: a job paused or behind for longer than the source keeps undo has to start again with a new copy.
+
+The statements that set up the redo stream are in [Preparing your databases](docs/databases.md#oracle-as-a-source). An [offline](#offline-migration) migration needs none of this. Every followed table needs a primary key: a table without one is copied, and preflight warns that later changes to it are not followed.
+
+When a job uses the redo stream it switches on primary key supplemental logging for the tables it follows as it starts, and switches it off again when it finishes (`--keep-slot` leaves it on). That is a brief `ALTER TABLE`, which waits up to 30 seconds for transactions holding the table.
 
 Notes:
 
 - The source cannot be fenced. Stop the applications that write to it before asking for cutover.
-- Inside a pluggable database of a current release LogMiner finds its redo logs by itself. In a database that is not a container, and on 12c, Dedie registers the online and archived logs that cover the range it needs. A pluggable database on 12c can be migrated offline only, because that release runs LogMiner from the container root alone.
-- A table with a `JSON` or `BOOLEAN` column (Oracle 23ai) is copied, but LogMiner does not describe changes to such tables, so they are not followed. Preflight names them; stop writes to them, or migrate offline.
+- Inside a pluggable database of a current release LogMiner finds its redo logs by itself. In a database that is not a container, and on 12c, Dedie registers the online and archived logs that cover the range it needs.
+- A table truncated or altered while it is followed through row versions has all of its rows brought over again; the target table keeps the shape it was created with.
 - Validation compares row counts and, where the primary key is a number, text or date, the set of keys.
 - A time zone given by region name (`Europe/Paris`) arrives as its offset at that instant, and a date before the common era loses its era.
 - The paths are tested end to end against Oracle 23ai. A 12c server has not been part of the test runs; run preflight and a trial migration of a copy first.
@@ -835,7 +840,7 @@ The Database users page manages accounts on the database server itself, as disti
 - **Drop a user.** PostgreSQL refuses to drop a role that owns objects or holds privileges. The dialog offers to hand over what the role has in the connection's database first: its objects go to the connecting account and its privileges are revoked. No table or data is dropped.
 - **Connection limits** per user on both engines, and per database on PostgreSQL.
 - **Connection pools.** For every connected user: how much of its limit it is using, with users at or near their limit flagged, and how many of its connections are active, idle, or idle inside a transaction.
-- **Close idle connections by hand.** For one user or the whole server, close connections idle longer than a number of minutes. Connections running a statement are never touched. On PostgreSQL you can also close those idle inside a transaction, which rolls their uncommitted work back.
+- **Close idle connections by hand.** For one user or the whole server, close connections idle longer than a number of minutes. Connections running a statement are never touched. On PostgreSQL you can also close those idle inside a transaction, which rolls their uncommitted work back. The dialog shows how long the longest-idle connection has been idle and warns when none has reached the time you chose: an application with a connection pool tests its connections every minute or two, which starts their idle time again, so 0 minutes is often the setting that closes them. Dedie waits until the closed sessions are really gone, then tells you how many are idle again a moment later, because a pool opens new connections as soon as it loses some. To hold the number down for good, give the user a connection limit or lower the pool's minimum size in the application.
 - **Close idle connections automatically.** A rule per server, applied every minute: close connections idle for more than N minutes, optionally only while the server is above a chosen fullness, with users that must never be disconnected. Dedie's own sessions and those of the connection's own account are always spared. Each pass that closes something is recorded in the audit log.
 - **Connections in use**: how close the server is to its limit, and who is holding connections, grouped by user, application, client address and database, with how many are active, idle, or idle inside a transaction.
 - **Disconnect** the sessions of a user, an application or a whole database.

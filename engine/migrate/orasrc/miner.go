@@ -90,7 +90,8 @@ func (f *Follower) mine(ctx context.Context, miner *sql.Conn, from, to int64, op
 		stmt := pending.String()
 		pending.Reset()
 		t := f.Catalog.Table(owner.String, table.String)
-		if t == nil {
+		if t == nil || (len(t.PK) > 0 && unmined(t)) {
+			// Not in scope, or followed through its row versions.
 			continue
 		}
 		switch {
@@ -167,7 +168,7 @@ func startMiner(ctx context.Context, miner *sql.Conn, from, to int64) error {
 	start := fmt.Sprintf(`BEGIN DBMS_LOGMNR.START_LOGMNR(STARTSCN => %d, ENDSCN => %d, OPTIONS => DBMS_LOGMNR.DICT_FROM_ONLINE_CATALOG); END;`, from, to)
 	_, err := miner.ExecContext(ctx, start)
 	if HasCode(err, "ORA-65040") {
-		return errors.New("this Oracle release cannot run LogMiner from inside a pluggable database, so changes cannot be followed through this connection. Use an offline migration for it")
+		return fmt.Errorf("%w (%s)", errNoMiner, oracle.Friendly(err))
 	}
 	if err == nil || !HasCode(err, "ORA-01291", "ORA-01292") {
 		return redoError(err)
@@ -230,17 +231,23 @@ func brief(stmt string) string {
 	return stmt
 }
 
-// redoError explains the failure that ends a job for good: the redo it
-// still had to read is no longer on the source.
+// errRedoGone reports that the redo a job still had to read is no longer
+// within LogMiner's reach. A database in NOARCHIVELOG mode keeps only its
+// online redo logs, and from inside a pluggable database LogMiner reads
+// only the current one, so a log switch is enough.
+var errRedoGone = errors.New("the redo this job must read next can no longer be read on the source")
+
+// errNoMiner reports that LogMiner cannot be run through this connection
+// at all, as on Oracle 12c from inside a pluggable database.
+var errNoMiner = errors.New("this Oracle release cannot run LogMiner from inside a pluggable database")
+
+// redoError tells the failures of a LogMiner session apart.
 func redoError(err error) error {
 	if err == nil {
 		return nil
 	}
 	if HasCode(err, "ORA-01291", "ORA-01292", "ORA-01284", "ORA-01289", "ORA-01281") {
-		return fmt.Errorf("the redo this job must read next can no longer be read on the source (%s). "+
-			"A database in NOARCHIVELOG mode keeps only its online redo logs, and from inside a pluggable database "+
-			"LogMiner reads only the current one, so a log switch puts earlier changes out of reach. "+
-			"Run the source in ARCHIVELOG mode to follow changes dependably, or migrate offline. This job has to start again with a new copy", oracle.Friendly(err))
+		return fmt.Errorf("%w (%s)", errRedoGone, oracle.Friendly(err))
 	}
 	return oracle.Friendly(err)
 }

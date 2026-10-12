@@ -58,7 +58,7 @@ export default function IdleRule({ connection, readOnly }: { connection: Connect
         <Checkbox label="Close connections that stay idle too long" checked={policy.enabled} onChange={(v) => set({ enabled: v })} disabled={readOnly}
           hint={`Dedie checks every minute. Connections that are running a statement are never closed, nor are Dedie's own or those of ${connection.username}, the account this connection uses.`} />
         <div className="form-row">
-          <Field label="Idle for more than (minutes)" hint="Open, but waiting for the application.">
+          <Field label="Idle for more than (minutes)" hint="Open, but waiting for the application. A pool that tests its connections every minute or two starts their idle time again each time, so a longer limit than that never applies to them.">
             <input className="input" type="number" min={1} value={policy.idle_minutes} disabled={readOnly}
               onChange={(e) => set({ idle_minutes: Number(e.target.value) })} />
           </Field>

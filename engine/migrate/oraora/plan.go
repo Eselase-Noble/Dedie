@@ -309,6 +309,13 @@ func (p *Plan) assemble(keep kept) {
 			}
 		}
 	}
+	// An identity column is NOT NULL by being one. The source writes that
+	// out as a constraint all the same, which the target would refuse as
+	// already in force.
+	implied := map[string]bool{}
+	for _, row := range d.identities {
+		implied[row[0]+"."+row[1]+` MODIFY ("`+row[2]+`" NOT NULL ENABLE)`] = true
+	}
 	for _, owner := range p.Catalog.Owners {
 		schema := p.Schemas[owner]
 		for _, def := range d.objects[owner]["CONSTRAINT"] {
@@ -316,6 +323,9 @@ func (p *Plan) assemble(keep kept) {
 				continue
 			}
 			text := requalify(strings.TrimSpace(def.Text), owner, schema)
+			if i := strings.Index(text, " MODIFY ("); i >= 0 && implied[owner+"."+def.Base+text[i:]] {
+				continue
+			}
 			// Without its primary key a table's changes cannot be applied.
 			p.Post = append(p.Post, Stmt{Kind: "constraint", Schema: schema, Name: def.Name, Table: def.Base, SQL: text,
 				Soft: !strings.Contains(text, " PRIMARY KEY ")})

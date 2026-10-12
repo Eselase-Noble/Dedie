@@ -15,7 +15,7 @@ What each kind of database needs before Dedie can migrate it: the settings on th
 |---|---|---|
 | What happens | The source is copied, then every later change is followed until you cut over | The source is copied once, as it stood at one moment, validated, and the job ends |
 | Applications | Keep working; they pause for seconds at cutover | Should not write while the copy runs, or what they write is left behind |
-| Source setup | The database's change log must be readable: logical replication, the binary log, a replica set, or LogMiner | None beyond an account that can read the tables |
+| Source setup | The database's change log must be readable: logical replication, the binary log or a replica set. Oracle needs nothing extra, and follows more cheaply with LogMiner set up | None beyond an account that can read the tables |
 | Choose it for | Production databases that cannot stop | Development and test copies, small databases, a maintenance window, or a source you may not reconfigure |
 
 The offline requirements are always a subset of the online ones. Each section lists them separately.
@@ -99,7 +99,17 @@ ALTER SYSTEM SET UNDO_RETENTION = 14400;   -- seconds; make it longer than the c
 
 ### Online
 
-Following changes uses LogMiner. Three things must be in place.
+After the copy, Dedie finds the rows that later transactions changed, reads each of them back by its primary key and stores it on the target. It has two ways of finding them and chooses by itself; preflight tells you which one a job will use under **Following changes**.
+
+| | The redo stream (LogMiner) | Row versions (undo data) |
+|---|---|---|
+| Needs | supplemental logging, the LogMiner privileges, and redo that stays readable | nothing beyond what the copy needs |
+| Cost on the source | reads only the changes | reads the primary key index of every followed table on each pass |
+| Used | whenever the source is set up for it | for tables with a `JSON` or `BOOLEAN` column, and for every table when LogMiner is not set up, not allowed through the connection, or has lost the redo it still had to read |
+
+A job that starts on the redo stream and loses it, because the source reused a redo log it had not archived, does not stop: it carries on from its last checkpoint through row versions and says so in its events. Nothing is lost by the switch. Row versions come from undo data, so the one limit is `UNDO_RETENTION`: a job paused or behind for longer than the source keeps undo cannot find what it missed and has to start again with a new copy.
+
+For a large or busy production source the redo stream is the better choice. Three things put it in place.
 
 **1. Supplemental logging**, switched on once by a DBA. It takes effect immediately and needs no restart:
 
@@ -110,7 +120,7 @@ ALTER PLUGGABLE DATABASE ADD SUPPLEMENTAL LOG DATA;
 ALTER DATABASE ADD SUPPLEMENTAL LOG DATA;
 ```
 
-Dedie then switches on primary key logging for exactly the tables it migrates (`ALTER TABLE ... ADD SUPPLEMENTAL LOG DATA (PRIMARY KEY) COLUMNS`) when the job starts, and off again when it finishes. That needs the account to own the tables or hold `ALTER` on them. To avoid it, a DBA can switch it on for the whole database instead: `ALTER DATABASE ADD SUPPLEMENTAL LOG DATA (PRIMARY KEY) COLUMNS`.
+Dedie then switches on primary key logging for exactly the tables it migrates (`ALTER TABLE ... ADD SUPPLEMENTAL LOG DATA (PRIMARY KEY) COLUMNS`) when the job starts, and off again when it finishes. That needs the account to own the tables or hold `ALTER` on them; without it the job follows row versions instead. A DBA can also switch it on for the whole database: `ALTER DATABASE ADD SUPPLEMENTAL LOG DATA (PRIMARY KEY) COLUMNS`.
 
 **2. Privileges for the account:**
 
@@ -120,7 +130,7 @@ GRANT EXECUTE_CATALOG_ROLE TO migrator;      -- to call DBMS_LOGMNR
 GRANT SELECT ANY DICTIONARY TO migrator;     -- V$DATABASE, V$TRANSACTION, V$LOGMNR_CONTENTS, V$LOG
 ```
 
-**3. Redo that stays long enough.** In `NOARCHIVELOG` mode only the online redo logs exist, and they are reused once full. From inside a pluggable database it is stricter still: LogMiner can read only the *current* online log, so the job follows changes until a log switch happens while it still has earlier changes to read, and then stops for good. On a busy database that is minutes. For any online migration that matters, run the source in `ARCHIVELOG` mode and keep the archived logs until the job has read them:
+**3. Redo that stays long enough.** In `NOARCHIVELOG` mode only the online redo logs exist, and they are reused once full. From inside a pluggable database it is stricter still: LogMiner can read only the *current* online log, so a log switch while the job still has earlier changes to read puts them out of its reach. The job then goes on through row versions, as described above. To stay on the redo stream, run the source in `ARCHIVELOG` mode and keep the archived logs until the job has read them:
 
 ```sql
 -- as SYSDBA, in a maintenance window: this restarts the database
@@ -130,17 +140,19 @@ ALTER DATABASE ARCHIVELOG;
 ALTER DATABASE OPEN;
 ```
 
-Every followed table needs a primary key. A table without one is copied, and preflight warns that later changes to it are not followed. The same goes for a table with a `JSON` or `BOOLEAN` column (23ai), whose changes LogMiner does not describe.
+Every followed table needs a primary key. A table without one is copied, and preflight warns that later changes to it are not followed.
+
+A table that is truncated, or whose definition changes, while it is followed through row versions has all of its rows brought over again; the target table keeps the shape it was created with.
 
 For **Oracle to Oracle**, the source account also needs `SELECT_CATALOG_ROLE` to read the definitions of objects in schemas other than its own.
 
 ### Oracle 12c
 
 - **A database that is not a container** (the common 12c arrangement) works both offline and online. LogMiner there has to be told which redo log files to read; Dedie registers the online and archived logs that cover the range it needs, which is why the account needs to see `V$LOG`, `V$LOGFILE` and `V$ARCHIVED_LOG` (`SELECT ANY DICTIONARY` covers them).
-- **A pluggable database on 12c** can be migrated offline. Following its changes is not possible through a connection to the pluggable database, because that release runs LogMiner only from the container root. Preflight reports this as "LogMiner access".
+- **A pluggable database on 12c** works offline, and online through row versions: that release runs LogMiner only from the container root, which preflight reports under "LogMiner access".
 - `ALTER PLUGGABLE DATABASE ADD SUPPLEMENTAL LOG DATA` does not exist in 12c; use `ALTER DATABASE ADD SUPPLEMENTAL LOG DATA`.
 
-The pipelines are tested end to end against Oracle 23ai. The 12c behaviour above follows Oracle's documentation for that release and the code paths it needs are exercised on 23ai from the container root, but a 12c server has not been part of the test runs; run preflight and a trial migration of a copy before relying on it.
+The pipelines are tested end to end against Oracle 23ai. The 12c behaviour above follows Oracle's documentation for that release and the code paths it needs are exercised on 23ai, but a 12c server has not been part of the test runs; run preflight and a trial migration of a copy before relying on it.
 
 ## The target
 

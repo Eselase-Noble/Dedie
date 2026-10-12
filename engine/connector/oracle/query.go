@@ -100,6 +100,22 @@ func (s *session) Query(ctx context.Context, text string, opts connector.QueryOp
 	}
 
 	rows, err := s.conn.QueryContext(ctx, stmt)
+	// A read-only transaction reads as of the moment it began, and for
+	// the first seconds after a table was created or altered Oracle
+	// refuses such a read (ORA-01466). A table opened straight after it
+	// was made would show that error, so the read is tried again.
+	for attempt := 0; err != nil && opts.ReadOnly && attempt < 6 && strings.Contains(err.Error(), "ORA-01466"); attempt++ {
+		select {
+		case <-ctx.Done():
+			return nil, Friendly(err)
+		case <-time.After(time.Second):
+		}
+		s.conn.ExecContext(ctx, "ROLLBACK")
+		if _, terr := s.conn.ExecContext(ctx, "SET TRANSACTION READ ONLY"); terr != nil {
+			return nil, Friendly(terr)
+		}
+		rows, err = s.conn.QueryContext(ctx, stmt)
+	}
 	if err != nil {
 		return nil, Friendly(err)
 	}

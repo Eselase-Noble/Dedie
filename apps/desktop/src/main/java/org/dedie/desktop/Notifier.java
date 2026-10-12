@@ -25,6 +25,11 @@ import java.util.function.Consumer;
  * here that touches AWT runs on a background thread or on AWT's event
  * queue, and the window is reached through the callback alone.
  *
+ * <p>On Linux the desktop's own notification service is used where its
+ * command line client, notify-send, is installed: what AWT draws there
+ * instead is a window of its own that no desktop treats as a
+ * notification, and many desktops have no tray for it to hang from.
+ *
  * <p>A tray is a courtesy, not a requirement. Where there is none (many
  * Linux desktops, a session without a display) or it cannot be set up,
  * this object quietly does nothing and the interface's own notifications,
@@ -39,6 +44,8 @@ final class Notifier {
     private volatile String pendingLink;
     private volatile boolean started;
     private volatile boolean closed;
+    /** The desktop's notification command on Linux, or null where there is none. */
+    private final String notifySend = findNotifySend();
 
     /**
      * @param onOpen called when the user clicks the icon or a notification,
@@ -100,7 +107,33 @@ final class Notifier {
 
     /** Whether a notification passed to {@link #show} would appear. */
     boolean available() {
-        return icon != null && !closed;
+        return (icon != null || notifySend != null) && !closed;
+    }
+
+    /** Looks for notify-send on the PATH of a Linux session with a display. */
+    private static String findNotifySend() {
+        if (!System.getProperty("os.name", "").toLowerCase().contains("linux") || GraphicsEnvironment.isHeadless()) {
+            return null;
+        }
+        for (String dir : System.getenv().getOrDefault("PATH", "").split(java.io.File.pathSeparator)) {
+            java.io.File candidate = new java.io.File(dir, "notify-send");
+            if (candidate.canExecute()) {
+                return candidate.getPath();
+            }
+        }
+        return null;
+    }
+
+    /** Hands a notification to the desktop's notification service. */
+    private boolean sendToDesktop(String title, String body) {
+        try {
+            // The arguments are passed as they are, with no shell between.
+            new ProcessBuilder(notifySend, "--app-name=Dedie", "--icon=dialog-information", "--", title, body)
+                    .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+            return true;
+        } catch (java.io.IOException | RuntimeException e) {
+            return false;
+        }
     }
 
     /**
@@ -108,11 +141,19 @@ final class Notifier {
      * opens the page named by link.
      */
     void show(String title, String body, String link) {
-        TrayIcon target = icon;
-        if (target == null || closed) {
+        if (closed) {
             return;
         }
+        // A click on the tray icon opens the page, whichever way the
+        // notification itself was shown.
         pendingLink = link;
+        if (notifySend != null && sendToDesktop(title, body)) {
+            return;
+        }
+        TrayIcon target = icon;
+        if (target == null) {
+            return;
+        }
         EventQueue.invokeLater(() -> {
             try {
                 target.displayMessage(title, body, TrayIcon.MessageType.INFO);

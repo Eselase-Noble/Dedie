@@ -12,7 +12,7 @@ const PAGE = 30;
 
 /** Every notification the signed-in user may see, with filters and paging. */
 export default function NotificationsPage() {
-  const { unread, recent, markAllRead, open } = useNotifications();
+  const { unread, recent, markAllRead, open, refresh } = useNotifications();
   const [onlyUnread, setOnlyUnread] = useState(false);
   const [topic, setTopic] = useState<NotificationTopic | "">("");
   const [items, setItems] = useState<AppNotification[]>([]);
@@ -67,6 +67,10 @@ export default function NotificationsPage() {
     <div className="content">
       <PageHeader title="Notifications"
         subtitle="What happened to your migrations, backups and databases, and to your own account. They are kept for 30 days.">
+        <button className="btn" title="Sends one to you alone, to check that the bell, the browser and the desktop tray reach you"
+          onClick={() => void api.testNotification().then(refresh).catch((err) => setError(errorMessage(err)))}>
+          Send a test
+        </button>
         <button className="btn" onClick={() => void readAll()} disabled={unread === 0}>Mark all read</button>
       </PageHeader>
       {error && <Banner tone="error">{error}</Banner>}

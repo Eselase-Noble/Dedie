@@ -59,6 +59,11 @@ func (s *Server) readAllNotifications(w http.ResponseWriter, r *http.Request, ac
 	s.unreadCount(w, r, actor)
 }
 
+func (s *Server) testNotification(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	s.app.TestNotification(r.Context(), actor)
+	s.unreadCount(w, r, actor)
+}
+
 // unreadCount answers a change of read state with the count that results,
 // so the client's badge is right without asking again.
 func (s *Server) unreadCount(w http.ResponseWriter, r *http.Request, actor app.Actor) {

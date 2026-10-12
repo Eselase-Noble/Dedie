@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"dedie/engine/connector"
 )
@@ -99,6 +100,9 @@ func (s *session) CancelBackend(ctx context.Context, pid int64, terminate bool) 
 	}
 	if !ok {
 		return errors.New("backend not found or already gone")
+	}
+	if terminate && s.awaitExit(ctx, []int64{pid}) > 0 {
+		return fmt.Errorf("session %d was told to end and has not gone yet; it is probably rolling back its transaction. Refresh in a moment", pid)
 	}
 	return nil
 }

@@ -246,7 +246,9 @@ export default function DatabaseUsersPage() {
             <ConfirmDialog title="Disconnect these sessions?" confirmLabel="Disconnect" danger onClose={() => setDisconnecting(null)}
               onConfirm={async () => {
                 const res = await api.terminateSessions(connection.id, disconnecting.filter);
-                await done(`Disconnected ${res.sessions} session${res.sessions === 1 ? "" : "s"}.`);
+                await done(`Disconnected ${res.sessions} session${res.sessions === 1 ? "" : "s"}.` + (res.sessions > 0 && res.open_now > 0
+                  ? ` ${res.open_now} ${res.open_now === 1 ? "is" : "are"} connected again already: the application reconnects by itself. To keep it out, lower its connection limit or disable its user.`
+                  : ""));
               }}>
               <p>
                 This closes {disconnecting.label}. Statements they are running are stopped and their open transactions

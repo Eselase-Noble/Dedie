@@ -44,6 +44,7 @@ const (
 
 	NoteTokenCreated = "security.token_created"
 	NoteNewSignIn    = "security.sign_in"
+	NoteTest         = "security.test"
 )
 
 // NotificationTopics lists the topics with the permission each needs and
@@ -186,6 +187,16 @@ func (a *App) MarkAllNotificationsRead(ctx context.Context, actor Actor) (int, e
 		return 0, err
 	}
 	return a.Store.MarkAllNotificationsRead(ctx, r)
+}
+
+// TestNotification sends the actor, and nobody else, a notification that
+// says nothing happened. It is how someone finds out whether the bell,
+// the browser's notifications and the desktop's tray reach them before
+// they depend on it.
+func (a *App) TestNotification(ctx context.Context, actor Actor) {
+	a.Notify(ctx, store.Notification{OrgID: actor.User.OrgID, UserID: actor.User.ID, Kind: NoteTest, Level: LevelInfo,
+		Title: "This is a test notification", Body: "You asked for it from the notifications page. Nothing has happened to your databases",
+		Link: "/notifications/"})
 }
 
 // pruneNotifications applies the retention rules. The monitor calls it on
