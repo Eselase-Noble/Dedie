@@ -708,13 +708,22 @@ ul.plain li { margin-bottom: 6px; }
 .attention li:last-child { border-bottom: none; }
 .attention .note-text { gap: 1px; }
 .attention .note-title { font-weight: 600; }
+.attention .note-body, .checklist .note-body { -webkit-line-clamp: unset; }
 .attention .btn { flex: none; align-self: center; }
+.attention-clear { display: flex; align-items: center; gap: 12px; padding: 14px 16px; color: var(--text-muted); }
+.stat .value .unit { font-size: var(--fs-base); font-weight: 500; letter-spacing: 0; color: var(--text-muted); }
+.overview-split { align-items: start; }
+/* One line per connection or migration: its name, how it is, and for a
+   connection when it was last backed up. */
 .health { list-style: none; margin: 0; padding: 0; }
-.health li { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.2fr); gap: 4px 16px; align-items: center; padding: 11px 16px; border-bottom: 1px solid var(--border); }
+.health li { display: grid; grid-template-columns: minmax(0, 1.3fr) auto minmax(0, 1.2fr); gap: 4px 16px; align-items: center; padding: 11px 16px; border-bottom: 1px solid var(--border); }
+.health.pair li { grid-template-columns: minmax(0, 1fr) auto; }
 .health li:last-child { border-bottom: none; }
-.health .sub { color: var(--text-muted); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.health .fresh { text-align: right; }
-.health .fresh.stale, .health .fresh.never { color: var(--warn); }
+.health li > span:first-child { min-width: 0; }
+.health .sub { display: block; color: var(--text-muted); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.health .progress { margin-top: 6px; max-width: 220px; }
+.health .fresh { text-align: right; font-size: var(--fs-sm); }
+.health .fresh.stale, .health .fresh.never { color: var(--warn); font-weight: 550; }
 /* The three first steps of a new installation. */
 .checklist { list-style: none; margin: 0; padding: 0; counter-reset: step; }
 .checklist li { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-bottom: 1px solid var(--border); counter-increment: step; }

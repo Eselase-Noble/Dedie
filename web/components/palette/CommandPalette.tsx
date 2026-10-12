@@ -79,7 +79,7 @@ export default function CommandPalette({ pages, onClose }: { pages: PaletteEntry
         { id: "new-sync", group: "Action", label: "New continuous sync", href: "/migrations/?new=sync" },
       );
     }
-    if (can("backups.create")) actions.push({ id: "backup", group: "Action", label: "Run a backup", href: "/backups/" });
+    if (can("backups.create")) actions.push({ id: "backup", group: "Action", label: "Run a backup", href: "/backups/?new=1" });
     return [
       ...pages,
       ...actions,

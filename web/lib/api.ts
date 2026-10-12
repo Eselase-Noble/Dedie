@@ -42,6 +42,7 @@ import type {
   ServerObjects,
   Session,
   SessionFilter,
+  Summary,
   SessionInfo,
   User,
   UserUpdate,
@@ -250,6 +251,7 @@ export const api = {
   restores: () => get<Restore[]>("/restores"),
 
   // Monitoring and alerts
+  summary: () => get<Summary>("/summary"),
   monitoring: () => get<Monitoring>("/monitoring"),
   alertChannels: () => get<AlertChannel[]>("/alerts/channels"),
   saveAlertChannel: (channelId: string, body: ChannelInput) =>

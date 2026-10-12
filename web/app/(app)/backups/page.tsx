@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { api, errorMessage } from "@/lib/api";
 import { copyText, desktop } from "@/lib/desktop";
 import { formatBytes, formatTime } from "@/lib/format";
@@ -34,6 +34,13 @@ export default function BackupsPage() {
       || d.schedules.some((s) => s.last_status === "running"),
   );
   const [creating, setCreating] = useState(false);
+  // "?new=1" opens the form straight away, for the first-run guide and
+  // the command palette.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("new") === null) return;
+    setCreating(true);
+    window.history.replaceState(null, "", window.location.pathname);
+  }, []);
   const [restoring, setRestoring] = useState<Backup | null>(null);
   const [deleting, setDeleting] = useState<Backup | null>(null);
   const [verifying, setVerifying] = useState("");
