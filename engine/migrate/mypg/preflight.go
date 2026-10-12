@@ -14,6 +14,8 @@ import (
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/mymy"
 	"dedie/engine/migrate/pgpg"
+	"dedie/engine/migrate/storedcode"
+	"dedie/engine/migrate/viewsql"
 )
 
 // Preflight inspects both databases without changing either and reports
@@ -93,7 +95,18 @@ func preflight(ctx context.Context, src *sql.DB, dst *pgx.Conn, plan *Plan, cfg 
 		"TINYINT(1) columns become smallint, not boolean, so no value is lost.",
 		"ENUM and SET columns become text; ENUM keeps its list of allowed values as a CHECK constraint.",
 	}, "\n"))
-	r.Add("Not migrated", "warn", "views, stored routines, triggers and scheduled events are written in MySQL's dialect and are not translated; user accounts and privileges are not copied")
+	if len(plan.Views) > 0 {
+		status, detail := viewsql.Describe(plan.Views)
+		r.Add("Views", status, detail)
+	}
+	scope := ""
+	if cfg.Scope() == "table" {
+		scope = tableScopeNote
+	}
+	status, detail := storedcode.Describe(mysql.Kind, postgres.Kind, plan.Code, cfg.CodeMode(), scope)
+	r.Add("Stored code", status, detail)
+	r.Add("Not migrated", "warn", "scheduled events have no counterpart in PostgreSQL, and stored routines and triggers are created only where their conversion can be vouched for. "+
+		"The definitions of what stays behind, with the converted drafts where there are any, can be had as one script. User accounts and privileges are not copied")
 
 	var ssl bool
 	_ = dst.QueryRow(ctx, `SELECT coalesce((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false)`).Scan(&ssl)

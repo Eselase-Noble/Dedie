@@ -10,7 +10,10 @@ import (
 	"dedie/engine/connector/mysql"
 	"dedie/engine/connector/oracle"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/oradef"
 	"dedie/engine/migrate/orasrc"
+	"dedie/engine/migrate/storedcode"
+	"dedie/engine/migrate/viewsql"
 )
 
 // Preflight inspects both databases without changing either and reports
@@ -125,8 +128,18 @@ func preflight(ctx context.Context, src, dst *sql.DB, plan *Plan, cfg migrate.Co
 		"TRUNCATE commits on its own in MySQL. A source transaction that truncates a table and changes others is applied in two steps, not atomically.",
 		"Foreign keys are added at the very end, after the data has been validated. MySQL names foreign keys and check constraints per database, not per table.",
 	}, "\n"))
-	r.Add("Not migrated", "warn", sequencesLeftOut(plan.Catalog)+"views, materialized views, PL/SQL (procedures, functions, packages, triggers), synonyms, database links and partitioning are not translated; "+
-		"a partitioned table arrives as one ordinary table. Users, roles and grants are not copied")
+	if len(plan.Views) > 0 {
+		status, detail := viewsql.Describe(plan.Views)
+		r.Add("Views", status, detail)
+	}
+	scope := ""
+	if cfg.Scope() == "table" {
+		scope = oradef.TableScopeNote
+	}
+	status, detail := storedcode.Describe(oracle.Kind, mysql.Kind, oradef.Convertible(plan.Code), cfg.CodeMode(), scope)
+	r.Add("Stored code", status, detail)
+	r.Add("Not migrated", "warn", sequencesLeftOut(plan.Catalog)+"materialized views, packages, synonyms, database links and partitioning are not translated; "+
+		"a partitioned table arrives as one ordinary table. "+oradef.Describe+". Users, roles and grants are not copied")
 
 	if !mysql.Encrypted(ctx, dst) {
 		r.Add("Target encryption", "warn", "the connection is not using TLS; data will cross the network in clear text")

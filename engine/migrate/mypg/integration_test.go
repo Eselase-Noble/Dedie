@@ -947,11 +947,12 @@ func TestMigrationPreview(t *testing.T) {
 	}
 	// Index names are unique per table in MySQL and per schema here, so
 	// each carries its table's name. Indexes and foreign keys are built
-	// once the rows are in; nothing is created at cutover.
+	// once the rows are in; the translated view comes at the very end.
 	want := []string{
 		"schema | table | customers", "schema | table | events", "schema | table | invoices",
 		"indexing | index | customers_big_small", "indexing | index | customers_name_idx", "indexing | index | invoices_invoices_customer",
 		"indexing | foreign key | invoices invoices_customer",
+		"cutover | view | customer_totals",
 	}
 	if got := strings.Join(lines, "\n"); got != strings.Join(want, "\n") {
 		t.Errorf("preview:\n got:\n%s\nwant:\n%s", got, strings.Join(want, "\n"))
@@ -1046,7 +1047,7 @@ func TestMigrationPreview(t *testing.T) {
 			t.Fatalf("%s: %v\n%s", previewLine(s), err, s.SQL)
 		}
 	}
-	const built = "public | customers:r,customers_big_small:i,customers_id_seq:S,customers_name_idx:i,customers_pkey:i,events:r," +
+	const built = "public | customer_totals:v,customers:r,customers_big_small:i,customers_id_seq:S,customers_name_idx:i,customers_pkey:i,events:r," +
 		"invoices:r,invoices_id_seq:S,invoices_invoices_customer:i,invoices_pkey:i | " +
 		"customers_feeling_enum:c,customers_pkey:p,invoices_customer:f,invoices_pkey:p"
 	if _, got := state(); got != built {

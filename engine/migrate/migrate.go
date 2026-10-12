@@ -76,6 +76,12 @@ type Config struct {
 	// with the name of one being migrated: ExistingFail (the default),
 	// ExistingSkip or ExistingReplace. See those constants.
 	OnExisting string `json:"on_existing,omitempty"`
+	// Code says what a migration between two kinds of database does with
+	// stored functions, procedures and triggers: CodeConverted (the
+	// default), CodeReview or CodeOff. See those constants. A migration
+	// between two databases of one kind copies them as they are and
+	// ignores this.
+	Code string `json:"code,omitempty"`
 	// CutoverTimeoutSeconds bounds how long cutover waits for the stream to
 	// drain before giving up and resuming normal streaming.
 	CutoverTimeoutSeconds int `json:"cutover_timeout_seconds"`
@@ -116,6 +122,35 @@ const (
 	// the target, along with whatever depends on it there.
 	ExistingReplace = "replace"
 )
+
+// What a migration between two kinds of database does with stored
+// functions, procedures and triggers. The converter says of each routine
+// whether every construct in it has a rewrite that keeps its behaviour
+// ("converted"), whether some rewrite may behave differently ("review"),
+// or whether it has no rewrite at all; a routine of the last sort is never
+// created.
+const (
+	// CodeConverted creates the routines the converter vouches for. Those
+	// that need a person's review are not created: their converted draft
+	// and the notes on what to check are handed to the administrator.
+	CodeConverted = "converted"
+	// CodeReview also creates the routines that need review, and reports
+	// them as such.
+	CodeReview = "review"
+	// CodeOff converts nothing; all stored code is left for the
+	// administrator, with its definition on the source.
+	CodeOff = "off"
+)
+
+// CodeMode returns what the job does with stored code, with the default
+// filled in.
+func (c Config) CodeMode() string {
+	switch c.Code {
+	case CodeReview, CodeOff:
+		return c.Code
+	}
+	return CodeConverted
+}
 
 // Existing returns the policy for objects already on the target, with
 // the default filled in.
@@ -237,7 +272,9 @@ type Statement struct {
 	Name string `json:"name"`
 	SQL  string `json:"sql"`
 	// End is what closes the statement in a script when a semicolon does
-	// not: "/" for an Oracle program unit, whose own text ends in one.
+	// not: "/" for an Oracle program unit, whose own text ends in one,
+	// and "//" for a MySQL routine, whose body has semicolons inside and
+	// needs the client told of another delimiter.
 	End string `json:"end,omitempty"`
 }
 
@@ -247,6 +284,55 @@ type Statement struct {
 // Like preflight, a preview changes neither database.
 type Previewer interface {
 	Preview(ctx context.Context, src, dst connector.Config, cfg Config) ([]Statement, error)
+}
+
+// Leftover is an object of the source that a migration does not carry
+// over, with its definition as the source has it.
+type Leftover struct {
+	// Kind is what it is: "view", "function", "procedure", "trigger",
+	// "package" and so on.
+	Kind string `json:"kind"`
+	// Name is how the source knows it, qualified where that applies.
+	Name string `json:"name"`
+	// Reason says why it is not migrated.
+	Reason string `json:"reason"`
+	// Source is the statement that defines it, in the source's dialect.
+	// It is empty when the source would not show the definition.
+	Source string `json:"source"`
+	// End is what closes the statement in a script when a semicolon does
+	// not: "/" for an Oracle program unit, whose own text ends in one.
+	End string `json:"end,omitempty"`
+
+	// The rest is filled in for stored code the migration tried to
+	// convert.
+
+	// Status is how far the conversion got: "review" for a routine that
+	// was converted but not created because a person has to check it,
+	// "unconverted" for one that has no conversion, "not created" for
+	// one the target refused, and "created, needs review" for one that
+	// is on the target and still wants checking. It is empty for views
+	// and for code no conversion was tried on.
+	Status string `json:"status,omitempty"`
+	// Notes say, naming the line of the source, what to check or why
+	// the routine could not be converted.
+	Notes []string `json:"notes,omitempty"`
+	// Draft is the converted routine in the target's dialect, as a
+	// script, where there is one: the place to start from.
+	Draft string `json:"draft,omitempty"`
+}
+
+// LeftoverLister is implemented by pipelines that leave some of the
+// source behind: stored code, which no pipeline between two different
+// databases translates, and the views it could not translate with the
+// same meaning. Rather than only saying so, such a pipeline hands the
+// administrator the definitions, so that converting them by hand can
+// start from one script instead of from a search through the source.
+//
+// state is the job's saved state, empty for a job that has not run; a
+// pipeline reads from it which views it created and had to drop again.
+// Like preflight, listing changes neither database.
+type LeftoverLister interface {
+	Leftovers(ctx context.Context, src, dst connector.Config, cfg Config, state json.RawMessage) ([]Leftover, error)
 }
 
 var pipelines = map[string]Pipeline{}

@@ -30,6 +30,8 @@ import (
 	"dedie/engine/connector"
 	"dedie/engine/connector/postgres"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/storedcode"
+	"dedie/engine/migrate/viewsql"
 )
 
 func init() { migrate.Register(postgres.Kind, postgres.Kind, pipeline{}) }
@@ -113,6 +115,17 @@ type State struct {
 	KeptObjects []string `json:"kept_objects,omitempty"`
 	// DropFirst are the statements that remove what the job replaces.
 	DropFirst []string `json:"drop_first,omitempty"`
+
+	// Views says what became of each view a pipeline into another kind of
+	// database translated and created: kept and verified, kept without
+	// verification, or dropped again. See viewsql.Checker.
+	Views []viewsql.Result `json:"views,omitempty"`
+	// Code says the same of each converted function, procedure and
+	// trigger such a pipeline set out to create; see storedcode.Target.
+	Code []storedcode.Outcome `json:"code,omitempty"`
+	// Objects counts, once the job has finished, what it did with views
+	// and stored code.
+	Objects *storedcode.Summary `json:"objects,omitempty"`
 }
 
 // metaSchema holds the checkpoint table on the target while a job runs.

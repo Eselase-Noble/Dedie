@@ -418,6 +418,12 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
+	if err := r.finishViews(ctx); err != nil {
+		return false, err
+	}
+	if err := r.finishCode(ctx); err != nil {
+		return false, err
+	}
 	// Planner statistics do not exist yet for the new tables.
 	if _, err := r.dst.Exec(ctx, "ANALYZE"); err != nil {
 		r.rep.Event("warn", "ANALYZE on the target failed: "+pgMessage(err))

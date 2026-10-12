@@ -11,6 +11,7 @@ import ApplyRate from "@/components/migrations/ApplyRate";
 import CopyProgress from "@/components/migrations/CopyProgress";
 import ExistingObjectsDialog from "@/components/migrations/ExistingObjects";
 import MigrationForm from "@/components/MigrationForm";
+import NotMigrated, { leavesBehind } from "@/components/migrations/NotMigrated";
 import SchemaPreview from "@/components/migrations/SchemaPreview";
 import { download } from "@/lib/csv";
 import { copyText } from "@/lib/desktop";
@@ -123,6 +124,7 @@ function Detail({ id }: { id: string }) {
   const [preflighting, setPreflighting] = useState(false);
   const [asking, setAsking] = useState(false);
   const [previewing, setPreviewing] = useState(false);
+  const [leftovers, setLeftovers] = useState(false);
   // Duplicating opens the new-migration form filled in from this job;
   // "replace" is the same with existing objects on the target replaced.
   const [duplicating, setDuplicating] = useState<"" | "copy" | "replace">("");
@@ -310,6 +312,25 @@ function Detail({ id }: { id: string }) {
         </Banner>
       )}
 
+      {st.objects && leavesBehind(job.kind) && (
+        <div className="card">
+          <div className="card-head">
+            <h2>Views and stored code</h2>
+            <div className="actions">
+              {manage && (st.objects.review > 0 || st.objects.left > 0) && (
+                <button className="btn small" onClick={() => setLeftovers(true)}
+                  title="What was left behind or wants checking, with its definition, the converted draft and the notes">See what needs attention</button>
+              )}
+            </div>
+          </div>
+          <div className="figures" style={{ borderTop: "none" }}>
+            <Figure label="Created">{formatNumber(st.objects.created)}</Figure>
+            <Figure label="Created, needs review">{formatNumber(st.objects.review)}</Figure>
+            <Figure label="Left for you">{formatNumber(st.objects.left)}</Figure>
+          </div>
+        </div>
+      )}
+
       <div className="card">
         <Stepper job={job} />
         {job.phase === "snapshot" && job.tables.length > 0 && status !== "aborted" && <CopyProgress job={job} />}
@@ -346,6 +367,10 @@ function Detail({ id }: { id: string }) {
             {manage && (
               <button className="btn small" onClick={() => setPreviewing(true)}
                 title="Read the statements this migration would run on the target, without running them">Preview schema</button>
+            )}
+            {manage && leavesBehind(job.kind) && (
+              <button className="btn small" onClick={() => setLeftovers(true)}
+                title="Stored code and views this migration does not carry over, with their definitions on the source">Not migrated</button>
             )}
             {manage && (
               <button className="btn small" onClick={() => runPreflight()} disabled={preflighting}>
@@ -437,6 +462,14 @@ function Detail({ id }: { id: string }) {
           <Figure label="Validation">{job.config.validation || "checksum"}</Figure>
           {!offline && !sync && <Figure label="Fence source at cutover">{fenced ? "yes" : "no"}</Figure>}
           <Figure label="Objects already on the target">{onExisting === "skip" ? "keep and skip" : onExisting === "replace" ? "replace" : "refuse"}</Figure>
+          {leavesBehind(job.kind) && (
+            <Figure label="Stored code">
+              {/* Short enough for one cell; the sentence is there on hover. */}
+              {job.config.code === "off" ? <span title="Nothing is converted; the source's definitions are handed over">not converted</span>
+                : job.config.code === "review" ? <span title="Created on the target, including what may behave differently and needs review">all conversions</span>
+                  : <span title="Created on the target where the conversion keeps the behaviour; the rest is handed over as drafts">clean conversions</span>}
+            </Figure>
+          )}
           {job.kind === "postgres-postgres" && !offline && <Figure label="Keep replication slot">{job.config.keep_slot ? "yes" : "no"}</Figure>}
           {!offline && <Figure label="Cutover timeout">{job.config.cutover_timeout_seconds || 300}s</Figure>}
         </div>
@@ -470,6 +503,7 @@ function Detail({ id }: { id: string }) {
         />
       )}
       {previewing && <SchemaPreview jobId={job.id} name={job.name} onClose={() => setPreviewing(false)} />}
+      {leftovers && <NotMigrated jobId={job.id} name={job.name} onClose={() => setLeftovers(false)} />}
       {asking && (
         <ExistingObjectsDialog jobId={job.id} objects={existing} current={onExisting}
           onClose={() => setAsking(false)} onChosen={() => runPreflight(false)} />

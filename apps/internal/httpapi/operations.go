@@ -61,6 +61,17 @@ func (s *Server) previewMigration(w http.ResponseWriter, r *http.Request, actor 
 	writeJSON(w, http.StatusOK, list)
 }
 
+// migrationLeftovers lists what the migration leaves behind on the source,
+// with the definition of each object.
+func (s *Server) migrationLeftovers(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	list, err := s.app.MigrationLeftovers(r.Context(), actor, r.PathValue("id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
 // setOnExisting records what the migration should do about objects that
 // already exist on the target.
 func (s *Server) setOnExisting(w http.ResponseWriter, r *http.Request, actor app.Actor) {

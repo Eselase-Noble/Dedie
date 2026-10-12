@@ -13,6 +13,14 @@ const PHASES: { phase: string; title: string; note: string }[] = [
   { phase: "cutover", title: "At the end, after validation", note: "Created last so it cannot interfere with rows still arriving." },
 ];
 
+/** One statement as it goes into a script, closed the way its dialect closes it. */
+function terminated(s: PreviewStatement): string {
+  const sql = s.sql.trim();
+  // A MySQL routine has semicolons inside; the client has to be told that something else ends it.
+  if (s.end === "//") return `DELIMITER //\n${sql}\n//\nDELIMITER ;`;
+  return s.end ? `${sql}\n${s.end}` : `${sql.replace(/;$/, "")};`;
+}
+
 /** Renders the statements as one script, in the order they would run. */
 function script(name: string, list: PreviewStatement[]): string {
   const out = [`-- What the migration "${name}" would run on the target. Nothing here has been run.`, ""];
@@ -21,7 +29,7 @@ function script(name: string, list: PreviewStatement[]): string {
     if (part.length === 0) continue;
     out.push(`-- ===== ${title} =====`, "");
     for (const s of part) {
-      out.push(`-- ${s.kind} ${s.name}`, s.end ? `${s.sql.trim()}\n${s.end}` : `${s.sql.trim().replace(/;$/, "")};`, "");
+      out.push(`-- ${s.kind} ${s.name}`, terminated(s), "");
     }
   }
   return out.join("\n");
@@ -67,8 +75,8 @@ export default function SchemaPreview({ jobId, name, onClose }: { jobId: string;
       {list && (
         <>
           <p className="hint">
-            These are the statements the migration would run, in order, with the source&apos;s tables translated for the
-            target. Nothing has been run: reading this changes neither database.
+            These are the statements the migration would run, in order, with the source&apos;s definitions translated for
+            the target. Nothing has been run: reading this changes neither database.
           </p>
           <div className="preflight-bar" style={{ padding: "8px 0" }}>
             <span>

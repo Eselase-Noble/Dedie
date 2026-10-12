@@ -14,6 +14,8 @@ import (
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/mymy"
 	"dedie/engine/migrate/pgpg"
+	"dedie/engine/migrate/storedcode"
+	"dedie/engine/migrate/viewsql"
 )
 
 // Preflight inspects both databases without changing either and reports
@@ -83,7 +85,25 @@ func preflight(ctx context.Context, src *pgx.Conn, dst *sql.DB, plan *Plan, cfg 
 		"Schemas are flattened: with more than one schema, tables outside public are named schema_table.",
 		"TRUNCATE commits on its own in MySQL. A source transaction that truncates a table and changes others is applied in two steps, not atomically.",
 	}, "\n"))
-	r.Add("Not migrated", "warn", "views, functions, triggers, check constraints, sequences that are not a column default, and types are specific to PostgreSQL and are not translated; roles and privileges are not copied")
+	if len(plan.Views) > 0 {
+		status, detail := viewsql.Describe(plan.Views)
+		r.Add("Views", status, detail)
+	}
+	scope := ""
+	if cfg.Scope() == "table" {
+		scope = tableScopeNote
+	}
+	var code []*storedcode.Object
+	for _, o := range plan.Code {
+		if o.Kind == "function" || o.Kind == "procedure" || o.Kind == "trigger" {
+			code = append(code, o)
+		}
+	}
+	status, detail := storedcode.Describe(postgres.Kind, mysql.Kind, code, cfg.CodeMode(), scope)
+	r.Add("Stored code", status, detail)
+	r.Add("Not migrated", "warn", "check constraints, materialized views, sequences that are not a column default, and types are specific to PostgreSQL and are not translated; "+
+		"functions, procedures and triggers are created only where their conversion can be vouched for. "+
+		"The definitions of what stays behind, with the converted drafts where there are any, can be had as one script. Roles and privileges are not copied")
 
 	var ssl bool
 	_ = src.QueryRow(ctx, `SELECT coalesce((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false)`).Scan(&ssl)

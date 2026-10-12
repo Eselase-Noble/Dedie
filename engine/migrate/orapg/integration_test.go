@@ -960,8 +960,8 @@ func TestMigrationPreview(t *testing.T) {
 	}
 	// Schemas, sequences and tables before the copy; indexes, among them
 	// the one behind the unique constraint, and check constraints after
-	// it; foreign keys at the very end. The index on an expression has no
-	// translation.
+	// it; foreign keys and the translated view at the very end. The index
+	// on an expression has no translation.
 	want := []string{
 		"schema | schema | dedie_test", "schema | sequence | dedie_test.dedie_it_seq",
 		"schema | table | dedie_test.dedie_it_customers", "schema | table | dedie_test.dedie_it_events",
@@ -969,6 +969,7 @@ func TestMigrationPreview(t *testing.T) {
 		"indexing | index | dedie_test.dedie_it_cust_code", "indexing | index | dedie_test.dedie_it_cust_nums",
 		"indexing | check constraint | dedie_test.dedie_it_customers dedie_it_cust_bal",
 		"cutover | foreign key | dedie_test.dedie_it_invoices dedie_it_inv_cust",
+		"cutover | view | dedie_test.dedie_it_totals",
 	}
 	if got := outline(list); got != strings.Join(want, "\n") {
 		t.Errorf("preview:\n got:\n%s\nwant:\n%s", got, strings.Join(want, "\n"))

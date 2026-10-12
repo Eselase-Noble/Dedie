@@ -378,6 +378,12 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 			return false, err
 		}
 	}
+	if err := r.finishViews(ctx); err != nil {
+		return false, err
+	}
+	if err := r.finishCode(ctx); err != nil {
+		return false, err
+	}
 	// Optimizer statistics do not exist yet for the new tables.
 	for _, t := range r.plan.Tables {
 		rows, err := r.dst.QueryContext(ctx, "ANALYZE TABLE "+t.QName())

@@ -783,14 +783,18 @@ func TestMigrationExistingObjects(t *testing.T) {
 	if got := query(keyOwner); got != "other_child" {
 		t.Errorf("skip: foreign key dedie_it_inv_cust is on %q", got)
 	}
-	if got := query(tables); got != "dedie_it_customers,dedie_it_events,dedie_it_invoices,other_child,other_parent" {
+	// The view over the invoices came along: everything it reads is
+	// among the tables that were migrated.
+	if got := query(tables); got != "dedie_it_customers,dedie_it_events,dedie_it_invoices,dedie_it_totals,other_child,other_parent" {
 		t.Errorf("skip: the target now has %s", got)
 	}
 
 	// Replacing drops what exists, the tables of the run before included,
 	// and puts the source's in its place.
 	report, checks = preflightFor(migrate.ExistingReplace)
-	const second = "table dedie_it_customers; table dedie_it_events; table dedie_it_invoices; foreign key dedie_it_inv_cust on other_child"
+	// The view is the one the run before created; this job would create
+	// it again, so it is in the way like the tables.
+	const second = "table dedie_it_customers; table dedie_it_events; table dedie_it_invoices; view dedie_it_totals; foreign key dedie_it_inv_cust on other_child"
 	if !report.OK || checks["Target is empty"].Status != "warn" || checks["Existing objects"].Status != "warn" || existingOf(report) != second {
 		t.Errorf("replace: ok %v, checks %v / %v, existing %q", report.OK, checks["Target is empty"].Status, checks["Existing objects"].Status, existingOf(report))
 	}
@@ -816,7 +820,7 @@ func TestMigrationExistingObjects(t *testing.T) {
 	if got := query(keyOwner); got != "dedie_it_invoices" {
 		t.Errorf("replace: foreign key dedie_it_inv_cust is on %q", got)
 	}
-	if got := query(tables); got != "dedie_it_customers,dedie_it_events,dedie_it_invoices,other_child,other_parent" {
+	if got := query(tables); got != "dedie_it_customers,dedie_it_events,dedie_it_invoices,dedie_it_totals,other_child,other_parent" {
 		t.Errorf("replace: the target now has %s", got)
 	}
 }
@@ -931,6 +935,7 @@ func TestMigrationPreview(t *testing.T) {
 		"indexing | index | dedie_it_wide.dedie_it_wide_tag",
 		"indexing | check constraint | dedie_it_customers dedie_it_cust_bal",
 		"cutover | foreign key | dedie_it_invoices dedie_it_inv_cust",
+		"cutover | view | dedie_it_totals",
 	}
 	if got := outline(list); got != strings.Join(want, "\n") {
 		t.Errorf("preview:\n got:\n%s\nwant:\n%s", got, strings.Join(want, "\n"))
@@ -957,12 +962,13 @@ func TestMigrationPreview(t *testing.T) {
 	}
 
 	// A table-level job previews its tables only; the foreign key to a
-	// table that is not migrated is left out.
+	// table that is not migrated is left out. The view comes along,
+	// because the one table it reads is the one being migrated.
 	scoped, err := Preview(ctx, srcCfg, dstCfg, migrate.Config{Mode: migrate.ModeOffline, Tables: []string{"DEDIE_IT_INVOICES"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := outline(scoped); got != "schema | table | dedie_it_invoices" {
+	if got := outline(scoped); got != "schema | table | dedie_it_invoices\ncutover | view | dedie_it_totals" {
 		t.Errorf("table scope previews:\n%s", got)
 	}
 

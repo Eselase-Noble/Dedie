@@ -92,6 +92,11 @@ func (a *App) CreateMigration(ctx context.Context, actor Actor, in MigrationInpu
 	default:
 		return store.Job{}, invalid("on_existing must be fail, skip or replace")
 	}
+	switch in.Config.Code {
+	case "", migrate.CodeConverted, migrate.CodeReview, migrate.CodeOff:
+	default:
+		return store.Job{}, invalid("code must be converted, review or off")
+	}
 	_, _, kind, err := a.endpoints(ctx, actor.User.OrgID, in.SourceID, in.TargetID)
 	if err != nil {
 		return store.Job{}, err
@@ -224,6 +229,44 @@ func (a *App) PreviewMigration(ctx context.Context, actor Actor, id string) ([]m
 	}
 	if list == nil {
 		list = []migrate.Statement{}
+	}
+	return list, nil
+}
+
+// MigrationLeftovers returns what the migration does not carry over from
+// the source (stored code, and the views that could not be translated or
+// did not return the same on the target), each with the statement that
+// defines it there. It is the script an administrator starts from to
+// convert those by hand. Nothing is changed on either database.
+func (a *App) MigrationLeftovers(ctx context.Context, actor Actor, id string) ([]migrate.Leftover, error) {
+	if err := actor.require(PermManageMigrations); err != nil {
+		return nil, err
+	}
+	j, err := a.Store.GetJob(ctx, actor.User.OrgID, id)
+	if err != nil {
+		return nil, wrap(err)
+	}
+	src, dst, kind, err := a.endpoints(ctx, j.OrgID, j.SourceID, j.TargetID)
+	if err != nil {
+		return nil, err
+	}
+	pipeline, err := migrate.Lookup(kind)
+	if err != nil {
+		return nil, invalid("%s", err.Error())
+	}
+	lister, ok := pipeline.(migrate.LeftoverLister)
+	if !ok {
+		// Between two databases of one kind everything is copied as it is.
+		return nil, invalid("%s migrations copy views and stored code as they are; there is no list of what is left behind", kind)
+	}
+	var cfg migrate.Config
+	_ = json.Unmarshal(j.Config, &cfg)
+	list, err := lister.Leftovers(ctx, src, dst, cfg, j.State)
+	if err != nil {
+		return nil, &Error{Status: 502, Message: err.Error()}
+	}
+	if list == nil {
+		list = []migrate.Leftover{}
 	}
 	return list, nil
 }

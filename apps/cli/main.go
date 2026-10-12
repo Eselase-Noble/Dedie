@@ -50,6 +50,11 @@ Migrations
                                it lists them and asks what to do
   migrate preview <id>         print the statements the migration would run
                                on the target, as a script, without running them
+  migrate leftovers <id>       print what the migration does not carry over
+                               (views it could not translate, stored code it
+                               could not convert or that needs review), as a
+                               script with the converted drafts and the source's
+                               own definitions
   migrate existing <id> fail|skip|replace
                                answer that question without a prompt
   migrate run <id>             run in the foreground until paused or complete
@@ -192,6 +197,8 @@ func (c *cli) dispatch(args []string) error {
 			return c.migrateExisting(rest)
 		case "preview":
 			return c.migratePreview(rest)
+		case "leftovers":
+			return c.migrateLeftovers(rest)
 		case "run":
 			return c.migrateRun(rest)
 		case "status":

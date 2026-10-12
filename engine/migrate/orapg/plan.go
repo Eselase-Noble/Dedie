@@ -9,8 +9,11 @@ import (
 
 	"dedie/engine/connector/oracle"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/oradef"
 	"dedie/engine/migrate/orasrc"
 	"dedie/engine/migrate/pgpg"
+	"dedie/engine/migrate/storedcode"
+	"dedie/engine/migrate/viewsql"
 )
 
 // Column is a source column with its translation.
@@ -64,6 +67,14 @@ type Plan struct {
 	// wrote them.
 	Pre, Post, Final []Stmt
 	Sequences        []Sequence
+	// Views are the source's views, translated: first those that will be
+	// created once the data is in and validated, in the order to create
+	// them, then those that are left out, each with the reason.
+	Views []*viewsql.View
+	// Code is the source's stored code in scope, with the converter's
+	// verdict on each object and whether the job will create it; and the
+	// packages, types and materialized views, to be listed.
+	Code []*storedcode.Object
 	// Notes list everything that was translated with a change in meaning
 	// or could not be carried over. Preflight shows them to the operator.
 	Notes  []string
@@ -201,6 +212,15 @@ func BuildPlan(ctx context.Context, src oracle.Queryer, cfg migrate.Config) (*Pl
 	p.buildTables()
 	p.indexes()
 	p.checks()
+	views, err := oradef.Views(ctx, src, cat.Owners)
+	if err != nil {
+		return nil, err
+	}
+	p.planViews(views, cfg.Scope() == "table")
+	if p.Code, err = oradef.Code(ctx, src, cat, cfg.Scope() == "table"); err != nil {
+		return nil, err
+	}
+	p.planCode(cfg.CodeMode())
 	return p, nil
 }
 
@@ -285,7 +305,8 @@ func (p *Plan) buildTables() {
 // claims lists every name the plan takes on the target, for the preflight
 // to look up there. Apart from the tables these are the sequences and the
 // indexes, read off the statements that create them, so what is checked
-// and what is created cannot drift apart. Check constraints and foreign
+// and what is created cannot drift apart, and the views that will be
+// created. Check constraints and foreign
 // keys are named within their table, and a primary key's index gets a free
 // name from PostgreSQL.
 func (p *Plan) claims() []pgpg.Claim {
@@ -300,7 +321,10 @@ func (p *Plan) claims() []pgpg.Claim {
 			}
 		}
 	}
-	return out
+	for _, v := range viewsql.Kept(p.Views) {
+		out = append(out, pgpg.Claim{Kind: "view", Name: v.Label, Ident: v.Target.Quoted})
+	}
+	return append(out, pgpg.CodeClaims(p.Code)...)
 }
 
 // keep removes from the plan every statement that would create an object
@@ -330,6 +354,12 @@ func (p *Plan) keep(kept []string) {
 		}
 	}
 	p.Sequences = sequences
+	for _, v := range p.Views {
+		if v.SQL != "" && is[pgpg.KeptKey("view", v.Label)] {
+			v.SQL, v.Reason = "", "the target already has a view of this name, which is kept as it is"
+		}
+	}
+	pgpg.KeepCode(p.Code, kept)
 }
 
 // sources translates the names tables have on the target into the names

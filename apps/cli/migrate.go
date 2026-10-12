@@ -33,6 +33,7 @@ func (c *cli) migrateCreate(args []string) error {
 	sync := fs.Bool("sync", false, "keep the target following the source continuously instead of planning a cutover")
 	offline := fs.Bool("offline", false, "copy once from a consistent snapshot, validate and finish, without following changes; the source needs no replication set up")
 	fs.StringVar(&in.Config.OnExisting, "on-existing", "", "when the target already has an object being migrated: fail (default; preflight then asks you), skip (leave it and do not migrate it) or replace (drop it and create it from the source)")
+	fs.StringVar(&in.Config.Code, "code", "", "between two kinds of database, what to do with stored procedures, functions and triggers: converted (default; create those whose conversion can be vouched for, hand over the rest with a draft), review (also create those that need a person's check) or off (convert nothing)")
 	fs.BoolVar(&in.Config.KeepSlot, "keep-slot", false, "keep the replication slot on the source after completion")
 	fs.Parse(args)
 	in.Config.Schemas, in.Config.Tables, in.Config.ExcludeTables = splitList(*schemas), splitList(*tables), splitList(*exclude)
@@ -315,6 +316,12 @@ func (c *cli) migratePreview(args []string) error {
 				migrate.PhaseCutover:  "at the end, after validation",
 			}[phase])
 		}
+		if st.End == "//" {
+			// A MySQL routine has semicolons inside; the client has to
+			// be told that something else ends it.
+			fmt.Printf("-- %s %s\nDELIMITER //\n%s\n//\nDELIMITER ;\n\n", st.Kind, st.Name, strings.TrimSpace(st.SQL))
+			continue
+		}
 		if st.End != "" {
 			fmt.Printf("-- %s %s\n%s\n%s\n\n", st.Kind, st.Name, strings.TrimSpace(st.SQL), st.End)
 			continue
@@ -323,4 +330,65 @@ func (c *cli) migratePreview(args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "%d statement(s). Nothing was run.\n", len(list))
 	return nil
+}
+
+// migrateLeftovers prints what the migration leaves behind on the source
+// as a script, each object under the reason it is not migrated. It is
+// where converting them by hand starts: redirected to a file, it is
+// everything there is to convert, in one place, with a converted draft
+// wherever the converter got that far.
+func (c *cli) migrateLeftovers(args []string) error {
+	id, err := oneArg(args, "migration id")
+	if err != nil {
+		return err
+	}
+	list, err := c.be.MigrationLeftovers(id)
+	if err != nil {
+		return err
+	}
+	fmt.Print(leftoverScript(list))
+	fmt.Fprintf(os.Stderr, "%d object(s) are not migrated or want checking. Nothing was run.\n", len(list))
+	return nil
+}
+
+// leftoverScript writes out what a migration leaves behind. An object
+// that was converted is given as the converted draft, in the target's
+// dialect, under the notes on what to check, with the original after it
+// as a comment to compare against. Anything else is given as the source
+// defines it.
+func leftoverScript(list []migrate.Leftover) string {
+	var b strings.Builder
+	b.WriteString("-- What this migration does not carry over, or carried over with a caveat.\n")
+	b.WriteString("-- A converted draft is in the target's dialect; everything else is as the\n")
+	b.WriteString("-- source defines it, and has to be converted before it runs on the target.\n\n")
+	for _, l := range list {
+		head := l.Kind + " " + l.Name
+		if l.Status != "" {
+			head += "  [" + l.Status + "]"
+		}
+		fmt.Fprintf(&b, "-- %s\n-- %s\n", head, strings.ReplaceAll(l.Reason, "\n", " "))
+		for _, note := range l.Notes {
+			fmt.Fprintf(&b, "--   %s\n", note)
+		}
+		source := strings.TrimSpace(l.Source)
+		original := source
+		switch {
+		case source == "":
+			original = "-- (the source did not show its definition)"
+		case l.End != "":
+			original += "\n" + l.End
+		default:
+			original = strings.TrimRight(source, ";") + ";"
+		}
+		if draft := strings.TrimSpace(l.Draft); draft != "" {
+			b.WriteString("-- Converted draft:\n" + draft + "\n-- The original on the source:\n")
+			for _, line := range strings.Split(original, "\n") {
+				b.WriteString("--   " + line + "\n")
+			}
+			b.WriteString("\n")
+			continue
+		}
+		b.WriteString(original + "\n\n")
+	}
+	return b.String()
 }

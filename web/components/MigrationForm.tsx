@@ -2,7 +2,8 @@
 
 import { useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
-import type { ColumnSpec, Connection, Migration, MigrationConfig, Validation, OnExisting } from "@/lib/types";
+import type { CodeMode, ColumnSpec, Connection, Migration, MigrationConfig, Validation, OnExisting } from "@/lib/types";
+import { leavesBehind } from "@/components/migrations/NotMigrated";
 import { Banner, Checkbox, Field, Modal } from "./ui";
 
 /** Splits a comma or newline separated list, dropping blanks. */
@@ -78,6 +79,7 @@ export default function MigrationForm({ connections, onClose, onCreated, initial
   const [name, setName] = useState(template?.name ?? "");
   const [mode, setMode] = useState<"migrate" | "sync" | "offline">(from.mode || initialMode);
   const [onExisting, setOnExisting] = useState<OnExisting>(from.on_existing || "fail");
+  const [code, setCode] = useState<CodeMode>(from.code || "converted");
   const [sourceId, setSourceId] = useState((templateSource ?? candidates.find((c) => c.kind !== "mongodb") ?? candidates[0])?.id ?? "");
   const source = candidates.find((c) => c.id === sourceId);
   const targets = candidates.filter((c) => c.id !== sourceId && (TARGET_KINDS[source?.kind ?? ""] ?? []).includes(c.kind));
@@ -93,6 +95,9 @@ export default function MigrationForm({ connections, onClose, onCreated, initial
   const offline = mode === "offline";
   const oracle = source?.kind === "oracle";
   const crossEngine = !!source && !!targetId && candidates.find((c) => c.id === targetId)?.kind !== source.kind;
+  // Between two kinds of database stored code has to be converted, and
+  // how far to trust the conversion is the administrator's call.
+  const converting = !!source && leavesBehind(`${source.kind}-${candidates.find((c) => c.id === targetId)?.kind}`);
   // What to migrate: the whole database, selected schemas, or selected tables.
   const [scope, setScope] = useState<"database" | "schema" | "table">(
     from.tables?.length ? "table" : from.schemas?.length ? "schema" : "database");
@@ -141,6 +146,7 @@ export default function MigrationForm({ connections, onClose, onCreated, initial
           validation,
           keep_slot: keepSlot && !offline && !mysql && !mongo,
           on_existing: onExisting,
+          code: converting ? code : undefined,
           cutover_timeout_seconds: timeout,
         },
       });
@@ -180,8 +186,11 @@ export default function MigrationForm({ connections, onClose, onCreated, initial
         {crossEngine && !mongo && (
           <Banner tone="info">
             Moving between engines translates the schema: tables, keys, indexes and foreign keys are recreated
-            with equivalent types on the target. Views, routines and triggers are not translated. The preflight
-            check lists every difference before anything is changed.
+            with equivalent types on the target.{" "}
+            {converting
+              ? "Views are translated where they can be, and stored procedures, functions and triggers are converted as chosen below."
+              : "Views, routines and triggers are not translated."}{" "}
+            The preflight check lists every difference before anything is changed.
           </Banner>
         )}
         {template && (
@@ -282,6 +291,20 @@ export default function MigrationForm({ connections, onClose, onCreated, initial
               <option value="replace">Replace them</option>
             </select>
           </Field>
+          {converting && (
+            <Field label="Stored procedures, functions and triggers" className="span2"
+              hint={code === "converted"
+                ? "Those whose conversion keeps their behaviour are created on the target. Those a person has to check are not created: you get their converted drafts, with notes on what to check."
+                : code === "review"
+                  ? "Also creates those that may behave differently on the target, and lists them with notes on what to check. What has no conversion is never created."
+                  : "Nothing is converted. You get the source's definitions to convert by hand."}>
+              <select className="select" value={code} onChange={(e) => setCode(e.target.value as CodeMode)}>
+                <option value="converted">Create what converts cleanly</option>
+                <option value="review">Also create what needs review</option>
+                <option value="off">Do not convert</option>
+              </select>
+            </Field>
+          )}
           {!offline && (
             <Field label={sync ? "Finish timeout (seconds)" : "Cutover timeout (seconds)"} hint={sync ? "How long finishing waits for the stream to drain before giving up." : "How long cutover waits for the stream to drain before giving up."}>
               <input className="input" type="number" min={10} value={timeout} onChange={(e) => setTimeoutSeconds(Number(e.target.value))} />

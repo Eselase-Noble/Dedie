@@ -12,6 +12,8 @@ import (
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/mymy"
 	"dedie/engine/migrate/pgpg"
+	"dedie/engine/migrate/storedcode"
+	"dedie/engine/migrate/viewsql"
 )
 
 // Stmt is one DDL statement to run on the target.
@@ -60,11 +62,35 @@ type Plan struct {
 	bySource map[string]*Table
 	Pre      []Stmt // tables
 	Post     []Stmt // indexes and foreign keys
+	// Views are the source's views, translated: first those that will be
+	// created once the data is in and validated, in the order to create
+	// them, then those that are left out, each with the reason.
+	Views []*viewsql.View
+	// Code is the source's stored code in scope, with the converter's
+	// verdict on each object and whether the job will create it; and what
+	// else the source has that MySQL has no place for, to be listed.
+	Code []*storedcode.Object
 	// Notes list everything that was translated with a change in meaning
 	// or could not be carried over.
 	Notes []string
 	// Collisions lists target names claimed by more than one source table.
 	Collisions []string
+	// several says tables come from more than one schema, which decides
+	// their names on the target; see targetName.
+	several bool
+	// claimed says which source table or view takes each name on the
+	// target, by the name in lower case.
+	claimed map[string]string
+}
+
+// targetName is the name a table or view of the source gets on the
+// target. With one schema it keeps its name. With several, those outside
+// "public" carry their schema as a prefix.
+func (p *Plan) targetName(schema, name string) string {
+	if p.several && schema != "public" {
+		name = schema + "_" + name
+	}
+	return clip(name)
 }
 
 func (p *Plan) table(schema, name string) *Table { return p.bySource[schema+"."+name] }
@@ -242,20 +268,14 @@ func buildPlan(ctx context.Context, src *pgx.Conn, cfg migrate.Config, skipped [
 	for _, t := range base.Tables {
 		schemas[t.Schema] = true
 	}
-	claimed := map[string]string{}
+	p.several, p.claimed = len(schemas) > 1, map[string]string{}
 	for i, t := range base.Tables {
 		oids[i] = t.OID
-		// With one schema the table keeps its name. With several, tables
-		// outside "public" carry their schema as a prefix.
-		target := t.Name
-		if len(schemas) > 1 && t.Schema != "public" {
-			target = t.Schema + "_" + t.Name
-		}
-		target = clip(target)
-		if other, taken := claimed[strings.ToLower(target)]; taken {
+		target := p.targetName(t.Schema, t.Name)
+		if other, taken := p.claimed[strings.ToLower(target)]; taken {
 			p.Collisions = append(p.Collisions, fmt.Sprintf("%s.%s and %s both become %s", t.Schema, t.Name, other, target))
 		}
-		claimed[strings.ToLower(target)] = t.Schema + "." + t.Name
+		p.claimed[strings.ToLower(target)] = t.Schema + "." + t.Name
 		table := &Table{Table: t, Target: target, byName: map[string]*Column{}}
 		p.Tables = append(p.Tables, table)
 		p.bySource[t.Schema+"."+t.Name] = table
@@ -299,6 +319,17 @@ func buildPlan(ctx context.Context, src *pgx.Conn, cfg migrate.Config, skipped [
 		return nil, err
 	}
 	p.buildDDL(indexes, fks)
+	views, err := loadViews(ctx, src, base.Schemas)
+	if err != nil {
+		return nil, err
+	}
+	p.planViews(views, cfg.Scope() == "table")
+	if err := p.loadCode(ctx, src, cfg.Scope() == "table"); err != nil {
+		return nil, err
+	}
+	if err := p.planCode(ctx, src, cfg.CodeMode()); err != nil {
+		return nil, err
+	}
 	return p, nil
 }
 
@@ -550,8 +581,8 @@ func (t *Table) has(cols []string) bool {
 // objects lists every name the plan takes in the target database, for the
 // preflight to look up there: the tables, and the foreign keys, read off
 // the statements that create them, so what is checked and what is created
-// cannot drift apart. An index is named within its table, and the tables
-// are new.
+// cannot drift apart, and the views that will be created. An index is
+// named within its table, and the tables are new.
 func (p *Plan) objects() []mymy.Object {
 	var out []mymy.Object
 	for _, t := range p.Tables {
@@ -562,7 +593,10 @@ func (p *Plan) objects() []mymy.Object {
 			out = append(out, mymy.Object{Kind: s.Kind, Name: s.constraint})
 		}
 	}
-	return out
+	for _, v := range viewsql.Kept(p.Views) {
+		out = append(out, mymy.Object{Kind: "view", Name: v.Target.Bare})
+	}
+	return append(out, mymy.CodeObjects(p.Code)...)
 }
 
 // keep removes from the plan every statement that would create an object
@@ -582,6 +616,13 @@ func (p *Plan) keep(kept []string) {
 		}
 	}
 	p.Post = out
+	for _, v := range p.Views {
+		// The server may have folded the name to lower case.
+		if v.SQL != "" && (is[pgpg.KeptKey("view", v.Target.Bare)] || is[pgpg.KeptKey("view", strings.ToLower(v.Target.Bare))]) {
+			v.SQL, v.Reason = "", "the target already has a view or table of this name, which is kept as it is"
+		}
+	}
+	mymy.KeepCode(p.Code, kept)
 }
 
 // sources translates the names tables have on the target into the names

@@ -9,6 +9,8 @@ import (
 	"dedie/engine/connector/mysql"
 	"dedie/engine/connector/oracle"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/storedcode"
+	"dedie/engine/migrate/viewsql"
 )
 
 // Kinds of object that can stand in the way of the migration.
@@ -21,6 +23,11 @@ const (
 	// to do with can still hold a name the migration needs.
 	kindForeignKey = "foreign key"
 	kindCheck      = "check constraint"
+	// Converted stored code. Functions and procedures have a namespace
+	// each, and triggers are named per database.
+	kindFunction  = "function"
+	kindProcedure = "procedure"
+	kindTrigger   = "trigger"
 )
 
 // found is something in the target database that has the name of an
@@ -33,10 +40,13 @@ type found struct {
 	Holder string
 	// Label is the source table whose place a table or view takes.
 	Label string
+	// ForView says the name is wanted for a translated view, not for a
+	// table.
+	ForView bool
 }
 
 // isTable reports whether the object takes the place of a table.
-func (f found) isTable() bool { return f.Kind == kindTable || f.Kind == kindView }
+func (f found) isTable() bool { return (f.Kind == kindTable || f.Kind == kindView) && !f.ForView }
 
 // String names the object the way the operator is shown it.
 func (f found) String() string {
@@ -81,7 +91,8 @@ func lookup(ctx context.Context, dst *sql.DB, query string, names []string) ([][
 }
 
 // existing finds what the target database already has under the names
-// the plan would use: tables first, then everything else. A constraint
+// the plan would use, for its tables and for the views it translated:
+// tables first, then everything else. A constraint
 // on a table that is itself in the way is not listed; it shares the
 // table's fate, whatever that is.
 func existing(ctx context.Context, dst *sql.DB, plan *Plan) ([]found, error) {
@@ -92,6 +103,12 @@ func existing(ctx context.Context, dst *sql.DB, plan *Plan) ([]found, error) {
 		targets[i] = t.Target
 		// The server may fold names to lower case.
 		labels[t.Target], labels[strings.ToLower(t.Target)] = t.Label(), t.Label()
+	}
+	forView := map[string]bool{}
+	for _, v := range viewsql.Kept(plan.Views) {
+		targets = append(targets, v.Target.Bare)
+		forView[strings.ToLower(v.Target.Bare)] = true
+		labels[v.Target.Bare], labels[strings.ToLower(v.Target.Bare)] = v.Source(), v.Source()
 	}
 	rows, err := lookup(ctx, dst, `SELECT table_name, IF(table_type = 'VIEW', 'view', 'table'), '' FROM information_schema.tables
 		WHERE table_schema = DATABASE() AND table_name IN (%s) ORDER BY 2, 1`, targets)
@@ -105,7 +122,7 @@ func existing(ctx context.Context, dst *sql.DB, plan *Plan) ([]found, error) {
 			label = labels[strings.ToLower(r[0])]
 		}
 		taken[r[0]] = true
-		out = append(out, found{Kind: r[1], Name: r[0], Label: label})
+		out = append(out, found{Kind: r[1], Name: r[0], Label: label, ForView: forView[strings.ToLower(r[0])]})
 	}
 
 	var constraints []string
@@ -128,6 +145,26 @@ func existing(ctx context.Context, dst *sql.DB, plan *Plan) ([]found, error) {
 		// The two kinds are named apart from each other.
 		if wanted[r[1]+" "+strings.ToLower(r[0])] && !taken[r[2]] {
 			out = append(out, found{Kind: r[1], Name: r[0], Holder: r[2]})
+		}
+	}
+
+	// The converted functions, procedures and triggers the job creates.
+	names := map[string][]string{}
+	for _, o := range storedcode.Planned(plan.Code) {
+		for _, c := range o.Creates {
+			names[c.Kind] = append(names[c.Kind], c.Name)
+		}
+	}
+	for _, q := range []struct{ kind, query string }{
+		{kindFunction, `SELECT routine_name, '', '' FROM information_schema.routines WHERE routine_schema = DATABASE() AND routine_type = 'FUNCTION' AND routine_name IN (%s) ORDER BY 1`},
+		{kindProcedure, `SELECT routine_name, '', '' FROM information_schema.routines WHERE routine_schema = DATABASE() AND routine_type = 'PROCEDURE' AND routine_name IN (%s) ORDER BY 1`},
+		{kindTrigger, `SELECT trigger_name, '', '' FROM information_schema.triggers WHERE trigger_schema = DATABASE() AND trigger_name IN (%s) ORDER BY 1`},
+	} {
+		if rows, err = lookup(ctx, dst, q.query, names[q.kind]); err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			out = append(out, found{Kind: q.kind, Name: r[0]})
 		}
 	}
 	return out, nil
@@ -243,13 +280,17 @@ func (r *runner) settleExisting(ctx context.Context, ours bool) error {
 }
 
 // keepExisting records in the job's state what it leaves out because the
-// target's own is to stay: the tables whose names are taken, and the
-// constraints. It fails when that leaves no table to migrate.
+// target's own is to stay: the tables whose names are taken, the views,
+// and the constraints. It fails when that leaves no table to migrate.
 func (r *runner) keepExisting(objects []found) error {
 	for _, f := range objects {
-		if f.isTable() {
+		switch {
+		case f.isTable():
 			r.st.SkippedTables = append(r.st.SkippedTables, f.Label)
-		} else {
+		case f.ForView:
+			// Whatever holds the name, it is a view that is not created.
+			r.st.SkippedObjects = append(r.st.SkippedObjects, kindView+" "+f.Name)
+		default:
 			r.st.SkippedObjects = append(r.st.SkippedObjects, f.Kind+" "+f.Name)
 		}
 	}
@@ -270,6 +311,8 @@ func (f found) drop() string {
 		return "ALTER TABLE " + mysql.Quote(f.Holder) + " DROP FOREIGN KEY " + mysql.Quote(f.Name)
 	case kindCheck:
 		return "ALTER TABLE " + mysql.Quote(f.Holder) + " DROP CHECK " + mysql.Quote(f.Name)
+	case kindFunction, kindProcedure, kindTrigger:
+		return "DROP " + strings.ToUpper(f.Kind) + " " + mysql.Quote(f.Name)
 	}
 	return ""
 }
