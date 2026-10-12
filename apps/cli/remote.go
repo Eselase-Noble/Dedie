@@ -220,6 +220,11 @@ func (r *remote) PreviewMigration(id string) (list []migrate.Statement, err erro
 	return
 }
 
+func (r *remote) MigrationLeftovers(id string) (list []migrate.Leftover, err error) {
+	err = r.send("GET", "/migrations/"+seg(id)+"/leftovers", nil, &list)
+	return
+}
+
 func (r *remote) SetOnExisting(id, policy string) error {
 	return r.send("POST", "/migrations/"+seg(id)+"/on-existing", map[string]string{"policy": policy}, nil)
 }

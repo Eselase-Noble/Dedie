@@ -324,3 +324,41 @@ func (c *cli) migratePreview(args []string) error {
 	fmt.Fprintf(os.Stderr, "%d statement(s). Nothing was run.\n", len(list))
 	return nil
 }
+
+// migrateLeftovers prints what the migration leaves behind on the source
+// as a script of the source's own definitions, each under the reason it is
+// not migrated. It is where converting them by hand starts: redirected to
+// a file, it is everything there is to convert, in one place.
+func (c *cli) migrateLeftovers(args []string) error {
+	id, err := oneArg(args, "migration id")
+	if err != nil {
+		return err
+	}
+	list, err := c.be.MigrationLeftovers(id)
+	if err != nil {
+		return err
+	}
+	fmt.Print(leftoverScript(list))
+	fmt.Fprintf(os.Stderr, "%d object(s) are not migrated. These are their definitions on the source; nothing was run.\n", len(list))
+	return nil
+}
+
+// leftoverScript writes the definitions out in the source's dialect.
+func leftoverScript(list []migrate.Leftover) string {
+	var b strings.Builder
+	b.WriteString("-- What this migration does not carry over, as the source defines it.\n")
+	b.WriteString("-- This is the source's dialect: convert it before running it on the target.\n\n")
+	for _, l := range list {
+		fmt.Fprintf(&b, "-- %s %s\n-- Not migrated: %s\n", l.Kind, l.Name, strings.ReplaceAll(l.Reason, "\n", " "))
+		source := strings.TrimSpace(l.Source)
+		switch {
+		case source == "":
+			b.WriteString("-- (the source did not show its definition)\n\n")
+		case l.End != "":
+			b.WriteString(source + "\n" + l.End + "\n\n")
+		default:
+			b.WriteString(strings.TrimRight(source, ";") + ";\n\n")
+		}
+	}
+	return b.String()
+}
