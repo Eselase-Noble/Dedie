@@ -484,6 +484,8 @@ func setupOracle(t *testing.T, src *oraEngine) {
 		src.drop(c.kind, c.name, c.table)
 	}
 	t.Cleanup(func() {
+		// The test's own context has ended by the time this runs.
+		src.ctx = context.Background()
 		for _, c := range oracleCases {
 			src.drop(c.kind, c.name, c.table)
 		}
