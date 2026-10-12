@@ -377,6 +377,7 @@ func TestOracleRefused(t *testing.T) {
 		cases[i].status = Unconverted
 	}
 	runConversions(t, "oracle", "postgres", cases)
+	runConversions(t, "oracle", "mysql", cases)
 }
 
 func TestOracleToPostgresRefused(t *testing.T) {

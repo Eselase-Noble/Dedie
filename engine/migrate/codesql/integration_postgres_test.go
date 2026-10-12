@@ -69,7 +69,7 @@ DECLARE
   v_net numeric(12,2);
 BEGIN
   IF p_amount IS NULL OR p_amount < 0 THEN
-    RAISE EXCEPTION 'amount must not be negative: %', p_amount;
+    RAISE EXCEPTION 'amount must not be negative, tier %', p_tier;
   END IF;
   v_discount := CASE p_tier WHEN 'gold' THEN 15 WHEN 'silver' THEN 7.5 ELSE 0 END;
   v_net := round(p_amount * (100 - v_discount) / 100, 2);
@@ -114,6 +114,38 @@ EXCEPTION
     RETURN 'no customer ' || p_id;
 END $$`,
 		steps: []step{{fn: `label(1)`}, {fn: `label(3)`}, {fn: `label(99)`}}},
+
+	{kind: "function", name: "text_ops", want: Converted, ddl: `
+CREATE FUNCTION text_ops(p_s text, p_amount numeric, p_i integer) RETURNS text LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+  p_n numeric(10,2) := p_amount;
+BEGIN
+  RETURN concat_ws('|', substr(p_s, 2), substring(p_s, 1, 3), substring(p_s FROM 2 FOR 2), upper(p_s), lower(p_s), ltrim(p_s), rtrim(p_s), trim(p_s), btrim(p_s, 'a'),
+    trim(leading 'c' from p_s), lpad(p_s, 6, '*'), rpad(p_s, 6, '-'), lpad(p_s, 2), replace(p_s, 'a', 'XY'), length(p_s), octet_length(p_s), strpos(p_s, 'c'),
+    position('ab' IN p_s), coalesce(p_s, 'null'), CASE WHEN p_s IS NULL THEN 'n' ELSE 'y' END, p_n, p_i, round(p_n, 1), round(p_n), trunc(p_n, 1), trunc(p_n), mod(p_i, 3),
+    p_i / 2, p_i % 4, abs(p_n), sign(p_n), ceil(p_n), floor(p_n), left(p_s, 2), right(p_s, 2), reverse(p_s), repeat(p_s, 2), p_s || p_i, nullif(p_i, 3),
+    round(p_i::numeric / 4, 3), p_n * 3, p_n + p_i, coalesce(NULL, p_i, 5), p_n::integer, p_i::numeric(8,3),
+    CASE WHEN p_i BETWEEN 1 AND 5 THEN 'low' WHEN p_i IN (7, 9) THEN 'odd' ELSE 'other' END,
+    CASE WHEN p_s IS NOT DISTINCT FROM NULL THEN 'same' ELSE 'not' END, CASE WHEN p_s = 'A' OR p_s LIKE 'CA%' THEN 'upper' WHEN p_s = 'a' OR p_s LIKE 'ca%' THEN 'lower' END,
+    concat(p_s, NULL, p_i), 'it''s \\ ' || coalesce(p_s, '?'));
+END $$`,
+		steps: []step{{fn: `text_ops('abcabc', 12.5, 7)`}, {fn: `text_ops('  a b  ', 0.25, -4)`}, {fn: `text_ops(NULL, -0.5, 0)`}, {fn: `text_ops('a', 1000, 3)`},
+			{fn: `text_ops('caab', -12.345, 10)`}, {fn: `text_ops('', 5.005, NULL)`}}},
+
+	{kind: "function", name: "date_ops", want: Converted, ddl: `
+CREATE FUNCTION date_ops(p_d date, p_t timestamp, p_n integer) RETURNS text LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN
+  RETURN concat_ws('|', p_d + p_n, p_d - 7, p_d - DATE '2024-01-01', to_char(p_t + interval '90 minutes', 'YYYY-MM-DD HH24:MI:SS'),
+    to_char(p_t - p_n * interval '1 hour', 'YYYY-MM-DD HH24:MI:SS'), to_char(p_d + interval '1 month', 'YYYY-MM-DD HH24:MI:SS'),
+    to_char(p_t + INTERVAL '2 weeks', 'YYYY-MM-DD'), to_char(p_t - '1 year'::interval, 'YYYY-MM-DD'), to_char(date_trunc('day', p_t), 'YYYY-MM-DD HH24:MI:SS'),
+    to_char(date_trunc('month', p_t), 'YYYY-MM-DD'), to_char(date_trunc('year', p_t), 'YYYY-MM-DD'), to_char(date_trunc('hour', p_t), 'HH24:MI:SS'),
+    extract(year FROM p_d), extract(month FROM p_d), extract(day FROM p_d), extract(hour FROM p_t), extract(minute FROM p_t), extract(quarter FROM p_d),
+    extract(dow FROM p_d), extract(isodow FROM p_d), extract(doy FROM p_d), date_part('year', p_t), p_t::date, to_char(p_d::timestamp, 'YYYY-MM-DD HH24:MI'),
+    to_char(p_t, 'DD/MM/YY HH12:MI, FMDD FMMM'), CASE WHEN p_d < p_t THEN 'before' WHEN p_d + 1 > p_t THEN 'eve' ELSE 'after' END);
+END $$`,
+		steps: []step{{fn: `date_ops(DATE '2024-02-29', TIMESTAMP '2024-03-01 13:45:10', 3)`}, {fn: `date_ops(DATE '2024-12-31', TIMESTAMP '2024-12-31 23:59:59', -5)`},
+			{fn: `date_ops(DATE '2023-01-01', TIMESTAMP '2022-06-15 00:00:00', 0)`}, {fn: `date_ops(NULL, TIMESTAMP '2024-07-04 06:30:00', 1)`},
+			{fn: `date_ops(DATE '2024-01-31', NULL, 1)`}}},
 
 	{kind: "function", name: "order_total", want: Converted, ddl: `
 CREATE FUNCTION order_total(p_customer integer, p_state text) RETURNS numeric LANGUAGE sql STABLE AS $$

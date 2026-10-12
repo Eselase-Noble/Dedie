@@ -2,6 +2,7 @@ package codesql
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -329,6 +330,98 @@ END;`,
 		steps: []step{{exec: `UPDATE dedie_cs_stock SET qty = qty - 3 WHERE sku IN ('GEAR-1', 'BOLT-8')`},
 			{exec: `UPDATE dedie_cs_stock SET qty = qty - 5000`}, {exec: `UPDATE dedie_cs_stock SET qty = 10, price = price + 1`}}},
 
+	{kind: "function", name: "DEDIE_CS_TEXT_OPS", want: Converted, ddl: `
+CREATE OR REPLACE FUNCTION dedie_cs_text_ops(p_s IN VARCHAR2, p_n IN NUMBER, p_i IN PLS_INTEGER) RETURN VARCHAR2 IS
+BEGIN
+  RETURN '[' || SUBSTR(p_s, 2) || '|' || SUBSTR(p_s, 1, 3) || '|' || SUBSTR(p_s, 0, 2) || '|' || UPPER(p_s) || '|' || LOWER(p_s) || '|'
+    || LTRIM(p_s) || '|' || RTRIM(p_s) || '|' || TRIM(p_s) || '|' || LTRIM(p_s, 'ab') || '|' || RTRIM(p_s, 'c') || '|' || LPAD(p_s, 6, '*') || '|'
+    || RPAD(p_s, 6) || '|' || LPAD(p_s, 2) || '|' || REPLACE(p_s, 'a', 'XY') || '|' || REPLACE(p_s, 'a') || '|' || LENGTH(p_s) || '|' || INSTR(p_s, 'c') || '|'
+    || NVL(p_s, 'null') || '|' || NVL2(p_s, 'y', 'n') || '|' || p_n || '|' || TO_CHAR(p_n) || '|' || TO_CHAR(p_n, 'FM9990.00') || '|' || TO_CHAR(p_n, '9990.0') || '|'
+    || p_i || '|' || ROUND(p_n, 1) || '|' || ROUND(p_n) || '|' || TRUNC(p_n) || '|' || TRUNC(p_n, 1) || '|' || MOD(p_i, 3) || '|' || ABS(p_n) || '|' || SIGN(p_n) || '|'
+    || CEIL(p_n) || '|' || FLOOR(p_n) || '|' || ROUND(p_i / 4, 3) || '|' || CASE WHEN p_s = '' THEN 'empty' WHEN p_s IS NULL THEN 'null' ELSE 'text' END || '|'
+    || TRIM(BOTH 'a' FROM p_s) || '|' || p_s || p_s || ']';
+END;`,
+		steps: []step{{fn: `dedie_cs_text_ops('abcabc', 12.5, 7)`}, {fn: `dedie_cs_text_ops('  a b  ', 0.25, -4)`}, {fn: `dedie_cs_text_ops(NULL, -0.5, 0)`},
+			{fn: `dedie_cs_text_ops('a', 1000, 3)`}, {fn: `dedie_cs_text_ops('caab', -12.345, 10)`}, {fn: `dedie_cs_text_ops(' ', 5.00, 1)`}}},
+
+	{kind: "function", name: "DEDIE_CS_DATE_OPS", want: Converted, ddl: `
+CREATE OR REPLACE FUNCTION dedie_cs_date_ops(p_d IN DATE, p_n IN NUMBER) RETURN VARCHAR2 IS
+BEGIN
+  RETURN TO_CHAR(p_d + p_n, 'YYYY-MM-DD HH24:MI:SS') || '|' || TO_CHAR(TRUNC(p_d), 'YYYY-MM-DD HH24:MI:SS') || '|' || TO_CHAR(TRUNC(p_d, 'MM'), 'YYYY-MM-DD') || '|'
+    || TO_CHAR(TRUNC(p_d, 'YYYY'), 'YYYY-MM-DD') || '|' || TO_CHAR(TRUNC(p_d, 'Q'), 'YYYY-MM-DD') || '|' || TO_CHAR(TRUNC(p_d, 'HH24'), 'HH24:MI:SS') || '|'
+    || TO_CHAR(TRUNC(p_d, 'IW'), 'YYYY-MM-DD') || '|' || TO_CHAR(LAST_DAY(p_d), 'YYYY-MM-DD HH24:MI') || '|' || TO_CHAR(p_d - 1/24, 'YYYY-MM-DD HH24:MI:SS') || '|'
+    || TO_CHAR(p_d - 3, 'YYYY-MM-DD') || '|' || EXTRACT(YEAR FROM p_d) || '|' || EXTRACT(MONTH FROM p_d) || '|' || EXTRACT(DAY FROM p_d) || '|'
+    || TRUNC(p_d - DATE '2024-01-01') || '|' || ROUND((p_d - DATE '2024-01-01') * 24) || '|' || TO_CHAR(p_d, 'DY DD MON YYYY HH12:MI AM, Q, DDD, IW') || '|'
+    || TO_CHAR(p_d, 'Day, DD Month YYYY') || '|' || TO_CHAR(p_d, 'FMDD/FMMM/YY') || '|'
+    || TO_CHAR(TO_DATE('2024-02-29 13:45:10', 'YYYY-MM-DD HH24:MI:SS') + p_n, 'YYYY-MM-DD HH24:MI:SS') || '|'
+    || CASE WHEN p_d > DATE '2024-03-01' THEN 'after' WHEN p_d + 1 > DATE '2024-03-01' THEN 'eve' ELSE 'before' END;
+END;`,
+		steps: []step{{fn: `dedie_cs_date_ops(TIMESTAMP '2024-02-29 13:45:10', 1)`}, {fn: `dedie_cs_date_ops(TIMESTAMP '2024-12-31 23:59:59', 0.5)`},
+			{fn: `dedie_cs_date_ops(TIMESTAMP '2023-01-01 00:00:00', -1.25)`}, {fn: `dedie_cs_date_ops(TIMESTAMP '2024-07-04 06:30:00', 366)`},
+			{fn: `dedie_cs_date_ops(NULL, 1)`}, {fn: `dedie_cs_date_ops(TIMESTAMP '2024-03-10 02:30:00', 0.000011574)`}}},
+
+	{kind: "procedure", name: "DEDIE_CS_STOCK_REPORT", want: Converted, ddl: `
+CREATE OR REPLACE PROCEDURE dedie_cs_stock_report(p_min_qty IN NUMBER) IS
+  v_rows PLS_INTEGER := 0;
+  v_value NUMBER(14,2) := 0;
+BEGIN
+  FOR r IN (SELECT s.sku, s.qty, s.note, s.price * s.qty AS worth FROM dedie_cs_stock s WHERE s.qty >= p_min_qty ORDER BY s.note, s.sku) LOOP
+    v_rows := v_rows + 1;
+    v_value := v_value + r.worth;
+    INSERT INTO dedie_cs_audit (seq, tbl, action, key_id, old_val, new_val)
+      VALUES (v_rows, 'stock', 'report', r.qty, r.sku, NVL(r.note, '-'));
+  END LOOP;
+  FOR i IN REVERSE 1..3 LOOP
+    CONTINUE WHEN i = 2;
+    INSERT INTO dedie_cs_audit (seq, tbl, action, key_id) VALUES (i, 'stock', 'mark', TRUNC(v_value));
+  END LOOP;
+  <<outer_loop>>
+  FOR i IN 1..3 LOOP
+    FOR j IN 1..3 LOOP
+      EXIT outer_loop WHEN i * j > 4;
+      INSERT INTO dedie_cs_audit (seq, tbl, action, key_id) VALUES (i, 'stock', 'grid', j);
+    END LOOP;
+  END LOOP;
+END;`,
+		steps: []step{{proc: "dedie_cs_stock_report", in: []string{`100`}}, {proc: "dedie_cs_stock_report", in: []string{`0`}}}},
+
+	{kind: "function", name: "DEDIE_CS_ORDER_AGE", want: Converted, ddl: `
+CREATE OR REPLACE FUNCTION dedie_cs_order_age(p_order IN NUMBER, p_today IN DATE) RETURN VARCHAR2 IS
+  v_placed DATE;
+  v_days NUMBER(6);
+BEGIN
+  SELECT MAX(placed) INTO v_placed FROM dedie_cs_orders WHERE id = p_order;
+  IF v_placed IS NULL THEN
+    RETURN 'no such order';
+  END IF;
+  v_days := TRUNC(p_today - v_placed);
+  IF v_days < 0 THEN
+    RETURN 'in ' || ABS(v_days) || ' days';
+  ELSIF v_placed + 30 < p_today THEN
+    RETURN 'overdue since ' || TO_CHAR(v_placed + 30, 'YYYY-MM-DD');
+  END IF;
+  RETURN v_days || ' days, placed at ' || TO_CHAR(v_placed, 'HH24:MI');
+END;`,
+		steps: []step{{fn: `dedie_cs_order_age(10, TIMESTAMP '2024-01-20 09:00:00')`}, {fn: `dedie_cs_order_age(10, TIMESTAMP '2024-03-01 00:00:00')`},
+			{fn: `dedie_cs_order_age(13, TIMESTAMP '2023-12-25 12:00:00')`}, {fn: `dedie_cs_order_age(99, TIMESTAMP '2024-01-01 00:00:00')`},
+			{fn: `dedie_cs_order_age(12, NULL)`}}},
+
+	{kind: "trigger", name: "DEDIE_CS_STOCK_GUARD", table: "DEDIE_CS_STOCK", want: Converted, ddl: `
+CREATE OR REPLACE TRIGGER dedie_cs_stock_guard BEFORE UPDATE ON dedie_cs_stock FOR EACH ROW WHEN (NEW.qty < OLD.qty)
+BEGIN
+  IF :NEW.qty < 0 THEN
+    :NEW.qty := 0;
+    :NEW.note := 'oversold';
+  ELSIF :NEW.qty = 0 THEN
+    :NEW.note := 'sold out';
+  ELSE
+    RETURN;
+  END IF;
+  :NEW.price := ROUND(:NEW.price * 1.1, 2);
+END;`,
+		steps: []step{{exec: `UPDATE dedie_cs_stock SET qty = qty - 3 WHERE sku IN ('GEAR-1', 'BOLT-8')`},
+			{exec: `UPDATE dedie_cs_stock SET qty = qty - 5000`}, {exec: `UPDATE dedie_cs_stock SET qty = 10, price = price + 1`}}},
+
 	// The rest are rewritten with a caveat. They are run all the same,
 	// and the log says whether the caveat showed.
 
@@ -424,6 +517,71 @@ func TestOracleToPostgres(t *testing.T) {
 		tables: oracleTables, targets: oracleTables, seed: oracleSeed,
 		opt:    oracleOptions(t, src, "dedie_cs"),
 		cases:  oracleCases,
+		create: func(t *testing.T, c routineCase) { src.create(t, c.ddl, c.name) },
+	})
+}
+
+// The same routines go to MySQL, where some of them meet limits
+// PostgreSQL does not have: no sequences, no default values for
+// parameters, no RETURNING, no trigger on UPDATE OF a column.
+var oracleMySQLWant = map[string]string{
+	"DEDIE_CS_PRICE":    Review,      // parameters with defaults
+	"DEDIE_CS_DUE_DATE": Review,      // a parameter with a default
+	"DEDIE_CS_LABEL":    Unconverted, // INITCAP
+	"DEDIE_CS_SNAPSHOT": Unconverted, // a sequence
+	"DEDIE_CS_RESTOCK":  Review,      // rows touched by an UPDATE
+	"DEDIE_CS_CUST_BD":  Review,      // a NUMBER written into text
+	"DEDIE_CS_STOCK_BU": Unconverted, // UPDATE OF a column
+	"DEDIE_CS_TRANSFER": Unconverted, // RETURNING
+	"DEDIE_CS_TEXT_OPS": Unconverted, // TO_CHAR of a number with a format
+	"DEDIE_CS_DATE_OPS": Unconverted, // TRUNC to the quarter, names of days and months
+}
+
+var oracleMySQLFixture = []string{
+	`CREATE TABLE dedie_cs_customers (id int PRIMARY KEY, name varchar(60), email varchar(120),
+		tier varchar(10), credit decimal(12,2), created datetime)` + oracleMySQLOptions,
+	`CREATE TABLE dedie_cs_orders (id int PRIMARY KEY, customer_id int, sku varchar(20), qty int,
+		amount decimal(12,2), placed datetime, state varchar(12))` + oracleMySQLOptions,
+	`CREATE TABLE dedie_cs_stock (sku varchar(20) PRIMARY KEY, qty int, price decimal(10,2), note varchar(100))` + oracleMySQLOptions,
+	`CREATE TABLE dedie_cs_audit (seq int, tbl varchar(30), action varchar(10), key_id int,
+		old_val varchar(200), new_val varchar(200))` + oracleMySQLOptions,
+}
+
+// The Oracle to MySQL pipeline creates its tables with this collation on
+// a server that has it: byte by byte, and counting trailing spaces.
+const oracleMySQLOptions = ` ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin`
+
+func TestOracleToMySQL(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	testConfig(t, "DEDIE_TEST_MYSQL_TARGET")
+	src := openOracle(t, ctx)
+	setupOracle(t, src)
+	dst := openMySQL(t, ctx, "DEDIE_TEST_MYSQL_TARGET", "dedie_cs", "utf8mb4_0900_ai_ci")
+	defer dst.close()
+	for _, stmt := range oracleMySQLFixture {
+		if err := dst.exec(stmt); err != nil {
+			t.Fatalf("MySQL fixture: %v\n%s", err, stmt)
+		}
+	}
+	cases := make([]routineCase, len(oracleCases))
+	copy(cases, oracleCases)
+	var targets []string
+	for i := range cases {
+		if want, ok := oracleMySQLWant[cases[i].name]; ok {
+			cases[i].want = want
+		}
+	}
+	for _, name := range oracleTables {
+		targets = append(targets, strings.ToLower(name))
+	}
+	opt := oracleOptions(t, src, "")
+	opt.Collation = "utf8mb4_0900_bin"
+	runCorpus(t, corpus{
+		from: "oracle", to: "mysql", src: src, dst: dst,
+		tables: oracleTables, targets: targets, seed: oracleSeed,
+		opt:    opt,
+		cases:  cases,
 		create: func(t *testing.T, c routineCase) { src.create(t, c.ddl, c.name) },
 	})
 }

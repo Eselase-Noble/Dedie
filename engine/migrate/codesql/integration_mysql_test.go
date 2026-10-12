@@ -113,6 +113,29 @@ BEGIN
 END`,
 		steps: []step{{fn: `label(1)`}, {fn: `label(3)`}, {fn: `label(99)`}}},
 
+	{kind: "function", name: "text_ops", want: Converted, ddl: `
+CREATE FUNCTION text_ops(p_s VARCHAR(50), p_n DECIMAL(10,2), p_i INT) RETURNS VARCHAR(600) DETERMINISTIC
+RETURN CONCAT_WS('|', SUBSTRING(p_s, 2), SUBSTRING(p_s, 1, 3), MID(p_s, 2, 2), UPPER(p_s), LCASE(p_s), LTRIM(p_s), RTRIM(p_s), TRIM(p_s), TRIM(BOTH 'a' FROM p_s),
+  TRIM(LEADING 'c' FROM p_s), LPAD(p_s, 6, '*'), RPAD(p_s, 6, '-'), LPAD(p_s, 2, '*'), REPLACE(p_s, 'a', 'XY'), CHAR_LENGTH(p_s), LENGTH(p_s), INSTR(p_s, 'c'),
+  LOCATE('b', p_s), POSITION('ab' IN p_s), IFNULL(p_s, 'null'), IF(p_s IS NULL, 'n', 'y'), p_n, p_i, ROUND(p_n, 1), ROUND(p_n), TRUNCATE(p_n, 1), MOD(p_i, 3),
+  p_i DIV 2, p_i % 4, ABS(p_n), SIGN(p_n), CEILING(p_n), FLOOR(p_n), LEFT(p_s, 2), RIGHT(p_s, 2), REVERSE(p_s), REPEAT(p_s, 2), CONCAT(p_s, p_i),
+  NULLIF(p_i, 3), p_i > 2, p_s LIKE 'a%', p_s = 'a', ISNULL(p_s), ROUND(p_i / 4, 3), p_n * 3, p_n + p_i, COALESCE(NULL, p_i, 5), CAST(p_n AS SIGNED),
+  CAST(p_i AS DECIMAL(8,3)), CASE WHEN p_i BETWEEN 1 AND 5 THEN 'low' WHEN p_i IN (7, 9) THEN 'odd' ELSE 'other' END, p_s <=> NULL, NOT p_i, p_i AND p_n)`,
+		steps: []step{{fn: `text_ops('abcabc', 12.5, 7)`}, {fn: `text_ops('  a b  ', 0.25, -4)`}, {fn: `text_ops(NULL, -0.5, 0)`}, {fn: `text_ops('a', 1000, 3)`},
+			{fn: `text_ops('caab', -12.345, 10)`}, {fn: `text_ops('', 5.005, NULL)`}}},
+
+	{kind: "function", name: "date_ops", want: Converted, ddl: `
+CREATE FUNCTION date_ops(p_d DATE, p_t DATETIME, p_n INT) RETURNS VARCHAR(600) DETERMINISTIC
+RETURN CONCAT_WS('|', DATE_ADD(p_d, INTERVAL p_n DAY), p_d - INTERVAL 1 MONTH, DATE_ADD(p_t, INTERVAL 90 MINUTE), p_t + INTERVAL p_n HOUR,
+  DATE_SUB(p_t, INTERVAL 1 YEAR), p_d + INTERVAL 1 QUARTER, p_d + INTERVAL 2 WEEK, ADDDATE(p_d, 10), DATEDIFF(p_t, p_d), DATEDIFF(p_d, '2024-01-01'),
+  TIMESTAMPDIFF(HOUR, p_d, p_t), TIMESTAMPDIFF(DAY, p_t, p_d), TIMESTAMPDIFF(MINUTE, p_d, p_t), TIMESTAMPDIFF(SECOND, p_t, p_d), YEAR(p_d), MONTH(p_d), DAY(p_d),
+  HOUR(p_t), MINUTE(p_t), SECOND(p_t), QUARTER(p_d), DAYOFWEEK(p_d), WEEKDAY(p_d), DAYOFYEAR(p_d), LAST_DAY(p_d), DATE(p_t),
+  DATE_FORMAT(p_t, '%Y-%m-%d %H:%i:%s'), DATE_FORMAT(p_t, '%d/%m/%y %h:%i %p, %W %e %M %b %a %j %c'), EXTRACT(YEAR FROM p_t), p_d < p_t, p_d + INTERVAL 36 HOUR,
+  LAST_DAY(p_d + INTERVAL 1 MONTH), DATE_ADD(p_d, INTERVAL 1 MONTH) = p_t)`,
+		steps: []step{{fn: `date_ops(DATE '2024-02-29', TIMESTAMP '2024-03-01 13:45:10', 3)`}, {fn: `date_ops(DATE '2024-12-31', TIMESTAMP '2024-12-31 23:59:59', -5)`},
+			{fn: `date_ops(DATE '2023-01-01', TIMESTAMP '2022-06-15 00:00:00', 0)`}, {fn: `date_ops(NULL, TIMESTAMP '2024-07-04 06:30:00', 1)`},
+			{fn: `date_ops(DATE '2024-01-31', NULL, 1)`}}},
+
 	{kind: "procedure", name: "late_fees", want: Converted, ddl: `
 CREATE PROCEDURE late_fees(IN p_before DATE, IN p_fee DECIMAL(10,2), OUT p_changed INT, OUT p_total DECIMAL(12,2))
 BEGIN

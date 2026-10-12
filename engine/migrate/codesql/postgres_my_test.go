@@ -140,20 +140,20 @@ END`),
 				"WHILE v > 100 DO", "LOOP\n    SET v = v + 1;\n    IF v > 3 THEN\n      LEAVE loop", "CASE p_i\n    WHEN 1 THEN\n      SET v = 0;\n    WHEN 2 THEN\n      SET v = 0;\n    ELSE\n      BEGIN END;", "END CASE;"}},
 		{name: "text", opt: depot, status: Converted, src: pgFn(`DECLARE v text;
 BEGIN
-  v := p_s || '-' || p_i || '-' || p_n || '-' || p_d;
+  v := p_s || '-' || p_i || '-' || p_d;
   v := concat(p_s, p_i, NULL) || concat_ws(',', p_s, p_i);
   v := upper(p_s) || lower(p_s) || reverse(p_s) || repeat(p_s, 2) || replace(p_s, 'a', 'b');
   v := substr(p_s, 2) || substring(p_s, 1, 3) || substring(p_s FROM 2 FOR 3) || left(p_s, 2) || right(p_s, 3);
   v := trim(p_s) || ltrim(p_s) || rtrim(p_s) || btrim(p_s, 'x') || trim(leading '0' from p_s) || lpad(p_i::text, 5, '0') || rpad(p_s, 5);
   v := 'it''s a \ backslash' || E'tab\there';
-  v := to_char(p_t, 'YYYY-MM-DD HH24:MI:SS') || p_i::text || p_n::varchar || CAST(p_i AS text);
+  v := to_char(p_t, 'YYYY-MM-DD HH24:MI:SS') || p_i::text || p_d::varchar || CAST(p_i AS text);
   IF p_s LIKE 'a%' AND p_s NOT LIKE '%\_%' AND p_s LIKE '50!%' ESCAPE '!' THEN v := NULL; END IF;
   RETURN length(p_s) + char_length(p_s) + octet_length(p_s) + strpos(p_s, 'x') + position('x' IN p_s);
 END`),
-			code: []string{"SET v = CONCAT(p_s, '-', CAST(p_i AS CHAR), '-', CAST(p_n AS CHAR), '-', CAST(p_d AS CHAR));", "CONCAT(CONCAT_WS('', p_s, CAST(p_i AS CHAR), NULL), CONCAT_WS(',', p_s, CAST(p_i AS CHAR)))",
+			code: []string{"SET v = CONCAT(p_s, '-', CAST(p_i AS CHAR), '-', CAST(p_d AS CHAR));", "CONCAT(CONCAT_WS('', p_s, CAST(p_i AS CHAR), NULL), CONCAT_WS(',', p_s, CAST(p_i AS CHAR)))",
 				"CONCAT(UPPER(p_s), LOWER(p_s), REVERSE(p_s), REPEAT(p_s, 2), REPLACE(p_s, 'a', 'b'))", "CONCAT(SUBSTRING(p_s, 2), SUBSTRING(p_s, 1, 3), SUBSTRING(p_s, 2, 3), LEFT(p_s, 2), RIGHT(p_s, 3))",
 				"CONCAT(TRIM(p_s), LTRIM(p_s), RTRIM(p_s), TRIM(BOTH 'x' FROM p_s), TRIM(LEADING '0' FROM p_s), LPAD(CAST(p_i AS CHAR), 5, '0'), RPAD(p_s, 5, ' '))",
-				`SET v = CONCAT('it''s a \\ backslash', 'tab	here');`, "CONCAT(DATE_FORMAT(p_t, '%Y-%m-%d %H:%i:%s'), CAST(p_i AS CHAR), CAST(p_n AS CHAR), CAST(p_i AS CHAR))",
+				`SET v = CONCAT('it''s a \\ backslash', 'tab	here');`, "CONCAT(DATE_FORMAT(p_t, '%Y-%m-%d %H:%i:%s'), CAST(p_i AS CHAR), CAST(p_d AS CHAR), CAST(p_i AS CHAR))",
 				`p_s LIKE 'a%' AND p_s NOT LIKE '%\\_%' AND p_s LIKE '50!%' ESCAPE '!'`, "RETURN CHAR_LENGTH(p_s) + CHAR_LENGTH(p_s) + LENGTH(p_s) + LOCATE('x', p_s) + LOCATE('x', p_s);"}},
 		{name: "dates", opt: depot, status: Converted, src: pgFn(`DECLARE d date; t timestamp; n integer;
 BEGIN
@@ -222,7 +222,7 @@ END`),
 				"SET p_i = p_i + x_id + CHAR_LENGTH(x_big);", "IF x_twice > 100 THEN\n        LEAVE loop2;", "CLOSE c;"}},
 		{name: "errors", opt: depot, status: Converted, src: pgProc(`DECLARE v integer := 0;
 BEGIN
-  IF p_n < 0 THEN RAISE EXCEPTION 'negative: % and 100%%', p_n; END IF;
+  IF p_n < 0 THEN RAISE EXCEPTION 'negative: % and 100%%', p_i; END IF;
   IF p_n = 0 THEN RAISE EXCEPTION USING ERRCODE = 'ZZ123', MESSAGE = 'zero'; END IF;
   IF p_n = 1 THEN RAISE SQLSTATE 'ZZ124'; END IF;
   BEGIN
@@ -234,7 +234,7 @@ BEGIN
     WHEN OTHERS THEN v := 4;
   END;
 END`),
-			code: []string{"SET dedie_message = CONCAT('negative: ', COALESCE(CAST(p_n AS CHAR), '<NULL>'), ' and 100%');", "SIGNAL SQLSTATE 'P0001' SET MESSAGE_TEXT = dedie_message;",
+			code: []string{"SET dedie_message = CONCAT('negative: ', COALESCE(CAST(p_i AS CHAR), '<NULL>'), ' and 100%');", "SIGNAL SQLSTATE 'P0001' SET MESSAGE_TEXT = dedie_message;",
 				"SIGNAL SQLSTATE 'ZZ123' SET MESSAGE_TEXT = 'zero';", "SIGNAL SQLSTATE 'ZZ124';", "DECLARE EXIT HANDLER FOR 1062, 1451, 1452", "DECLARE EXIT HANDLER FOR SQLSTATE 'ZZ123'\n    BEGIN\n      SET v = 3;\n      RESIGNAL;",
 				"DECLARE EXIT HANDLER FOR SQLSTATE 'P0001'", "DECLARE EXIT HANDLER FOR SQLEXCEPTION"}},
 		{name: "sql function", opt: depot, status: Converted, src: `CREATE OR REPLACE FUNCTION public.top_name(integer, numeric)
@@ -259,6 +259,7 @@ func TestPostgresToMySQLReview(t *testing.T) {
 		{name: "sum of unknown types", status: Review, src: pgFn(`DECLARE v integer; BEGIN SELECT a + 1 INTO v FROM things LIMIT 1; RETURN 1; END`), notes: []string{"a + 1: the types are not known here"}},
 		{name: "greatest", opt: depot, status: Review, src: pgFn(`BEGIN RETURN greatest(p_i, 3); END`), notes: []string{"GREATEST gives NULL in MySQL when any argument is NULL; PostgreSQL ignores the NULL arguments"}},
 		{name: "substring from a variable", opt: depot, status: Review, src: pgFn(`BEGIN RETURN length(substr(p_s, p_i)); END`), notes: []string{"substr starts at p_i"}},
+		{name: "number without a scale as text", opt: depot, status: Review, src: pgFn(`BEGIN RETURN length('x' || p_n); END`), notes: []string{"its type has no fixed scale in PostgreSQL"}},
 		{name: "truth value as text", opt: depot, status: Review, src: pgFn(`BEGIN RETURN length('x' || p_b); END`), notes: []string{"the truth value p_b is joined to text"}},
 		{name: "timestamp as text", opt: depot, status: Review, src: pgFn(`BEGIN RETURN length('x' || p_t); END`), notes: []string{"the timestamp p_t is joined to text"}},
 		{name: "current time with zone", opt: depot, status: Review, src: pgFn(`DECLARE t timestamptz := now(); BEGIN RETURN 1; END`), code: []string{"DEFAULT UTC_TIMESTAMP(6)"}, notes: []string{"becomes UTC_TIMESTAMP(6)", "a timestamp with time zone becomes DATETIME(6)"}},

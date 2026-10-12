@@ -131,3 +131,46 @@ func TestLex(t *testing.T) {
 		t.Errorf("lines are %d and %d, want 3 and 5", toks[1].line, toks[3].line)
 	}
 }
+
+// TestBrokenInput cuts every routine of the integration corpora short,
+// after each line and at every tenth byte, and converts what is left.
+// Whatever the converter makes of a fragment, it must say so in a
+// result, not fail.
+func TestBrokenInput(t *testing.T) {
+	routes := []struct {
+		from, to string
+		cases    []routineCase
+	}{
+		{"oracle", "postgres", oracleCases}, {"oracle", "mysql", oracleCases},
+		{"mysql", "postgres", mysqlCases}, {"postgres", "mysql", postgresCases},
+	}
+	for _, r := range routes {
+		for _, c := range r.cases {
+			src := strings.TrimSpace(c.ddl)
+			lines := strings.Split(src, "\n")
+			for n := 0; n <= len(lines); n++ {
+				fragment(t, r.from, r.to, c.name, strings.Join(lines[:n], "\n"))
+			}
+			for n := 0; n < len(src); n += 10 {
+				fragment(t, r.from, r.to, c.name, src[:n])
+			}
+			// A PostgreSQL body is one quoted string; cutting it short
+			// while keeping the quotes reaches the parser of the body.
+			if i, j := strings.Index(src, "$$"), strings.LastIndex(src, "$$"); r.from == "postgres" && i >= 0 && j > i {
+				for n := i + 2; n < j; n += 7 {
+					fragment(t, r.from, r.to, c.name, src[:n]+" $$")
+				}
+			}
+		}
+	}
+}
+
+func fragment(t *testing.T, from, to, name, src string) {
+	t.Helper()
+	res := Convert(from, to, Object{Source: src}, Options{})
+	for _, n := range res.Notes {
+		if strings.HasPrefix(n, internalError) {
+			t.Errorf("%s to %s, a fragment of %s: %s\n%s", from, to, name, n, src)
+		}
+	}
+}
