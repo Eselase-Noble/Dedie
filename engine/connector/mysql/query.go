@@ -34,6 +34,16 @@ func (s *session) Query(ctx context.Context, query string, opts connector.QueryO
 			return nil, Friendly(err)
 		}
 	}
+	// The session may serve another request after this one, so it is put
+	// back the way it was: able to write, and without this statement's
+	// time limit. Deferred first, so that it runs once the rows are closed.
+	defer func() {
+		bg := context.WithoutCancel(ctx)
+		s.conn.ExecContext(bg, "SET SESSION max_execution_time = DEFAULT")
+		if opts.ReadOnly {
+			s.conn.ExecContext(bg, "SET SESSION TRANSACTION READ WRITE")
+		}
+	}()
 
 	// Cancelling this context is how the rest of an oversized result is
 	// abandoned: the driver drops the connection instead of reading it all.
