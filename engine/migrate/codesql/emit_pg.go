@@ -60,6 +60,20 @@ func (g *gen) prescan() {
 		},
 	}.block(g.r.body)
 	g.countCursors(g.r.body)
+	g.foundAfter = g.readers(func(e expr) bool {
+		n, ok := e.(*nameExpr)
+		return ok && g.from == Postgres && len(n.parts) == 1 && strings.EqualFold(n.parts[0].name, "FOUND")
+	}, nil)
+	g.countAfter = g.readers(func(e expr) bool {
+		a, ok := e.(*attrExpr)
+		return ok && a.cursor == "SQL"
+	}, func(s stmt) bool {
+		_, ok := s.(*diagStmt)
+		return ok
+	})
+	if len(g.countAfter) > 0 {
+		g.usesRowCount = true
+	}
 	for _, name := range []string{rowCountVar, foundVar, messageVar, errTextVar, errStateVar} {
 		if anyExpr(g.r.body, func(e expr) bool {
 			n, ok := e.(*nameExpr)
@@ -68,6 +82,57 @@ func (g *gen) prescan() {
 			g.refuse(0, "the routine uses the name %s, which the converter needs for itself", name)
 		}
 	}
+}
+
+// readers works out which statements the routine reads a status after:
+// PL/pgSQL's FOUND, the row count of GET DIAGNOSTICS, PL/SQL's
+// SQL%ROWCOUNT. A statement that mentions the status is taken to ask
+// about the statement just before it. The result names the kinds of
+// statement asked about: "fetch", "select", "insert", "update",
+// "delete"; and "all" when a reader does not follow a statement that
+// sets the status, so that it could be asking about any.
+func (g *gen) readers(mentioned func(expr) bool, isReader func(stmt) bool) map[string]bool {
+	mentions := func(s stmt) bool {
+		found := false
+		visitor{
+			expr: func(e expr) { found = found || mentioned(e) },
+			stmt: func(in stmt) { found = found || (isReader != nil && isReader(in)) },
+		}.s(s)
+		return found
+	}
+	out := map[string]bool{}
+	visitor{list: func(list []stmt) {
+		for i, s := range list {
+			if !mentions(s) {
+				continue
+			}
+			kind := ""
+			if i > 0 {
+				switch prev := list[i-1].(type) {
+				case *fetchStmt:
+					kind = "fetch"
+				case *sqlExec:
+					kind = strings.ToLower(prev.sql.verb)
+				}
+			}
+			if kind != "" {
+				out[kind] = true
+				continue
+			}
+			// The reader may sit deeper inside this statement; its own
+			// lists are looked at in their turn.
+			deeper := false
+			visitor{list: func(inner []stmt) {
+				for _, in := range inner {
+					deeper = deeper || mentions(in)
+				}
+			}}.s(s)
+			if !deeper {
+				out["all"] = true
+			}
+		}
+	}}.block(g.r.body)
+	return out
 }
 
 func (g *gen) countCursors(b *block) {
@@ -830,7 +895,11 @@ func (g *gen) recordFields(q *sqlStmt, cols []typ) (map[string]*field, bool) {
 				found = true
 				for k := range t.Columns {
 					col := &t.Columns[k]
-					fields[strings.ToUpper(col.Name)] = &field{out: g.columnName(col), typ: g.columnType(col)}
+					f := &field{out: g.columnName(col), typ: g.columnType(col)}
+					if g.to == MySQL {
+						f.decl, _ = g.columnDecl(col)
+					}
+					fields[strings.ToUpper(col.Name)] = f
 				}
 			}
 			if !found {
@@ -842,19 +911,36 @@ func (g *gen) recordFields(q *sqlStmt, cols []typ) (map[string]*field, bool) {
 			continue
 		}
 		f := &field{out: g.quote(g.fold(ident{name: c.name})), typ: tUnknown}
-		if n, ok := c.e.(*nameExpr); ok && !hasAlias(q, c.e) {
-			// An unnamed column keeps its own name on the target.
-			f.out = g.ident(n.parts[len(n.parts)-1])
+		var source *Column
+		if n, ok := c.e.(*nameExpr); ok {
 			for _, b := range q.tables {
+				if len(n.parts) > 1 && !strings.EqualFold(b.alias, n.parts[len(n.parts)-2].name) &&
+					!(len(b.name) > 0 && strings.EqualFold(b.name[len(b.name)-1].name, n.parts[len(n.parts)-2].name)) {
+					continue
+				}
 				if t := g.findTable(b.name); t != nil && b.sub == nil {
-					if col := t.column(g, n.parts[len(n.parts)-1]); col != nil {
-						f.out = g.columnName(col)
+					if col := t.column(g, n.parts[len(n.parts)-1]); col != nil && g.lookup(n.parts[0].name) == nil {
+						source = col
 					}
+				}
+			}
+			if !hasAlias(q, c.e) {
+				// An unnamed column keeps its own name on the target.
+				f.out = g.ident(n.parts[len(n.parts)-1])
+				if source != nil {
+					f.out = g.columnName(source)
 				}
 			}
 		}
 		if i < len(cols) {
 			f.typ = cols[i]
+		}
+		if g.to == MySQL {
+			if source != nil {
+				f.decl, _ = g.columnDecl(source)
+			} else {
+				f.decl, _ = g.classDecl(f.typ)
+			}
 		}
 		fields[strings.ToUpper(c.name)] = f
 	}

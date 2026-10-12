@@ -25,6 +25,7 @@ type routine struct {
 	deterministic bool   // the source promises the same result for the same arguments
 	strict        bool   // PostgreSQL's STRICT: a NULL argument makes the result NULL without running the body
 	sqlBody       bool   // a PostgreSQL function written in the SQL language
+	voidFunction  bool   // a PostgreSQL function that returns void, read as a procedure
 	conflict      string // PL/pgSQL's #variable_conflict setting, if the body has one
 }
 
@@ -209,7 +210,10 @@ type (
 		format string
 		args   []expr
 		hasFmt bool
-		line   int
+		// dropped are the parts of the error the target cannot carry:
+		// PL/pgSQL's DETAIL and HINT.
+		dropped []string
+		line    int
 	}
 
 	openStmt struct {

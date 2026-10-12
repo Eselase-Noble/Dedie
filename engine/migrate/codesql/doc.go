@@ -1,7 +1,7 @@
 // Package codesql converts stored functions, procedures and triggers
 // from one database's procedural language to another's: Oracle's PL/SQL
-// and MySQL's stored programs to PostgreSQL's PL/pgSQL. It is a library
-// without side effects: it is
+// and MySQL's stored programs to PostgreSQL's PL/pgSQL, and PL/pgSQL to
+// MySQL. It is a library without side effects: it is
 // given the definition of a routine as the source database prints it and
 // returns the statements that create the same routine on the target.
 //
@@ -218,4 +218,99 @@
 //     operator, arithmetic on a date as if it were a number, date
 //     formats without a PostgreSQL counterpart, spatial types, DDL
 //     inside a routine, version-specific comments that hold code.
+//
+// # PostgreSQL to MySQL
+//
+// A function or procedure is given as pg_get_functiondef prints it. A
+// trigger is given as pg_get_triggerdef, a semicolon, and the definition
+// of the function it executes; the two become one MySQL trigger for
+// each event, named after the trigger with _ins, _upd or _del added when
+// there are several. TG_OP is decided for each of them while converting,
+// and the code for the other events is left out.
+//
+// Converted:
+//
+//   - PL/pgSQL functions without OUT parameters, procedures, and
+//     functions in the SQL language that end in a query of one column or
+//     are a single RETURN. STRICT becomes a test of the arguments.
+//   - Row triggers on INSERT, UPDATE and DELETE, before and after, with a
+//     WHEN clause (which becomes an IF around the body), NEW, OLD,
+//     TG_OP, TG_TABLE_NAME, TG_NAME and TG_WHEN. A BEFORE trigger must
+//     return the row it was given.
+//   - Variables of the built-in scalar types and column%TYPE, cursors
+//     without parameters, blocks, IF, CASE, LOOP, WHILE, FOR over a
+//     range (with REVERSE and BY), over a query and over a cursor, EXIT
+//     and CONTINUE with labels, RETURN, NULL, OPEN, FETCH, CLOSE, CALL,
+//     PERFORM of a function.
+//   - The record of a FOR loop, when the type of every column is known:
+//     it becomes one variable for each column, and the loop a cursor.
+//   - SELECT ... INTO: with STRICT it raises SQLSTATE P0002 when it finds
+//     nothing; without, it sets the variables to NULL and takes the
+//     first row. FOUND after a FETCH, a query or a change; GET
+//     DIAGNOSTICS ... ROW_COUNT after INSERT and DELETE.
+//   - EXCEPTION handlers for no_data_found, too_many_rows,
+//     unique_violation, foreign_key_violation, not_null_violation,
+//     check_violation, raise_exception, OTHERS and SQLSTATEs of the
+//     routine's own, when the block cannot have changed data before the
+//     handler runs. RAISE EXCEPTION with a message template, ERRCODE and
+//     MESSAGE; RAISE without arguments.
+//   - Text: "||" becomes CONCAT, and every text variable and parameter
+//     is declared with the collation of the migrated tables
+//     (Options.Collation), so comparisons stay exact.
+//   - Integer division (DIV), "::" and CAST to the scalar types, IS
+//     DISTINCT FROM, ORDER BY with PostgreSQL's place for NULLs, LIMIT.
+//   - Dates: a date plus or minus days, a date minus a date, plus or
+//     minus an interval of one unit, CURRENT_DATE, LOCALTIMESTAMP,
+//     date_trunc, extract, to_char of a date with common elements.
+//   - coalesce, nullif, upper, lower, length, substr and left and right
+//     with fixed positions, trim and its relatives, replace, lpad, rpad,
+//     strpos, position, concat, concat_ws, reverse, repeat, round,
+//     trunc, floor, ceil, abs, sign, sqrt, power and "^", mod, count,
+//     sum, min, max.
+//
+// Review:
+//
+//   - A division by anything but a non-zero literal: PostgreSQL raises an
+//     error for a divisor of 0, MySQL gives NULL. A division or AVG
+//     whose result is not rounded to four decimal places or fewer.
+//     Arithmetic and division on values of unknown type.
+//   - A block that changes data and has an error handler: PostgreSQL
+//     undoes the block, MySQL keeps what was done.
+//   - now() and CURRENT_TIMESTAMP, and variables of type timestamp with
+//     time zone: the data migration stores such values in UTC.
+//   - FOUND or ROW_COUNT after an UPDATE: MySQL counts the rows whose
+//     values changed, not the rows that matched.
+//   - RAISE NOTICE and the other messages, which are dropped; DETAIL and
+//     HINT; SQLERRM and SQLSTATE in a handler.
+//   - Parameters with defaults (dropped); a function that returns void
+//     (becomes a procedure); a function that changes data (MySQL refuses
+//     it while the binary log is on, unless told otherwise); NOT NULL
+//     variables; COMMIT and ROLLBACK.
+//   - substr, left and right with computed positions; greatest and
+//     least; truth values, timestamps and floating point numbers written
+//     as text; round of a floating point number; extract of the second;
+//     ORDER BY a column position; a FETCH whose variables are read after
+//     the cursor is exhausted; calls to routines the pipeline did not
+//     name.
+//
+// Unconverted:
+//
+//   - Functions that return rows (SETOF, TABLE, RETURN NEXT, RETURN
+//     QUERY) or have OUT parameters; routines in other languages;
+//     VARIADIC parameters; #variable_conflict use_column.
+//   - Arrays, record and row variables outside a FOR loop, intervals as
+//     values, composite and range types; the difference of two
+//     timestamps.
+//   - EXECUTE and FOR ... IN EXECUTE; RETURNING; INSERT ... ON CONFLICT;
+//     UPDATE ... FROM and DELETE ... USING; cursors with parameters;
+//     sequences; ILIKE and regular expressions; string_agg and the other
+//     aggregates MySQL lacks; to_char of a number.
+//   - Handlers for division_by_zero and for PostgreSQL's own SQLSTATEs
+//     without a MySQL counterpart; OTHERS anywhere but last; RETURN, EXIT
+//     or CONTINUE that leaves an error handler; GET STACKED DIAGNOSTICS;
+//     RAISE of a built-in error; COMMIT in a function.
+//   - Statement-level, INSTEAD OF, TRUNCATE and constraint triggers,
+//     UPDATE OF columns, transition tables, trigger arguments, a trigger
+//     that returns NULL or a row other than the one it was given, and a
+//     trigger that changes its own table.
 package codesql

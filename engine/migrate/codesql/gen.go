@@ -37,11 +37,15 @@ type gen struct {
 	// What the routine turned out to need from the emitter.
 	usesRowCount bool
 	usesFound    bool
-	usesMessage  bool
-	usesErrText  bool
-	usesErrState bool
-	labels       int
-	loops        []*loopFrame
+	// foundAfter and countAfter say which kinds of statement PL/pgSQL's
+	// FOUND and the row count are read after; see readers. Only those
+	// have to keep the variables that stand in for them up to date.
+	foundAfter, countAfter map[string]bool
+	usesMessage            bool
+	usesErrText            bool
+	usesErrState           bool
+	labels                 int
+	loops                  []*loopFrame
 	// handlerDepth counts the error handlers being written; MySQL does
 	// not let their code leave by a label from outside them.
 	handlerDepth int
@@ -50,6 +54,12 @@ type gen struct {
 	lastFetch string
 	extra     []string // declarations the emitter adds to the outermost block
 	prologue  []string // statements the emitter puts before the routine's own
+	// What the MySQL emitter learns while writing the body: that a
+	// cursor is fetched from, that a statement leaves the outermost
+	// block, and whether the handler being written belongs to it.
+	hasFetch      bool
+	needBodyLabel bool
+	handlerTop    bool
 	// inWhen is set while the WHEN clause of a trigger is written, where
 	// Oracle names the rows without a colon.
 	inWhen bool
@@ -94,6 +104,9 @@ type variable struct {
 type field struct {
 	out string
 	typ typ
+	// decl is the type to declare the field's variable with on MySQL,
+	// where a record is taken apart into one variable for each field.
+	decl string
 }
 
 // boundTable is a table of an SQL statement, with what the catalog says
@@ -112,6 +125,8 @@ type loopFrame struct {
 	nextLabel string // MySQL: the block to leave in order to start the next round
 	used      bool
 	block     bool // a labelled block rather than a loop
+	// depth is how many error handlers enclosed the loop when it began.
+	depth int
 }
 
 func newGen(from, to Dialect, obj Object, opt Options, r *routine) *gen {
@@ -325,9 +340,8 @@ func (g *gen) tableName(name []ident) string {
 func (g *gen) objectName(name []ident) string {
 	last := g.ident(name[len(name)-1])
 	if g.to == MySQL {
-		if len(name) > 1 && g.from == Postgres && !strings.EqualFold(name[0].name, "public") {
-			g.note(0, "%s.%s is in a schema, and MySQL has none; it is written as %s", name[0].name, name[len(name)-1].name, last)
-		}
+		// MySQL has no schemas inside a database; everything migrated
+		// shares one namespace.
 		return last
 	}
 	if len(name) > 1 {

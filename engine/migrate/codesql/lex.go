@@ -83,7 +83,7 @@ func (e *lexError) Error() string { return fmt.Sprintf("line %d: %s", e.line, e.
 // that "<=>" is not read as "<=" and ">".
 var operators = []string{"<=>", "->>", "::", "<=", ">=", "<>", "!=", "^=", "~=", "||", "&&", ":=", "=>", "..", "<<", ">>", "->", "**"}
 
-const singleOperators = "()[],.;+-*/%=<>!~^&|@?:{}"
+const singleOperators = "()[],.;+-*/%=<>!~^&|@?:{}#"
 
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 

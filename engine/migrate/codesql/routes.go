@@ -29,6 +29,17 @@ func Assumptions(from, to string) []string {
 			"PostgreSQL 14 or later: procedures with OUT parameters.",
 			"Comments are not carried over.",
 		}
+	case f == Postgres && t == MySQL:
+		out = []string{
+			"The tables on MySQL compare text byte by byte, as the migration creates them; the variables of a converted routine are declared with the same collation. With utf8mb4_bin, which older servers need, trailing spaces are ignored in comparisons; utf8mb4_0900_bin counts them as PostgreSQL does.",
+			"numeric without a precision becomes DECIMAL(65,20), as for columns: 45 digits before the decimal point and 20 after it.",
+			"The MySQL server runs in a strict SQL mode, so a value that does not fit is an error.",
+			"MySQL has no schemas inside a database: routines and tables from every schema share one namespace, under the names the migration gave the tables.",
+			"The message of an error raised by a routine is at most 128 characters long in MySQL.",
+			"A routine runs with the rights of the account that creates it (SQL SECURITY DEFINER), MySQL's default; PostgreSQL's default is the rights of the caller.",
+			"MySQL fires the triggers of a table in the order they were created; PostgreSQL in the order of their names. Create them in that order.",
+			"Comments are not carried over.",
+		}
 	}
 	return out
 }

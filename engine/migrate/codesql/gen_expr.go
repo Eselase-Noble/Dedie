@@ -842,9 +842,6 @@ func (g *gen) like(e *likeExpr) (string, typ) {
 		// Oracle has no escape character unless one is named; the two
 		// targets take the backslash for one.
 		if text, ok := isLit(e.pattern, "string"); !ok || strings.Contains(text, `\`) {
-			if g.to == MySQL {
-				g.refuse(e.line, "a LIKE pattern that may contain a backslash: MySQL always reads it as an escape character")
-			}
 			s += " ESCAPE ''"
 		}
 	}

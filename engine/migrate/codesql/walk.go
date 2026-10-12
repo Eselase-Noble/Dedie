@@ -7,6 +7,9 @@ import "strings"
 type visitor struct {
 	stmt func(stmt)
 	expr func(expr)
+	// list is called for every list of statements: the body of a block,
+	// of a branch, of a loop, of a handler.
+	list func([]stmt)
 }
 
 func (v visitor) block(b *block) {
@@ -25,6 +28,9 @@ func (v visitor) block(b *block) {
 }
 
 func (v visitor) stmts(list []stmt) {
+	if v.list != nil {
+		v.list(list)
+	}
 	for _, s := range list {
 		v.s(s)
 	}
