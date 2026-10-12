@@ -4,7 +4,8 @@ import { useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
 import { formatTime } from "@/lib/format";
 import type { Backup, Connection } from "@/lib/types";
-import { Banner, Checkbox, Field, Modal } from "@/components/ui";
+import { connectionOption } from "@/components/Environment";
+import { Banner, Checkbox, ConfirmNameField, Field, Modal } from "@/components/ui";
 import { typeLabel } from "./options";
 
 export default function RestoreDialog({ backup, connections, onClose, onDone }: {
@@ -26,7 +27,11 @@ export default function RestoreDialog({ backup, connections, onClose, onDone }: 
   const database = where === "new" ? newDatabase.trim() : target?.database ?? "";
   // A restore into a database that was just created cannot overwrite
   // anything, so it needs no typed confirmation.
-  const confirmed = where === "new" ? database !== "" : confirm === database;
+  // Restoring over a production connection's own database also asks for
+  // the connection's name.
+  const production = where === "existing" && target?.environment === "production";
+  const [typedName, setTypedName] = useState("");
+  const confirmed = where === "new" ? database !== "" : confirm === database && (!production || typedName.trim() === target?.name);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -40,7 +45,7 @@ export default function RestoreDialog({ backup, connections, onClose, onDone }: 
         clean: where === "existing" && clean,
         keep_owners: keepOwners,
         confirm: database,
-      });
+      }, production ? target?.name : undefined);
       onDone();
       onClose();
     } catch (err) {
@@ -78,9 +83,9 @@ export default function RestoreDialog({ backup, connections, onClose, onDone }: 
           <Banner tone="warn">This backup holds rows only. The target must already have the tables, and they should be empty.</Banner>
         )}
         <Field label="Target server" hint="Read-only connections cannot be restore targets.">
-          <select className="select" value={targetId} onChange={(e) => { setTargetId(e.target.value); setConfirm(""); }} required>
+          <select className="select" value={targetId} onChange={(e) => { setTargetId(e.target.value); setConfirm(""); setTypedName(""); }} required>
             <option value="">Select a connection</option>
-            {candidates.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.database} on {c.host})</option>)}
+            {candidates.map((c) => <option key={c.id} value={c.id}>{connectionOption(c, `${c.database} on ${c.host}`)}</option>)}
           </select>
         </Field>
         {backup.level === "full" && <Field label="Restore into">
@@ -116,6 +121,7 @@ export default function RestoreDialog({ backup, connections, onClose, onDone }: 
             <input className="input" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="off" spellCheck={false} />
           </Field>
         )}
+        {target && production && <ConfirmNameField name={target.name} value={typedName} onChange={setTypedName} />}
       </form>
     </Modal>
   );

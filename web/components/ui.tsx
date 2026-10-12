@@ -195,41 +195,74 @@ export function Modal({ title, onClose, children, footer, wide }: {
 }
 
 /**
+ * The field in which the name of a production connection is typed before
+ * something that destroys or disrupts. The dialog around it keeps its
+ * button off until `value` is the name.
+ */
+export function ConfirmNameField({ name, value, onChange, autoFocus }: {
+  name: string; value: string; onChange: (value: string) => void; autoFocus?: boolean;
+}) {
+  const id = useId();
+  return (
+    <div className="confirm-name">
+      <div className="field">
+        <label className="label" htmlFor={id}>Type <code>{name}</code> to confirm</label>
+        <input id={id} className="input mono" value={value} onChange={(e) => onChange(e.target.value)}
+          autoFocus={autoFocus} autoComplete="off" spellCheck={false} aria-describedby={`${id}-hint`} />
+        <span className="hint" id={`${id}-hint`}>
+          <span className="env production">production</span> Typing the name is recorded in the audit log.
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/**
  * A confirmation dialog for actions with consequences. The action runs when
  * the user confirms; a failure is shown in place so they can retry or cancel.
+ *
+ * With `typeName` set, to the name of a production connection the action
+ * touches, the name has to be typed first and is handed to the action.
  */
-export function ConfirmDialog({ title, children, confirmLabel, danger, onConfirm, onClose }: {
-  title: string; children: ReactNode; confirmLabel: string; danger?: boolean;
-  onConfirm: () => Promise<void>; onClose: () => void;
+export function ConfirmDialog({ title, children, confirmLabel, danger, typeName, onConfirm, onClose }: {
+  title: string; children: ReactNode; confirmLabel: string; danger?: boolean; typeName?: string;
+  onConfirm: (typed?: string) => Promise<void>; onClose: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [typed, setTyped] = useState("");
+  const ready = !typeName || typed.trim() === typeName;
   const run = async () => {
+    if (!ready || busy) return;
     setBusy(true);
     setError("");
     try {
-      await onConfirm();
+      await onConfirm(typeName);
       onClose();
     } catch (err) {
       setError(errorMessage(err));
       setBusy(false);
     }
   };
+  const form = useId();
   return (
     <Modal
       title={title}
       onClose={onClose}
       footer={
         <>
-          <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className={`btn ${danger ? "danger" : "primary"}`} onClick={run} disabled={busy}>
+          <button className="btn" type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className={`btn ${danger || typeName ? "danger" : "primary"}`} type="submit" form={form} disabled={busy || !ready}>
             {busy ? "Working…" : confirmLabel}
           </button>
         </>
       }
     >
-      {error && <Banner tone="error">{error}</Banner>}
-      {children}
+      <form id={form} onSubmit={(e) => { e.preventDefault(); void run(); }}>
+        {error && <Banner tone="error">{error}</Banner>}
+        {children}
+        {typeName && <ConfirmNameField name={typeName} value={typed} onChange={setTyped} autoFocus />}
+      </form>
     </Modal>
   );
 }

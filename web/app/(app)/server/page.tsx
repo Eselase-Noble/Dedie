@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 import type { Backend } from "@/lib/types";
+import { EnvBadge, connectionOption } from "@/components/Environment";
 import { Badge, Banner, ConfirmDialog, Loading, PageHeader, StatusBadge } from "@/components/ui";
 
 // Inactive slots holding more WAL than this are flagged: nothing is
@@ -21,6 +22,8 @@ export default function ServerPage() {
     if (!connId && connections.data?.[0]) setConnId(connections.data[0].id);
   }, [connections.data, connId]);
 
+  const connection = connections.data?.find((c) => c.id === connId) ?? null;
+
   const { data, error, loading, reload } = useLoad(
     async () => (connId ? api.overview(connId) : null),
     [connId],
@@ -36,8 +39,9 @@ export default function ServerPage() {
       <div className="toolbar">
         <select className="select" value={connId} onChange={(e) => setConnId(e.target.value)} aria-label="Connection">
           {(!connections.data || connections.data.length === 0) && <option value="">No connections</option>}
-          {connections.data?.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.host})</option>)}
+          {connections.data?.map((c) => <option key={c.id} value={c.id}>{connectionOption(c, c.host)}</option>)}
         </select>
+        <EnvBadge env={connection?.environment} />
         <button className="btn" onClick={() => reload()} disabled={!connId}>Refresh</button>
         <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
@@ -150,9 +154,10 @@ export default function ServerPage() {
           title={target.terminate ? `Terminate session ${target.backend.pid}?` : `Cancel the statement of session ${target.backend.pid}?`}
           confirmLabel={target.terminate ? "Terminate session" : "Cancel statement"}
           danger
+          typeName={target.terminate && connection?.environment === "production" ? connection.name : undefined}
           onClose={() => setTarget(null)}
-          onConfirm={async () => {
-            await api.cancelBackend(connId, target.backend.pid, target.terminate);
+          onConfirm={async (typed) => {
+            await api.cancelBackend(connId, target.backend.pid, target.terminate, typed);
             await reload();
           }}
         >

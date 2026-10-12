@@ -16,6 +16,7 @@ import SchemaPreview from "@/components/migrations/SchemaPreview";
 import { download } from "@/lib/csv";
 import { copyText } from "@/lib/desktop";
 import { useSession } from "@/components/session";
+import { ConnectionName, useProductionGuard } from "@/components/Environment";
 import { Banner, ConfirmDialog, Loading, PageHeader, Progress, StatusBadge } from "@/components/ui";
 
 const PHASES = ["schema", "snapshot", "indexing", "streaming", "cutover", "done"];
@@ -116,6 +117,7 @@ function Detail({ id }: { id: string }) {
     (d) => !d || d.status === "queued" || d.status === "running",
   );
   const connections = useLoad(async () => (can("connections.view") ? api.connections() : []), []);
+  const { guarded, dialog: productionDialog } = useProductionGuard();
   const [actionError, setActionError] = useState("");
   const [busy, setBusy] = useState("");
   const [confirm, setConfirm] = useState<Confirm | null>(null);
@@ -130,7 +132,8 @@ function Detail({ id }: { id: string }) {
   if (loading && !job) return <Loading page lines={6} />;
   if (!job) return <div className="content"><Banner tone="error">{error || "Migration not found."}</Banner></div>;
 
-  const nameOf = (connId: string) => connections.data?.find((c) => c.id === connId)?.name ?? connId;
+  const connectionOf = (connId: string) => connections.data?.find((c) => c.id === connId) ?? null;
+  const nameOf = (connId: string) => connectionOf(connId)?.name ?? connId;
   const st = job.state;
   const status = job.status;
 
@@ -145,7 +148,10 @@ function Detail({ id }: { id: string }) {
     setBusy(action);
     setActionError("");
     try {
-      await api.migrationAction(job.id, action);
+      // Starting a migration that replaces objects on a production target
+      // asks for the target's name.
+      const done = await guarded(nameOf(job.target_id), (typed) => api.migrationAction(job.id, action, typed), "Start and replace");
+      if (!done) return;
       if (action === "delete") {
         router.push("/migrations/");
         return;
@@ -250,7 +256,7 @@ function Detail({ id }: { id: string }) {
       <PageHeader
         back={{ href: "/migrations/", label: "Migrations" }}
         title={job.name}
-        subtitle={<>{nameOf(job.source_id)} → {nameOf(job.target_id)} · created by {job.created_by} on {formatTime(job.created_at)}</>}
+        subtitle={<><ConnectionName connection={connectionOf(job.source_id)} name={job.source_id} /> → <ConnectionName connection={connectionOf(job.target_id)} name={job.target_id} /> · created by {job.created_by} on {formatTime(job.created_at)}</>}
       >
         <StatusBadge status={status} />
         {manage && (
@@ -506,14 +512,16 @@ function Detail({ id }: { id: string }) {
         <ExistingObjectsDialog jobId={job.id} objects={existing} current={onExisting}
           onClose={() => setAsking(false)} onChosen={() => runPreflight(false)} />
       )}
+      {productionDialog}
       {confirm && (
         <ConfirmDialog
           title={confirm.title}
           confirmLabel={confirm.label}
           danger={confirm.action !== "cutover"}
+          typeName={confirm.action === "cutover" && fenced && connectionOf(job.source_id)?.environment === "production" ? nameOf(job.source_id) : undefined}
           onClose={() => setConfirm(null)}
-          onConfirm={async () => {
-            await api.migrationAction(job.id, confirm.action);
+          onConfirm={async (typed) => {
+            await api.migrationAction(job.id, confirm.action, typed);
             if (confirm.action === "delete") router.push("/migrations/");
             else await reload();
           }}

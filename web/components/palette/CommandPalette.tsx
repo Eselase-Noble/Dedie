@@ -85,7 +85,7 @@ export default function CommandPalette({ pages, onClose }: { pages: PaletteEntry
       ...actions,
       ...connections.map((c): PaletteEntry => ({
         id: `connection-${c.id}`, group: "Connection", label: `Open in query browser: ${c.name}`,
-        detail: `${c.kind}, ${c.database}`, href: `/query/?connection=${encodeURIComponent(c.id)}`,
+        detail: `${c.environment ? `${c.environment} · ` : ""}${c.kind}, ${c.database}`, href: `/query/?connection=${encodeURIComponent(c.id)}`,
       })),
       ...migrations.map((m): PaletteEntry => ({
         id: `migration-${m.id}`, group: "Migration", label: m.name, detail: m.status,

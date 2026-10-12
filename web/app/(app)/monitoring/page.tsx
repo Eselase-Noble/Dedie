@@ -7,6 +7,7 @@ import { useLoad } from "@/lib/hooks";
 import Channels, { EVENTS } from "@/components/monitoring/Channels";
 import Uptime from "@/components/monitoring/Uptime";
 import { useSession } from "@/components/session";
+import { ConnectionName } from "@/components/Environment";
 import { Badge, Banner, Loading, PageHeader, StatusBadge } from "@/components/ui";
 
 const EVENT_TONES: Record<string, "ok" | "warn" | "danger" | "info"> = {
@@ -51,7 +52,7 @@ export default function MonitoringPage() {
               <tbody>
                 {data.connections.map((c) => (
                   <tr key={c.connection_id}>
-                    <td><strong>{c.name}</strong> <span className="muted">· {c.kind}</span></td>
+                    <td><ConnectionName connection={c} strong /> <span className="muted">· {c.kind}</span></td>
                     <td className="nowrap">
                       {!c.last ? <span className="status"><span className="dot pending" />Waiting for first check</span>
                         : c.last.online ? <span className="status"><span className="dot online" />Online</span>

@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
 import type { BackupLocations, Connection } from "@/lib/types";
+import { connectionOption } from "@/components/Environment";
 import { Banner, Field, Modal } from "@/components/ui";
 import BackupOptions, { DEFAULT_CHOICE, type BackupChoice } from "./BackupOptions";
 
@@ -56,7 +57,7 @@ export default function CreateBackup({ connections, locations, onClose, onDone }
         <Field label="Connection">
           <select className="select" value={connId} onChange={(e) => chooseConnection(e.target.value)} required>
             {candidates.length === 0 && <option value="">No PostgreSQL or MySQL connections</option>}
-            {candidates.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.database})</option>)}
+            {candidates.map((c) => <option key={c.id} value={c.id}>{connectionOption(c, c.database)}</option>)}
           </select>
         </Field>
         <BackupOptions connection={connection} locations={locations} value={choice} onChange={setChoice} />

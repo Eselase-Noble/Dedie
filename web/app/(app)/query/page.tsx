@@ -15,6 +15,7 @@ import TableDetails from "@/components/query/TableDetails";
 import TableTab from "@/components/query/TableTab";
 import SchemaTree, { type TableAction } from "@/components/SchemaTree";
 import { useSession } from "@/components/session";
+import { connectionOption } from "@/components/Environment";
 import { Badge, Banner, Loading } from "@/components/ui";
 
 const LAST_CONNECTION = "dedie.query.connection";
@@ -166,7 +167,7 @@ export default function QueryPage() {
         <h1>Query browser</h1>
         <select className="select" value={connId} onChange={(e) => setConnId(e.target.value)} aria-label="Connection">
           {(!connections || connections.length === 0) && <option value="">No connections</option>}
-          {connections?.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.kind}, {c.database})</option>)}
+          {connections?.map((c) => <option key={c.id} value={c.id}>{connectionOption(c)}</option>)}
         </select>
         {connection?.read_only && <Badge>read-only connection</Badge>}
         <span className="spacer" />
@@ -217,6 +218,12 @@ export default function QueryPage() {
         />
       )}
 
+      {connection?.environment === "production" && !connection.read_only && (
+        <div className="env-strip" role="status">
+          <span className="env production">production</span>
+          <span>You are working on <strong>{connection.name}</strong>. Dropping, truncating, unfiltered deletes and updates, and editing rows ask for its name first.</span>
+        </div>
+      )}
       <div className="workspace-body">
         {showTree && (
           <>

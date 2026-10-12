@@ -11,6 +11,7 @@ import MigrationForm from "@/components/MigrationForm";
 import MigrationPaths from "@/components/migrations/MigrationPaths";
 import { useSession } from "@/components/session";
 import { TransferIcon } from "@/components/icons";
+import { ConnectionName } from "@/components/Environment";
 import { Badge, Banner, EmptyState, Loading, PageHeader, StatusBadge } from "@/components/ui";
 
 export default function MigrationsPage() {
@@ -36,7 +37,7 @@ export default function MigrationsPage() {
     [],
     3000,
   );
-  const nameOf = (id: string) => data?.connections.find((c) => c.id === id)?.name ?? id;
+  const named = (id: string) => <ConnectionName connection={data?.connections.find((c) => c.id === id)} name={id} />;
 
   return (
     <div className="content">
@@ -73,8 +74,8 @@ export default function MigrationsPage() {
                       {m.config.mode === "sync" && <Badge tone="info">sync</Badge>}
                       {m.config.mode === "offline" && <Badge>offline</Badge>}
                     </td>
-                    <td>{nameOf(m.source_id)}</td>
-                    <td>{nameOf(m.target_id)}</td>
+                    <td>{named(m.source_id)}</td>
+                    <td>{named(m.target_id)}</td>
                     <td><StatusBadge status={m.status} /></td>
                     <td title={m.copy ? `${formatNumber(m.copy.rows_copied)} of about ${formatNumber(m.copy.rows_expected)} rows copied` : undefined}>
                       {phaseSummary(m) || <span className="faint">—</span>}

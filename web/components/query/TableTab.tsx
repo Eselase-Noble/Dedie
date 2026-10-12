@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react
 import { api, errorMessage } from "@/lib/api";
 import { formatNumber, quoteIdent } from "@/lib/format";
 import type { CatalogTable, Connection, ResultSet } from "@/lib/types";
+import { ProductionConfirm } from "@/components/Environment";
 import type { GridEditor } from "@/components/ResultGrid";
 import { Badge, Banner, Field, Loading, Modal } from "@/components/ui";
 import ResultPanel from "./ResultPanel";
@@ -98,6 +99,16 @@ export default function TableTab({ connection, schema, table, info, mayWrite, ac
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(false);
   const [inserting, setInserting] = useState(false);
+  // On a production connection, editing is switched on by typing the
+  // connection's name once. It then accompanies every change of this tab,
+  // which the server checks each time.
+  const production = connection.environment === "production";
+  const [unlocking, setUnlocking] = useState(false);
+  const [confirmed, setConfirmed] = useState<string | undefined>(undefined);
+  const toggleEditing = (on: boolean) => {
+    if (on && production && !confirmed) setUnlocking(true);
+    else setEditing(on);
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -128,15 +139,15 @@ export default function TableTab({ connection, schema, table, info, mayWrite, ac
     return {
       canEdit: () => true,
       update: async (row, column, value) => {
-        await api.changeRow(connection.id, { schema, table, action: "update", key: keyOf(row), values: { [column]: value } });
+        await api.changeRow(connection.id, { schema, table, action: "update", key: keyOf(row), values: { [column]: value } }, confirmed);
         await load();
       },
       remove: async (row) => {
-        await api.changeRow(connection.id, { schema, table, action: "delete", key: keyOf(row) });
+        await api.changeRow(connection.id, { schema, table, action: "delete", key: keyOf(row) }, confirmed);
         await load();
       },
     };
-  }, [editing, result, keys, connection.id, schema, table, load]);
+  }, [editing, result, keys, connection.id, schema, table, load, confirmed]);
 
   const applyFilter = (e: FormEvent) => {
     e.preventDefault();
@@ -157,13 +168,13 @@ export default function TableTab({ connection, schema, table, info, mayWrite, ac
         <span className="spacer" />
         {mayWrite && (
           <label className="inline" title={keys.length === 0 ? "This table has no primary key, so a row cannot be identified for editing" : ""}>
-            <input type="checkbox" checked={editing} disabled={keys.length === 0} onChange={(e) => setEditing(e.target.checked)} />
+            <input type="checkbox" checked={editing} disabled={keys.length === 0} onChange={(e) => toggleEditing(e.target.checked)} />
             Edit data
           </label>
         )}
         {editing && info && <button className="btn small" type="button" onClick={() => setInserting(true)}>Add row</button>}
       </form>
-      {editing && <Banner tone="warn">Editing is on. Click a cell to change it or delete its row; each change is saved to the database immediately and recorded in the audit log.</Banner>}
+      {editing && <Banner tone={production ? "error" : "warn"}>{production && <><strong>Production.</strong> </>}Editing is on. Click a cell to change it or delete its row; each change is saved to the database immediately and recorded in the audit log.</Banner>}
       {mayWrite && info && keys.length === 0 && <div className="hint" style={{ padding: "0 4px 6px" }}>This table has no primary key, so its rows cannot be edited here.</div>}
 
       <div className="results-pane">
@@ -190,9 +201,23 @@ export default function TableTab({ connection, schema, table, info, mayWrite, ac
       {inserting && info && (
         <InsertRow table={info} onClose={() => setInserting(false)}
           onInsert={async (values) => {
-            await api.changeRow(connection.id, { schema, table, action: "insert", values });
+            await api.changeRow(connection.id, { schema, table, action: "insert", values }, confirmed);
             await load();
           }} />
+      )}
+      {unlocking && (
+        <ProductionConfirm name={connection.name} title="Edit rows on a production connection?" confirmLabel="Switch editing on"
+          onClose={() => setUnlocking(false)}
+          onConfirm={async (typed) => {
+            setConfirmed(typed);
+            setEditing(true);
+            setUnlocking(false);
+          }}>
+          <p>
+            Every change to <strong className="mono">{schema}.{table}</strong> is saved to <strong>{connection.name}</strong> the
+            moment you make it. There is no undo.
+          </p>
+        </ProductionConfirm>
       )}
     </div>
   );

@@ -7,6 +7,7 @@ import { formatBytes, formatTime } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 import type { Backup } from "@/lib/types";
 import { useSession } from "@/components/session";
+import { ConnectionName } from "@/components/Environment";
 import { ArchiveIcon } from "@/components/icons";
 import { Banner, ConfirmDialog, EmptyState, Loading, PageHeader, StatusBadge } from "@/components/ui";
 import CreateBackup from "@/components/backups/CreateBackup";
@@ -91,8 +92,9 @@ export default function BackupsPage() {
               <tbody>
                 {data.backups.map((b) => (
                   <tr key={b.id}>
-                    <td>
-                      <strong>{b.database}</strong> <span className="muted">from {b.connection_name}</span>
+                    <td className="wrap" style={{ minWidth: 220 }}>
+                      <strong>{b.database}</strong> <span className="muted">from</span>{" "}
+                      <ConnectionName connection={data.connections.find((c) => c.id === b.connection_id)} name={b.connection_name} />
                       {b.note && <span className="sub">{b.note}</span>}
                       {b.path && (
                         <button className="link-btn path" title={`${b.path}\nClick to copy the path`} onClick={() => copyText(b.path)}>
@@ -158,7 +160,7 @@ export default function BackupsPage() {
       </div>
 
       {data && <Schedules schedules={data.schedules} connections={data.connections} locations={data.locations} mayManage={mayRestore} reload={reload} />}
-      {data && <Recovery archives={data.archives} mayManage={mayRestore} reload={reload} />}
+      {data && <Recovery archives={data.archives} connections={data.connections} mayManage={mayRestore} reload={reload} />}
       {data && <Locations locations={data.locations} mayManage={can("users.manage")} reload={reload} />}
 
       <div className="card">

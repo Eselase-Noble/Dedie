@@ -103,9 +103,13 @@ export interface Connection {
   ssl_root_cert: string;
   read_only: boolean;
   restricted: boolean;
+  environment: Environment;
   created_by: string;
   created_at: string;
 }
+
+/** Where a database sits. Empty when nobody has said. */
+export type Environment = "" | "production" | "staging" | "development";
 
 export interface ConnectionInput {
   name: string;
@@ -118,6 +122,7 @@ export interface ConnectionInput {
   sslmode: string;
   ssl_root_cert: string;
   read_only: boolean;
+  environment: Environment;
 }
 
 export interface ServerInfo {
@@ -500,6 +505,7 @@ export interface ConnectionHealth {
   connection_id: string;
   name: string;
   kind: string;
+  environment: Environment;
   checks: number;
   uptime_percent: number;
   avg_latency_ms: number;

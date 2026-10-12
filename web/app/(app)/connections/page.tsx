@@ -7,6 +7,7 @@ import { useLoad } from "@/lib/hooks";
 import type { Connection, ConnectionStatus, ServerInfo } from "@/lib/types";
 import ConnectionAccessDialog from "@/components/ConnectionAccessDialog";
 import ConnectionForm, { KIND_LABELS, ServerInfoSummary } from "@/components/ConnectionForm";
+import { ConnectionName } from "@/components/Environment";
 import { PlugIcon } from "@/components/icons";
 import { useSession } from "@/components/session";
 import { Badge, Banner, ConfirmDialog, EmptyState, Loading, PageHeader } from "@/components/ui";
@@ -91,7 +92,7 @@ export default function ConnectionsPage() {
                 {data.map((c) => (
                   <tr key={c.id}>
                     <td title={`Added ${formatTime(c.created_at)} by ${c.created_by}`}>
-                      <strong>{c.name}</strong>{" "}
+                      <ConnectionName connection={c} strong />{" "}
                       {c.read_only && <Badge>read-only</Badge>}{" "}
                       {c.restricted && <Badge tone="warn">restricted</Badge>}
                     </td>

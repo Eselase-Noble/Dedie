@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
 import { formatDuration } from "@/lib/format";
 import type { Connection, DbAccounts, SessionFilter } from "@/lib/types";
+import { useProductionGuard } from "@/components/Environment";
 import { Badge, Banner, Checkbox, Field, Modal, Progress } from "@/components/ui";
 
 /** A pool at or above this share of its limit is flagged. */
@@ -38,6 +39,7 @@ function CloseIdle({ connection, target, onClose, onDone }: {
   const [inTransaction, setInTransaction] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const { guarded, dialog } = useProductionGuard();
   const who = target.user ? `${target.user}'s` : "all users'";
 
   const submit = async (e: FormEvent) => {
@@ -48,9 +50,19 @@ function CloseIdle({ connection, target, onClose, onDone }: {
     try {
       let closed = 0;
       let openNow = 0;
+      let typed: string | undefined;
       for (const state of ["idle", "idle in transaction"] as const) {
         if (state === "idle" ? !plainIdle : !(inTransaction && postgres)) continue;
-        const res = await api.terminateSessions(connection.id, { ...base, state });
+        // A production connection asks for its name once; the second
+        // request of the pair carries what was typed for the first.
+        const res = await guarded(connection.name, (confirm) => {
+          typed = confirm ?? typed;
+          return api.terminateSessions(connection.id, { ...base, state }, typed);
+        }, "Close them");
+        if (!res) {
+          setBusy(false);
+          return;
+        }
         closed += res.sessions;
         openNow += Math.max(0, res.open_now);
       }
@@ -96,6 +108,7 @@ function CloseIdle({ connection, target, onClose, onDone }: {
             hint="The application began a transaction and stopped. These hold locks and keep old row versions alive. Closing one rolls its transaction back, so whatever it had changed and not committed is undone." />
         )}
       </form>
+      {dialog}
     </Modal>
   );
 }

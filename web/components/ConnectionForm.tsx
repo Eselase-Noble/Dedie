@@ -2,7 +2,8 @@
 
 import { useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
-import type { Connection, ConnectionInput, ServerInfo } from "@/lib/types";
+import type { Connection, ConnectionInput, Environment, ServerInfo } from "@/lib/types";
+import { ENVIRONMENTS, useProductionGuard } from "./Environment";
 import { Banner, Checkbox, Field, Modal } from "./ui";
 
 const SSL_MODES = ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"];
@@ -34,7 +35,9 @@ export default function ConnectionForm({ existing, kinds, onClose, onSaved }: {
     sslmode: existing?.sslmode ?? "require",
     ssl_root_cert: existing?.ssl_root_cert ?? "",
     read_only: existing?.read_only ?? false,
+    environment: existing?.environment ?? "",
   });
+  const { guarded, dialog } = useProductionGuard();
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState("");
@@ -48,8 +51,16 @@ export default function ConnectionForm({ existing, kinds, onClose, onSaved }: {
     setBusy(true);
     setError("");
     try {
-      if (existing) await api.updateConnection(existing.id, form);
-      else await api.createConnection(form);
+      if (existing) {
+        // Taking the production label off asks for the connection's name.
+        const saved = await guarded(existing.name, (confirm) => api.updateConnection(existing.id, form, confirm), "Remove the production label");
+        if (!saved) {
+          setBusy(false);
+          return;
+        }
+      } else {
+        await api.createConnection(form);
+      }
       onSaved();
       onClose();
     } catch (err) {
@@ -150,12 +161,18 @@ export default function ConnectionForm({ existing, kinds, onClose, onSaved }: {
             <textarea className="textarea mono" rows={4} value={form.ssl_root_cert} spellCheck={false}
               onChange={(e) => set("ssl_root_cert", e.target.value)} placeholder="-----BEGIN CERTIFICATE-----" />
           </Field>
+          <Field className="span2" label="Environment" hint={ENVIRONMENTS.find((e) => e.value === form.environment)?.hint}>
+            <select className="select" value={form.environment} onChange={(e) => set("environment", e.target.value as Environment)}>
+              {ENVIRONMENTS.map((e) => <option key={e.value} value={e.value}>{e.label}</option>)}
+            </select>
+          </Field>
           <div className="span2">
             <Checkbox label="Read-only connection" checked={form.read_only} onChange={(v) => set("read_only", v)}
               hint="Queries always run in read-only transactions and the connection cannot be a restore target." />
           </div>
         </div>
       </form>
+      {dialog}
     </Modal>
   );
 }
