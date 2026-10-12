@@ -51,10 +51,10 @@ export default function ServerPage() {
       {data && (
         <>
           <div className="card">
-            <div className="card-head"><h2>Activity</h2><span className="muted">{data.activity.length} sessions</span></div>
+            <div className="card-head"><h2>Activity</h2><span className="muted">{data.activity.length} {data.activity.length === 1 ? "session" : "sessions"}</span></div>
             <div className="card-body flush table-wrap">
               {data.activity.length === 0 ? <div className="empty">No other sessions.</div> : (
-                <table className="data">
+                <table className="data stack">
                   <thead>
                     <tr><th className="num">PID</th><th>User</th><th>Database</th><th>Application</th><th>Client</th><th>State</th><th>Waiting on</th><th className="num">For</th><th>Statement</th><th /></tr>
                   </thead>
@@ -88,7 +88,7 @@ export default function ServerPage() {
             <div className="card-head"><h2>Replication slots</h2></div>
             <div className="card-body flush table-wrap">
               {data.replication_slots.length === 0 ? <div className="empty">No replication slots.</div> : (
-                <table className="data">
+                <table className="data stack">
                   <thead>
                     <tr><th>Slot</th><th>Plugin</th><th>Database</th><th>State</th><th className="num">Retained WAL</th></tr>
                   </thead>
@@ -118,7 +118,7 @@ export default function ServerPage() {
             <div className="card">
               <div className="card-head"><h2>Databases</h2></div>
               <div className="card-body flush table-wrap">
-                <table className="data">
+                <table className="data stack">
                   <thead><tr><th>Name</th><th className="num">Size</th></tr></thead>
                   <tbody>
                     {data.databases.map((d) => (
@@ -131,7 +131,7 @@ export default function ServerPage() {
             <div className="card">
               <div className="card-head"><h2>Settings</h2></div>
               <div className="card-body flush table-wrap">
-                <table className="data">
+                <table className="data stack">
                   <thead><tr><th>Setting</th><th>Value</th></tr></thead>
                   <tbody>
                     {Object.entries(data.settings).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => (

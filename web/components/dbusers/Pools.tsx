@@ -145,7 +145,7 @@ export default function Pools({ connection, data, readOnly, onDone }: {
       )}
       <div className="card-body flush table-wrap">
         {pools.length === 0 ? <div className="empty">No user is connected.</div> : (
-          <table className="data">
+          <table className="data stack">
             <thead>
               <tr>
                 <th>User</th><th style={{ minWidth: 220 }}>Used of limit</th><th className="num">Active</th><th className="num">Idle</th>

@@ -10,7 +10,8 @@ import { phaseSummary } from "@/lib/progress";
 import MigrationForm from "@/components/MigrationForm";
 import MigrationPaths from "@/components/migrations/MigrationPaths";
 import { useSession } from "@/components/session";
-import { Badge, Banner, Loading, PageHeader, StatusBadge } from "@/components/ui";
+import { TransferIcon } from "@/components/icons";
+import { Badge, Banner, EmptyState, Loading, PageHeader, StatusBadge } from "@/components/ui";
 
 export default function MigrationsPage() {
   const { can } = useSession();
@@ -49,9 +50,18 @@ export default function MigrationsPage() {
       <div className="card">
         <div className="card-body flush table-wrap">
           {loading ? <Loading /> : !data || data.jobs.length === 0 ? (
-            <div className="empty">No migrations yet.</div>
+            <EmptyState icon={<TransferIcon size={20} />} title="No migrations yet"
+              action={can("migrations.manage") && (
+                <>
+                  <button className="btn primary" onClick={() => { setMode("migrate"); setCreating(true); }}>New migration</button>
+                  <button className="btn" onClick={() => { setMode("offline"); setCreating(true); }}>Offline copy</button>
+                </>
+              )}>
+              A migration copies a database to another server or another engine and checks the result. Creating one
+              changes nothing; the preflight check tells you what would happen first.
+            </EmptyState>
           ) : (
-            <table className="data">
+            <table className="data stack">
               <thead>
                 <tr><th>Name</th><th>Source</th><th>Target</th><th>Status</th><th>Phase</th><th className="num">Lag</th><th>Updated</th></tr>
               </thead>

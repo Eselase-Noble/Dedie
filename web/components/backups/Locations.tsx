@@ -102,7 +102,7 @@ export default function Locations({ locations, mayManage, reload }: {
         {mayManage && <button className="btn small" onClick={() => setAdding(true)}>Add location</button>}
       </div>
       <div className="card-body flush table-wrap">
-        <table className="data">
+        <table className="data stack">
           <thead><tr><th>Name</th><th>Where</th><th className="num">Backups</th><th /></tr></thead>
           <tbody>
             <tr>

@@ -96,7 +96,7 @@ export default function Recovery({ archives, mayManage, reload }: {
     <div className="card">
       <div className="card-head"><h2>Point-in-time recovery</h2><span className="muted">PostgreSQL</span></div>
       <div className="card-body flush table-wrap">
-        <table className="data">
+        <table className="data stack">
           <thead><tr><th>Connection</th><th>Log archiving</th><th className="num">Archive size</th><th>Last received</th><th>Can recover to any moment since</th><th /></tr></thead>
           <tbody>
             {archives.map((w) => (

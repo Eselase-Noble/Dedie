@@ -85,18 +85,16 @@ function Preflight({ report, name }: { report: PreflightReport; name: string }) 
         <button className="btn small" onClick={() => copyText(reportText(name, report))}>Copy</button>
         <button className="btn small" onClick={() => download(`preflight-${name.replace(/[^A-Za-z0-9]+/g, "-").toLowerCase()}.txt`, reportText(name, report), "text/plain;charset=utf-8")}>Download</button>
       </div>
-      <table className="data">
-        <tbody>
-          {shown.map((c, i) => (
-            <tr key={i}>
-              <td style={{ width: 70 }}><StatusBadge status={c.status} /></td>
-              <td style={{ width: 220 }}><strong>{c.name}</strong></td>
-              <td className="pre-line">{c.detail}</td>
-            </tr>
-          ))}
-          {shown.length === 0 && <tr><td colSpan={3} className="empty">Nothing needs attention.</td></tr>}
-        </tbody>
-      </table>
+      <ul className="checks">
+        {shown.map((c, i) => (
+          <li key={i}>
+            <StatusBadge status={c.status} />
+            <strong>{c.name}</strong>
+            <span className="check-detail">{c.detail}</span>
+          </li>
+        ))}
+      </ul>
+      {shown.length === 0 && <div className="empty">Nothing needs attention.</div>}
     </>
   );
 }
@@ -129,7 +127,7 @@ function Detail({ id }: { id: string }) {
   // "replace" is the same with existing objects on the target replaced.
   const [duplicating, setDuplicating] = useState<"" | "copy" | "replace">("");
 
-  if (loading && !job) return <div className="content"><Loading /></div>;
+  if (loading && !job) return <Loading page lines={6} />;
   if (!job) return <div className="content"><Banner tone="error">{error || "Migration not found."}</Banner></div>;
 
   const nameOf = (connId: string) => connections.data?.find((c) => c.id === connId)?.name ?? connId;
@@ -249,8 +247,8 @@ function Detail({ id }: { id: string }) {
 
   return (
     <div className="content">
-      <p style={{ marginBottom: 10 }}><Link href="/migrations/">← Migrations</Link></p>
       <PageHeader
+        back={{ href: "/migrations/", label: "Migrations" }}
         title={job.name}
         subtitle={<>{nameOf(job.source_id)} → {nameOf(job.target_id)} · created by {job.created_by} on {formatTime(job.created_at)}</>}
       >
@@ -414,11 +412,11 @@ function Detail({ id }: { id: string }) {
             <span className="muted">{job.tables.length} tables · {formatNumber(totalCopied)} of ~{formatNumber(totalEst)} rows copied</span>
           )}
         </div>
-        <div className="card-body flush table-wrap">
+        <div className="card-body flush table-wrap tall">
           {job.tables.length === 0 ? (
             <div className="empty">The table list appears once the schema phase has run.</div>
           ) : (
-            <table className="data">
+            <table className="data stack">
               <thead>
                 <tr>
                   <th>Table</th><th>Status</th><th style={{ minWidth: 140 }}>Initial copy</th><th className="num">Rows copied</th>
@@ -537,7 +535,7 @@ function DetailFromQuery() {
 // only known in the browser; hence the Suspense boundary.
 export default function MigrationDetailPage() {
   return (
-    <Suspense fallback={<div className="content"><Loading /></div>}>
+    <Suspense fallback={<Loading page lines={6} />}>
       <DetailFromQuery />
     </Suspense>
   );

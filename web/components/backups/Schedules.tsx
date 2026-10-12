@@ -148,7 +148,7 @@ export default function Schedules({ schedules, connections, locations, mayManage
         {schedules.length === 0 ? (
           <div className="empty">No schedules. Create one to take backups automatically and delete old ones.</div>
         ) : (
-          <table className="data">
+          <table className="data stack">
             <thead>
               <tr><th>Name</th><th>Connection</th><th>Type</th><th>When</th><th>Retention</th><th>Last run</th><th>Next run</th><th /></tr>
             </thead>

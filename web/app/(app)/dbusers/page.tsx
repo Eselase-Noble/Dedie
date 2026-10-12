@@ -117,7 +117,7 @@ export default function DatabaseUsersPage() {
               )}
             </div>
             <div className="card-body flush table-wrap">
-              <table className="data">
+              <table className="data stack">
                 <thead>
                   <tr>
                     <th>User</th><th>Application</th><th>From</th><th>Database</th><th className="num">Connections</th>
@@ -159,7 +159,7 @@ export default function DatabaseUsersPage() {
           <div className="card">
             <div className="card-head"><h2>Users and roles</h2><span className="muted">{data.accounts.length}</span></div>
             <div className="card-body flush table-wrap">
-              <table className="data">
+              <table className="data stack">
                 <thead>
                   <tr><th>Name</th><th>Sign-in</th><th>Privileges</th><th>Member of</th><th className="num">Connections</th><th className="num">Limit</th><th /></tr>
                 </thead>
@@ -170,7 +170,7 @@ export default function DatabaseUsersPage() {
                       <tr key={`${a.name}@${a.host ?? ""}`}>
                         <td><strong className="mono">{a.name}</strong>{a.host && <span className="muted mono">@{a.host}</span>}{self && <span className="muted"> (this connection)</span>}</td>
                         <td><Badge tone={a.can_login ? "ok" : ""}>{a.can_login ? "user" : connection.kind === "mysql" ? "locked" : "role"}</Badge></td>
-                        <td>
+                        <td className="wrap" style={{ maxWidth: 260 }}>
                           {a.superuser && <Badge tone="danger">superuser</Badge>}{" "}
                           {a.replication && <Badge tone="info">replication</Badge>}{" "}
                           {a.create_db && <Badge>create database</Badge>}{" "}
@@ -188,7 +188,7 @@ export default function DatabaseUsersPage() {
                                 onClick={() => setDisconnecting({ label: `all ${a.connections} connection${a.connections === 1 ? "" : "s"} of ${a.name}`, filter: { user: a.name } })}>
                                 Disconnect
                               </button>
-                              <button className="btn small" disabled={self} onClick={() => { setHandOver(false); setDropping(a); }}>Drop</button>
+                              <button className="btn small danger-quiet" disabled={self} onClick={() => { setHandOver(false); setDropping(a); }}>Drop</button>
                             </div>
                           )}
                         </td>
@@ -204,7 +204,7 @@ export default function DatabaseUsersPage() {
             <div className="card">
               <div className="card-head"><h2>Limits per database</h2></div>
               <div className="card-body flush table-wrap">
-                <table className="data">
+                <table className="data stack">
                   <thead><tr><th>Database</th><th className="num">Connections</th><th className="num">Limit</th><th /></tr></thead>
                   <tbody>
                     {data.databases.map((d) => (

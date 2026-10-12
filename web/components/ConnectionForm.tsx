@@ -8,7 +8,7 @@ import { Banner, Checkbox, Field, Modal } from "./ui";
 const SSL_MODES = ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"];
 const WEAK_SSL = ["disable", "allow", "prefer"];
 const DEFAULT_PORTS: Record<string, number> = { postgres: 5432, mysql: 3306, mongodb: 27017, oracle: 1521 };
-const KIND_LABELS: Record<string, string> = { postgres: "PostgreSQL", mysql: "MySQL", mongodb: "MongoDB", oracle: "Oracle" };
+export const KIND_LABELS: Record<string, string> = { postgres: "PostgreSQL", mysql: "MySQL", mongodb: "MongoDB", oracle: "Oracle" };
 
 export function ServerInfoSummary({ info }: { info: ServerInfo }) {
   return (

@@ -78,7 +78,7 @@ export default function DashboardPage() {
             {migrations.length === 0 ? (
               <div className="empty">No migrations yet.</div>
             ) : (
-              <table className="data">
+              <table className="data stack">
                 <thead>
                   <tr><th>Name</th><th>Status</th><th>Phase</th><th>Updated</th></tr>
                 </thead>
@@ -108,7 +108,7 @@ export default function DashboardPage() {
             {data.backups.length === 0 ? (
               <div className="empty">No backups yet.</div>
             ) : (
-              <table className="data">
+              <table className="data stack">
                 <thead>
                   <tr><th>Connection</th><th>Database</th><th>Status</th><th className="num">Size</th><th>Created</th></tr>
                 </thead>

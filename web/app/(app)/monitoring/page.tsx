@@ -44,7 +44,7 @@ export default function MonitoringPage() {
         <div className="card-head"><h2>Databases</h2></div>
         <div className="card-body flush table-wrap">
           {loading ? <Loading /> : !data || data.connections.length === 0 ? <div className="empty">No connections to watch.</div> : (
-            <table className="data">
+            <table className="data stack">
               <thead>
                 <tr><th>Connection</th><th>Now</th><th className="num">Uptime (24 h)</th><th className="num">Avg response</th><th>Checks, oldest to newest</th></tr>
               </thead>
@@ -72,7 +72,7 @@ export default function MonitoringPage() {
         <div className="card-head"><h2>Migrations in progress</h2></div>
         <div className="card-body flush table-wrap">
           {!data || data.migrations.length === 0 ? <div className="empty">No migration is running, paused or failed.</div> : (
-            <table className="data">
+            <table className="data stack">
               <thead><tr><th>Migration</th><th>Status</th><th>Phase</th><th className="num">Waiting to apply</th><th className="num">Changes applied</th><th>Last change applied</th></tr></thead>
               <tbody>
                 {data.migrations.map((m) => (
@@ -97,7 +97,7 @@ export default function MonitoringPage() {
         <div className="card-head"><h2>Recent alerts</h2></div>
         <div className="card-body flush table-wrap">
           {!data || data.events.length === 0 ? <div className="empty">Nothing has needed attention.</div> : (
-            <table className="data">
+            <table className="data stack">
               <thead><tr><th>When</th><th>Alert</th><th>Detail</th></tr></thead>
               <tbody>
                 {data.events.map((e) => (

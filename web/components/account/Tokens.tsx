@@ -87,7 +87,7 @@ export default function Tokens() {
           <code>Authorization: Bearer &lt;token&gt;</code>. It acts as you, limited to its role.
         </p>
         {loading ? <Loading /> : !data || data.length === 0 ? <div className="empty">No API tokens.</div> : (
-          <table className="data">
+          <table className="data stack">
             <thead><tr><th>Name</th>{showOwner && <th>Owner</th>}<th>Role</th><th>Created</th><th>Last used</th><th>Expires</th><th /></tr></thead>
             <tbody>
               {data.map((t) => (

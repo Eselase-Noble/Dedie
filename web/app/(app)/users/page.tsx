@@ -133,7 +133,7 @@ export default function UsersPage() {
       <div className="card">
         <div className="card-body flush table-wrap">
           {loading ? <Loading /> : (
-            <table className="data">
+            <table className="data stack">
               <thead>
                 <tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Two-factor</th><th>Created</th><th /></tr>
               </thead>
@@ -182,7 +182,7 @@ export default function UsersPage() {
       <div className="card">
         <div className="card-head"><h2>Roles</h2></div>
         <div className="card-body flush">
-          <table className="data">
+          <table className="data stack">
             <tbody>
               {ROLES.map((r) => <tr key={r}><td style={{ width: 120 }}><strong>{r}</strong></td><td>{ROLE_HELP[r]}</td></tr>)}
             </tbody>

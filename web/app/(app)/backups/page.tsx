@@ -7,7 +7,8 @@ import { formatBytes, formatTime } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 import type { Backup } from "@/lib/types";
 import { useSession } from "@/components/session";
-import { Badge, Banner, ConfirmDialog, Loading, PageHeader, StatusBadge } from "@/components/ui";
+import { ArchiveIcon } from "@/components/icons";
+import { Banner, ConfirmDialog, EmptyState, Loading, PageHeader, StatusBadge } from "@/components/ui";
 import CreateBackup from "@/components/backups/CreateBackup";
 import RestoreDialog from "@/components/backups/RestoreDialog";
 import Schedules from "@/components/backups/Schedules";
@@ -74,43 +75,56 @@ export default function BackupsPage() {
         <div className="card-head"><h2>Backups</h2></div>
         <div className="card-body flush table-wrap">
           {loading ? <Loading /> : !data || data.backups.length === 0 ? (
-            <div className="empty">No backups yet.</div>
+            <EmptyState icon={<ArchiveIcon size={20} />} title="No backups yet"
+              action={<button className="btn primary" onClick={() => setCreating(true)}>Create backup</button>}>
+              Take one now, or add a schedule below and let Dedie take and verify them for you. Backups are encrypted
+              unless you ask otherwise.
+            </EmptyState>
           ) : (
-            <table className="data">
+            <table className="data stack">
               <thead>
                 <tr>
-                  <th>Connection</th><th>Database</th><th>Method</th><th>Level</th><th>Status</th><th className="num">Size</th>
-                  <th>File</th><th>Verified</th><th>Created</th><th />
+                  <th>Backup</th><th>Type</th><th>Status</th><th className="num">Size</th><th>Created</th>
+                  <th><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody>
                 {data.backups.map((b) => (
                   <tr key={b.id}>
-                    <td>{b.connection_name}{b.note && <div className="muted">{b.note}</div>}</td>
-                    <td>{b.database}</td>
-                    <td title={b.tables.join(", ")}>
-                      {METHODS[methodOf(b.type)].label}
-                      <div className="muted">{typeLabel(b.type)}{b.type === "tables" && ` (${b.tables.length})`}</div>
-                    </td>
                     <td>
-                      <Badge tone={b.level === "full" ? "info" : ""}>{levelLabel(b.level)}</Badge>
-                      {b.parent_id && <div className="muted nowrap" title="The backup this one builds on. Both are needed to restore.">on {baseLabel(b.parent_id)}</div>}
-                    </td>
-                    <td>
-                      <StatusBadge status={b.status} />
-                      {b.error && <div className="pre-line" style={{ color: "var(--danger)", minWidth: 260, maxWidth: 420 }}>{b.error}</div>}
-                    </td>
-                    <td className="num">{b.status === "completed" ? formatBytes(b.size_bytes) : "—"}</td>
-                    <td>
+                      <strong>{b.database}</strong> <span className="muted">from {b.connection_name}</span>
+                      {b.note && <span className="sub">{b.note}</span>}
                       {b.path && (
                         <button className="link-btn path" title={`${b.path}\nClick to copy the path`} onClick={() => copyText(b.path)}>
                           {b.path.startsWith("s3://") ? b.path : b.path.split(/[\\/]/).pop()}
                         </button>
                       )}
-                      <div className="muted">{b.encrypted ? "encrypted" : "plain file"}</div>
                     </td>
-                    <td className="nowrap muted" title={b.sha256 ? `SHA-256 ${b.sha256}` : ""}>{formatTime(b.verified_at)}</td>
-                    <td className="nowrap muted">{formatTime(b.created_at)}<div>{b.created_by}</div></td>
+                    <td title={b.tables.join(", ")}>
+                      <div>
+                        {METHODS[methodOf(b.type)].label} · {levelLabel(b.level).toLowerCase()}
+                        <span className="sub">{typeLabel(b.type)}{b.type === "tables" && ` (${b.tables.length})`}</span>
+                        {b.parent_id && <span className="sub" title="The backup this one builds on. Both are needed to restore.">on {baseLabel(b.parent_id)}</span>}
+                      </div>
+                    </td>
+                    <td>
+                      <div>
+                        <StatusBadge status={b.status} />
+                        {b.status === "completed" && (
+                          <span className="sub" title={b.sha256 ? `SHA-256 ${b.sha256}` : ""}>
+                            {formatTime(b.verified_at) === "—" ? "not verified yet" : `verified ${formatTime(b.verified_at)}`}
+                          </span>
+                        )}
+                        {b.error && <div className="pre-line" style={{ color: "var(--danger)", minWidth: 260, maxWidth: 420 }}>{b.error}</div>}
+                      </div>
+                    </td>
+                    <td className="num">
+                      <div>
+                        {b.status === "completed" ? formatBytes(b.size_bytes) : "—"}
+                        <span className="sub">{b.encrypted ? "encrypted" : "plain file"}</span>
+                      </div>
+                    </td>
+                    <td className="nowrap"><div>{formatTime(b.created_at)}<span className="sub">{b.created_by}</span></div></td>
                     <td>
                       <div className="row-actions">
                         {b.status === "completed" && (
@@ -132,7 +146,7 @@ export default function BackupsPage() {
                             }}
                             title="Download the decrypted archive. The copy is no longer protected by Dedie.">Download</a>
                         )}
-                        {mayRestore && b.status !== "running" && <button className="btn small" onClick={() => setDeleting(b)}>Delete</button>}
+                        {mayRestore && b.status !== "running" && <button className="btn small danger-quiet" onClick={() => setDeleting(b)}>Delete</button>}
                       </div>
                     </td>
                   </tr>
@@ -153,7 +167,7 @@ export default function BackupsPage() {
           {!data || data.restores.length === 0 ? (
             <div className="empty">No restores have been run.</div>
           ) : (
-            <table className="data">
+            <table className="data stack">
               <thead>
                 <tr><th>Backup</th><th>Target</th><th>Status</th><th>Started</th><th>Finished</th><th /></tr>
               </thead>
