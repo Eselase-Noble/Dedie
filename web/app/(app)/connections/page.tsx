@@ -25,10 +25,10 @@ function StatusCell({ status }: { status?: ConnectionStatus }) {
     );
   }
   return (
-    <span className="status" title={status.error}>
-      <span className="dot offline" />Offline
-      <span className="status-error">{status.error}</span>
-    </span>
+    <div title={status.error}>
+      <span className="status"><span className="dot offline" />Offline</span>
+      <span className="sub status-error">{status.error}</span>
+    </div>
   );
 }
 
@@ -96,7 +96,7 @@ export default function ConnectionsPage() {
                       {c.read_only && <Badge>read-only</Badge>}{" "}
                       {c.restricted && <Badge tone="warn">restricted</Badge>}
                     </td>
-                    <td className="nowrap"><StatusCell status={statuses?.[c.id]} /></td>
+                    <td><StatusCell status={statuses?.[c.id]} /></td>
                     <td>
                       <div>
                         {KIND_LABELS[c.kind] ?? c.kind}

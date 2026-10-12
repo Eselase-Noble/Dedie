@@ -79,7 +79,7 @@ export default function AuditPage() {
       </div>
 
       <div className="card">
-        <div className="card-body flush table-wrap">
+        <div className="card-body flush table-wrap tall">
           {entries.length === 0 && loading ? <Loading /> : shown.length === 0 ? (
             <div className="empty">No entries.</div>
           ) : (

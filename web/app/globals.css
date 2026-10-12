@@ -299,7 +299,8 @@ table.data td .sub { display: block; color: var(--text-muted); font-size: var(--
 .status .dot.online { background: var(--ok-solid); box-shadow: 0 0 0 3px var(--ok-soft); }
 .status .dot.offline { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
 .status .dot.pending { background: var(--border-strong); }
-.status-error { color: var(--text-muted); max-width: 260px; overflow: hidden; text-overflow: ellipsis; margin-left: 4px; font-size: var(--fs-sm); }
+/* Why a server is offline, cut to one line; the whole of it is in the tooltip. */
+.status-error { max-width: 220px; white-space: nowrap; }
 .row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; }
 .muted { color: var(--text-muted); }
 .faint { color: var(--text-faint); }
@@ -815,7 +816,7 @@ ul.plain li { margin-bottom: 6px; }
   table.data.stack tr:last-child { border-bottom: none; }
   table.data.stack td { border: none; padding: 3px 0; max-width: none; white-space: normal; overflow: visible; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; justify-content: flex-end; text-align: right; overflow-wrap: anywhere; max-width: none !important; }
   table.data.stack td.num { text-align: right; }
-  table.data.stack td[data-label]::before { content: attr(data-label); flex: none; margin-right: auto; color: var(--text-muted); font-size: var(--fs-xs); font-weight: 600; text-align: left; }
+  table.data.stack td[data-label]::before { content: attr(data-label); flex: none; margin-right: auto; font-family: var(--font); color: var(--text-muted); font-size: var(--fs-xs); font-weight: 600; text-align: left; }
   table.data.stack td:first-child { display: block; text-align: left; padding: 3px 0 6px; }
   table.data.stack td:last-child { padding-right: 0; }
   table.data.stack td:not([data-label]) { text-align: left; }
