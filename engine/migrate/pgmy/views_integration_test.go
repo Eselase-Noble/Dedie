@@ -173,7 +173,7 @@ func TestMigrationViews(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	srcCfg, dstCfg, dst := viewDatabases(t, ctx)
-	cfg := migrate.Config{Mode: migrate.ModeOffline}
+	cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff}
 
 	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
 	if err != nil {
@@ -321,7 +321,7 @@ func TestMigrationViewsTableScope(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	srcCfg, dstCfg, dst := viewDatabases(t, ctx)
-	cfg := migrate.Config{Mode: migrate.ModeOffline, Tables: []string{"public.products"}}
+	cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff, Tables: []string{"public.products"}}
 
 	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
 	if err != nil {
@@ -359,7 +359,7 @@ func TestMigrationViewsExisting(t *testing.T) {
 		if _, err := dst.ExecContext(ctx, own); err != nil {
 			t.Fatal(err)
 		}
-		cfg := migrate.Config{Mode: migrate.ModeOffline}
+		cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff}
 		report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
 		if err != nil {
 			t.Fatal(err)
@@ -387,7 +387,7 @@ func TestMigrationViewsExisting(t *testing.T) {
 			t.Fatal(err)
 		}
 		before := definition(ctx, dst)
-		cfg := migrate.Config{Mode: migrate.ModeOffline, OnExisting: migrate.ExistingSkip}
+		cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff, OnExisting: migrate.ExistingSkip}
 		list, err := Preview(ctx, srcCfg, dstCfg, cfg)
 		if err != nil {
 			t.Fatal(err)
@@ -423,7 +423,7 @@ func TestMigrationViewsExisting(t *testing.T) {
 		if _, err := dst.ExecContext(ctx, own); err != nil {
 			t.Fatal(err)
 		}
-		cfg := migrate.Config{Mode: migrate.ModeOffline, OnExisting: migrate.ExistingReplace}
+		cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff, OnExisting: migrate.ExistingReplace}
 		list, err := Preview(ctx, srcCfg, dstCfg, cfg)
 		if err != nil {
 			t.Fatal(err)

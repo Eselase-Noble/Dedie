@@ -170,7 +170,7 @@ func TestMigrationViews(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	srcCfg, dstCfg, dst := viewDatabases(t, ctx)
-	cfg := migrate.Config{Mode: migrate.ModeOffline}
+	cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff}
 
 	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
 	if err != nil {
@@ -194,7 +194,7 @@ func TestMigrationViews(t *testing.T) {
 			t.Errorf("views check lacks %q", part)
 		}
 	}
-	if c := findCheck(t, report, "Not migrated"); strings.Contains(c.Detail, "views, stored") || !strings.Contains(c.Detail, "stored routines, triggers") {
+	if c := findCheck(t, report, "Not migrated"); strings.Contains(c.Detail, "views, stored") || !strings.Contains(c.Detail, "stored routines and triggers") {
 		t.Errorf("not migrated: %s", c.Detail)
 	}
 
@@ -228,7 +228,7 @@ func TestMigrationViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := leftoverNames(left), "view ranked; view ranked_names; view recent_sales; procedure restock; function vat; trigger sales_stock"; got != want {
+	if got, want := leftoverNames(left), "view ranked; view ranked_names; view recent_sales; function vat; procedure restock; trigger sales_stock"; got != want {
 		t.Errorf("not migrated:\n got %s\nwant %s", got, want)
 	}
 	for _, want := range []struct{ kind, name, reason, source string }{
@@ -297,7 +297,7 @@ func TestMigrationViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := leftoverNames(left), "view half_stock; view half_stock_names; view ranked; view ranked_names; view recent_sales; procedure restock; function vat; trigger sales_stock"; got != want {
+	if got, want := leftoverNames(left), "view half_stock; view half_stock_names; view ranked; view ranked_names; view recent_sales; function vat; procedure restock; trigger sales_stock"; got != want {
 		t.Errorf("not migrated after the job:\n got %s\nwant %s", got, want)
 	}
 	if l := findLeftover(t, left, "view", "half_stock"); !strings.Contains(l.Reason, "not kept on the target") || !strings.Contains(l.Reason, "add up to 506.0000") || !strings.Contains(l.Source, "/ 2") {
@@ -312,7 +312,7 @@ func TestMigrationViewsTableScope(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	srcCfg, dstCfg, dst := viewDatabases(t, ctx)
-	cfg := migrate.Config{Mode: migrate.ModeOffline, Tables: []string{"products"}}
+	cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff, Tables: []string{"products"}}
 
 	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
 	if err != nil {
@@ -357,7 +357,7 @@ func TestMigrationViewsExisting(t *testing.T) {
 		if _, err := dst.Exec(ctx, own); err != nil {
 			t.Fatal(err)
 		}
-		cfg := migrate.Config{Mode: migrate.ModeOffline}
+		cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff}
 		report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
 		if err != nil {
 			t.Fatal(err)
@@ -385,7 +385,7 @@ func TestMigrationViewsExisting(t *testing.T) {
 			t.Fatal(err)
 		}
 		before := definition(ctx, dst)
-		cfg := migrate.Config{Mode: migrate.ModeOffline, OnExisting: migrate.ExistingSkip}
+		cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff, OnExisting: migrate.ExistingSkip}
 		list, err := Preview(ctx, srcCfg, dstCfg, cfg)
 		if err != nil {
 			t.Fatal(err)
@@ -421,7 +421,7 @@ func TestMigrationViewsExisting(t *testing.T) {
 		if _, err := dst.Exec(ctx, own); err != nil {
 			t.Fatal(err)
 		}
-		cfg := migrate.Config{Mode: migrate.ModeOffline, OnExisting: migrate.ExistingReplace}
+		cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff, OnExisting: migrate.ExistingReplace}
 		list, err := Preview(ctx, srcCfg, dstCfg, cfg)
 		if err != nil {
 			t.Fatal(err)

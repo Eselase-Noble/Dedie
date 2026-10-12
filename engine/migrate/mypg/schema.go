@@ -10,6 +10,7 @@ import (
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/mymy"
 	"dedie/engine/migrate/pgpg"
+	"dedie/engine/migrate/storedcode"
 	"dedie/engine/migrate/viewsql"
 )
 
@@ -31,6 +32,9 @@ type Plan struct {
 	// created once the data is in and validated, in the order to create
 	// them, then those that are left out, each with the reason.
 	Views []*viewsql.View
+	// Code is the source's stored code in scope, with the converter's
+	// verdict on each object and whether the job will create it.
+	Code []*storedcode.Object
 	// Notes list everything that was translated with a change in meaning
 	// or could not be carried over. Preflight shows them to the operator.
 	Notes []string
@@ -243,6 +247,10 @@ func BuildPlan(ctx context.Context, src *sql.DB, database string, cfg migrate.Co
 		return nil, err
 	}
 	p.planViews(views, cfg.Scope() == "table")
+	if err := p.loadCode(ctx, src, cfg.Scope() == "table"); err != nil {
+		return nil, err
+	}
+	p.planCode(ctx, src, cfg.CodeMode())
 	return p, nil
 }
 
@@ -351,7 +359,7 @@ func (p *Plan) claims() []pgpg.Claim {
 	for _, v := range viewsql.Kept(p.Views) {
 		out = append(out, pgpg.Claim{Kind: "view", Name: v.Label, Ident: v.Target.Quoted})
 	}
-	return out
+	return append(out, pgpg.CodeClaims(p.Code)...)
 }
 
 // keep removes from the plan every statement that would create an object
@@ -376,4 +384,5 @@ func (p *Plan) keep(kept []string) {
 			v.SQL, v.Reason = "", "the target already has a view of this name, which is kept as it is"
 		}
 	}
+	pgpg.KeepCode(p.Code, kept)
 }

@@ -233,7 +233,7 @@ func TestMigrationViews(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	srcCfg, dstCfg, _, dst := viewSetup(t, ctx)
-	cfg := migrate.Config{Mode: migrate.ModeOffline}
+	cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff}
 
 	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
 	if err != nil {
@@ -381,7 +381,7 @@ func TestMigrationViewsTableScope(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	srcCfg, dstCfg, _, dst := viewSetup(t, ctx)
-	cfg := migrate.Config{Mode: migrate.ModeOffline, Tables: []string{"dedie_iw_products"}}
+	cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff, Tables: []string{"dedie_iw_products"}}
 
 	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
 	if err != nil {
@@ -435,7 +435,7 @@ func TestMigrationViewsExisting(t *testing.T) {
 		defer cancel()
 		srcCfg, dstCfg, _, dst := viewSetup(t, ctx)
 		mustExec(t, ctx, dst, own)
-		cfg := migrate.Config{Mode: migrate.ModeOffline, Tables: tables}
+		cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff, Tables: tables}
 		report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
 		if err != nil {
 			t.Fatal(err)
@@ -461,7 +461,7 @@ func TestMigrationViewsExisting(t *testing.T) {
 		srcCfg, dstCfg, _, dst := viewSetup(t, ctx)
 		mustExec(t, ctx, dst, own)
 		before := definition(ctx, dst)
-		cfg := migrate.Config{Mode: migrate.ModeOffline, Tables: tables, OnExisting: migrate.ExistingSkip}
+		cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff, Tables: tables, OnExisting: migrate.ExistingSkip}
 		list, err := Preview(ctx, srcCfg, dstCfg, cfg)
 		if err != nil {
 			t.Fatal(err)
@@ -495,7 +495,7 @@ func TestMigrationViewsExisting(t *testing.T) {
 		defer cancel()
 		srcCfg, dstCfg, _, dst := viewSetup(t, ctx)
 		mustExec(t, ctx, dst, own)
-		cfg := migrate.Config{Mode: migrate.ModeOffline, Tables: tables, OnExisting: migrate.ExistingReplace}
+		cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff, Tables: tables, OnExisting: migrate.ExistingReplace}
 		list, err := Preview(ctx, srcCfg, dstCfg, cfg)
 		if err != nil {
 			t.Fatal(err)

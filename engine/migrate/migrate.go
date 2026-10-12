@@ -76,6 +76,12 @@ type Config struct {
 	// with the name of one being migrated: ExistingFail (the default),
 	// ExistingSkip or ExistingReplace. See those constants.
 	OnExisting string `json:"on_existing,omitempty"`
+	// Code says what a migration between two kinds of database does with
+	// stored functions, procedures and triggers: CodeConverted (the
+	// default), CodeReview or CodeOff. See those constants. A migration
+	// between two databases of one kind copies them as they are and
+	// ignores this.
+	Code string `json:"code,omitempty"`
 	// CutoverTimeoutSeconds bounds how long cutover waits for the stream to
 	// drain before giving up and resuming normal streaming.
 	CutoverTimeoutSeconds int `json:"cutover_timeout_seconds"`
@@ -116,6 +122,35 @@ const (
 	// the target, along with whatever depends on it there.
 	ExistingReplace = "replace"
 )
+
+// What a migration between two kinds of database does with stored
+// functions, procedures and triggers. The converter says of each routine
+// whether every construct in it has a rewrite that keeps its behaviour
+// ("converted"), whether some rewrite may behave differently ("review"),
+// or whether it has no rewrite at all; a routine of the last sort is never
+// created.
+const (
+	// CodeConverted creates the routines the converter vouches for. Those
+	// that need a person's review are not created: their converted draft
+	// and the notes on what to check are handed to the administrator.
+	CodeConverted = "converted"
+	// CodeReview also creates the routines that need review, and reports
+	// them as such.
+	CodeReview = "review"
+	// CodeOff converts nothing; all stored code is left for the
+	// administrator, with its definition on the source.
+	CodeOff = "off"
+)
+
+// CodeMode returns what the job does with stored code, with the default
+// filled in.
+func (c Config) CodeMode() string {
+	switch c.Code {
+	case CodeReview, CodeOff:
+		return c.Code
+	}
+	return CodeConverted
+}
 
 // Existing returns the policy for objects already on the target, with
 // the default filled in.
@@ -237,7 +272,9 @@ type Statement struct {
 	Name string `json:"name"`
 	SQL  string `json:"sql"`
 	// End is what closes the statement in a script when a semicolon does
-	// not: "/" for an Oracle program unit, whose own text ends in one.
+	// not: "/" for an Oracle program unit, whose own text ends in one,
+	// and "//" for a MySQL routine, whose body has semicolons inside and
+	// needs the client told of another delimiter.
 	End string `json:"end,omitempty"`
 }
 
@@ -265,6 +302,23 @@ type Leftover struct {
 	// End is what closes the statement in a script when a semicolon does
 	// not: "/" for an Oracle program unit, whose own text ends in one.
 	End string `json:"end,omitempty"`
+
+	// The rest is filled in for stored code the migration tried to
+	// convert.
+
+	// Status is how far the conversion got: "review" for a routine that
+	// was converted but not created because a person has to check it,
+	// "unconverted" for one that has no conversion, "not created" for
+	// one the target refused, and "created, needs review" for one that
+	// is on the target and still wants checking. It is empty for views
+	// and for code no conversion was tried on.
+	Status string `json:"status,omitempty"`
+	// Notes say, naming the line of the source, what to check or why
+	// the routine could not be converted.
+	Notes []string `json:"notes,omitempty"`
+	// Draft is the converted routine in the target's dialect, as a
+	// script, where there is one: the place to start from.
+	Draft string `json:"draft,omitempty"`
 }
 
 // LeftoverLister is implemented by pipelines that leave some of the

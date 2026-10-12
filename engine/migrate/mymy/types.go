@@ -25,6 +25,7 @@ import (
 	"dedie/engine/connector"
 	"dedie/engine/connector/mysql"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/storedcode"
 	"dedie/engine/migrate/viewsql"
 )
 
@@ -109,6 +110,12 @@ type State struct {
 	// database translated and created: kept and verified, kept without
 	// verification, or dropped again. See viewsql.Checker.
 	Views []viewsql.Result `json:"views,omitempty"`
+	// Code says the same of each converted function, procedure and
+	// trigger such a pipeline set out to create; see storedcode.Target.
+	Code []storedcode.Outcome `json:"code,omitempty"`
+	// Objects counts, once the job has finished, what it did with views
+	// and stored code.
+	Objects *storedcode.Summary `json:"objects,omitempty"`
 }
 
 // checkpointTable lives in the target database while a job runs.

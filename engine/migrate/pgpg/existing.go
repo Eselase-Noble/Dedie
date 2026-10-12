@@ -14,7 +14,7 @@ import (
 // Claim is one name a migration is about to take on a PostgreSQL target.
 type Claim struct {
 	// Kind is the kind of object to be created: table, sequence, index,
-	// view, materialized view, type, domain, function or trigger.
+	// view, materialized view, type, domain, function, routine or trigger.
 	Kind string
 	// Name is how the object is shown to the operator.
 	Name string
@@ -72,7 +72,10 @@ const relDropSQL = `coalesce((SELECT format('ALTER TABLE IF EXISTS %I.%I DROP CO
 // the namespace, not only an object of the same kind: tables, views,
 // sequences and indexes are all relations; every relation but an index
 // also owns a type of its name; functions, procedures and aggregates are
-// told apart by their argument types; triggers are named per table.
+// told apart by their argument types; triggers are named per table. A
+// claim of the kind "routine" is for a function or procedure converted
+// from a database that has no overloading: there any routine of the name
+// is in the way, whatever its arguments.
 //
 // The array type PostgreSQL creates beside every type is left out, because
 // it is renamed out of the way when its name is wanted.
@@ -103,6 +106,13 @@ const existingSQL = `WITH claim AS (
 	FROM claim w JOIN pg_namespace n ON n.nspname = w.a
 	JOIN pg_proc p ON p.pronamespace = n.oid AND p.proname = w.b
 	WHERE w.kind = 'function' AND w.args = ` + ArgTypesSQL + `
+	UNION ALL
+	SELECT w.ord, CASE p.prokind WHEN 'p' THEN 'procedure' WHEN 'a' THEN 'aggregate' ELSE 'function' END,
+		format('%s.%s(%s)', n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)),
+		format('DROP ROUTINE IF EXISTS %I.%I(%s) CASCADE', n.nspname, p.proname, pg_get_function_identity_arguments(p.oid))
+	FROM claim w JOIN pg_namespace n ON n.nspname = w.a
+	JOIN pg_proc p ON p.pronamespace = n.oid AND p.proname = w.b
+	WHERE w.kind = 'routine'
 	UNION ALL
 	SELECT w.ord, 'trigger', g.tgname || ' on ' || n.nspname || '.' || c.relname,
 		format('DROP TRIGGER IF EXISTS %I ON %I.%I', g.tgname, n.nspname, c.relname)

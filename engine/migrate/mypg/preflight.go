@@ -14,6 +14,7 @@ import (
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/mymy"
 	"dedie/engine/migrate/pgpg"
+	"dedie/engine/migrate/storedcode"
 	"dedie/engine/migrate/viewsql"
 )
 
@@ -98,8 +99,14 @@ func preflight(ctx context.Context, src *sql.DB, dst *pgx.Conn, plan *Plan, cfg 
 		status, detail := viewsql.Describe(plan.Views)
 		r.Add("Views", status, detail)
 	}
-	r.Add("Not migrated", "warn", "stored routines, triggers and scheduled events are written in MySQL's own language and are not translated. "+
-		"Their definitions, and those of the views that are left out, can be had as one script to convert by hand. User accounts and privileges are not copied")
+	scope := ""
+	if cfg.Scope() == "table" {
+		scope = tableScopeNote
+	}
+	status, detail := storedcode.Describe(mysql.Kind, postgres.Kind, plan.Code, cfg.CodeMode(), scope)
+	r.Add("Stored code", status, detail)
+	r.Add("Not migrated", "warn", "scheduled events have no counterpart in PostgreSQL, and stored routines and triggers are created only where their conversion can be vouched for. "+
+		"The definitions of what stays behind, with the converted drafts where there are any, can be had as one script. User accounts and privileges are not copied")
 
 	var ssl bool
 	_ = dst.QueryRow(ctx, `SELECT coalesce((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false)`).Scan(&ssl)

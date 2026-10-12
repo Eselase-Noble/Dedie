@@ -229,7 +229,7 @@ func TestMigrationViews(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	srcCfg, dstCfg, _, dst := viewSetup(t, ctx)
-	cfg := migrate.Config{Mode: migrate.ModeOffline}
+	cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff}
 
 	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
 	if err != nil {
@@ -377,7 +377,7 @@ func TestMigrationViewsTableScope(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	srcCfg, dstCfg, _, dst := viewSetup(t, ctx)
-	cfg := migrate.Config{Mode: migrate.ModeOffline, Tables: []string{"dedie_iv_products"}}
+	cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff, Tables: []string{"dedie_iv_products"}}
 
 	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
 	if err != nil {
@@ -439,7 +439,7 @@ func TestMigrationViewsExisting(t *testing.T) {
 
 	// Refused: preflight names the view, and the job does not start.
 	plant()
-	cfg := migrate.Config{Mode: migrate.ModeOffline, Tables: tables}
+	cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeOff, Tables: tables}
 	report, err := Preflight(ctx, srcCfg, dstCfg, cfg)
 	if err != nil {
 		t.Fatal(err)
