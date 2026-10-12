@@ -248,7 +248,7 @@ func TestMigrationViews(t *testing.T) {
 	}
 
 	st, warnings := runOffline(t, ctx, srcCfg, dstCfg, cfg)
-	if got, want := viewResults(st), "sales_by_product=verified a_best_sellers=verified half_stock=dropped half_stock_names=dropped product_labels=verified"; got != want {
+	if got, want := viewResults(st), "sales_by_product=verified a_best_sellers=verified half_stock=dropped half_stock_names=not created product_labels=verified"; got != want {
 		t.Errorf("what became of the views:\n got %s\nwant %s", got, want)
 	}
 	if got, want := targetViews(t, ctx, dst), "a_best_sellers product_labels sales_by_product"; got != want {
@@ -329,7 +329,7 @@ func TestMigrationViewsTableScope(t *testing.T) {
 		t.Errorf("a job for one table without triggers leaves behind: %s", got)
 	}
 	st, _ := runOffline(t, ctx, srcCfg, dstCfg, cfg)
-	if got, want := viewResults(st), "half_stock=dropped half_stock_names=dropped product_labels=verified"; got != want {
+	if got, want := viewResults(st), "half_stock=dropped half_stock_names=not created product_labels=verified"; got != want {
 		t.Errorf("what became of the views: %s, want %s", got, want)
 	}
 	if got := targetViews(t, ctx, dst); got != "product_labels" {
@@ -396,7 +396,7 @@ func TestMigrationViewsExisting(t *testing.T) {
 			}
 		}
 		st, _ := runOffline(t, ctx, srcCfg, dstCfg, cfg)
-		if got, want := viewResults(st), "sales_by_product=verified a_best_sellers=verified half_stock=dropped half_stock_names=dropped"; got != want {
+		if got, want := viewResults(st), "sales_by_product=verified a_best_sellers=verified half_stock=dropped half_stock_names=not created"; got != want {
 			t.Errorf("what became of the views: %s, want %s", got, want)
 		}
 		if after := definition(ctx, dst); after != before {

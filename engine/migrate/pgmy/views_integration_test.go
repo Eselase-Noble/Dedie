@@ -256,7 +256,7 @@ func TestMigrationViews(t *testing.T) {
 	}
 
 	st, warnings := runOffline(t, ctx, srcCfg, dstCfg, cfg)
-	if got, want := viewResults(st), "public.sales_by_product=verified public.a_best_sellers=verified public.half_stock=dropped public.half_stock_names=dropped public.product_labels=verified"; got != want {
+	if got, want := viewResults(st), "public.sales_by_product=verified public.a_best_sellers=verified public.half_stock=dropped public.half_stock_names=not created public.product_labels=verified"; got != want {
 		t.Errorf("what became of the views:\n got %s\nwant %s", got, want)
 	}
 	if got, want := targetViews(t, ctx, dst), "a_best_sellers product_labels sales_by_product"; got != want {
@@ -331,7 +331,7 @@ func TestMigrationViewsTableScope(t *testing.T) {
 		t.Errorf("views check: %s: %s", c.Status, c.Detail)
 	}
 	st, _ := runOffline(t, ctx, srcCfg, dstCfg, cfg)
-	if got, want := viewResults(st), "public.half_stock=dropped public.half_stock_names=dropped public.product_labels=verified"; got != want {
+	if got, want := viewResults(st), "public.half_stock=dropped public.half_stock_names=not created public.product_labels=verified"; got != want {
 		t.Errorf("what became of the views: %s, want %s", got, want)
 	}
 	if got := targetViews(t, ctx, dst); got != "product_labels" {
@@ -398,7 +398,7 @@ func TestMigrationViewsExisting(t *testing.T) {
 			}
 		}
 		st, _ := runOffline(t, ctx, srcCfg, dstCfg, cfg)
-		if got, want := viewResults(st), "public.sales_by_product=verified public.a_best_sellers=verified public.half_stock=dropped public.half_stock_names=dropped"; got != want {
+		if got, want := viewResults(st), "public.sales_by_product=verified public.a_best_sellers=verified public.half_stock=dropped public.half_stock_names=not created"; got != want {
 			t.Errorf("what became of the views: %s, want %s", got, want)
 		}
 		if after := definition(ctx, dst); after != before {

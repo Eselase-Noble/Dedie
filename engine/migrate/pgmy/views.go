@@ -133,11 +133,15 @@ func (r *runner) viewChecker() viewsql.Checker {
 			}
 			return row, err
 		},
-		Create: func(ctx context.Context, v *viewsql.View) error {
-			if _, err := r.dst.ExecContext(ctx, v.SQL); err != nil && !alreadyExists(err) {
-				return errors.New(message(err))
+		Create: func(ctx context.Context, v *viewsql.View) (bool, error) {
+			_, err := r.dst.ExecContext(ctx, v.SQL)
+			switch {
+			case err == nil:
+				return false, nil
+			case alreadyExists(err):
+				return true, nil
 			}
-			return nil
+			return false, errors.New(message(err))
 		},
 		Drop: func(ctx context.Context, v *viewsql.View) error {
 			if _, err := r.dst.ExecContext(ctx, "DROP VIEW IF EXISTS "+v.Target.Quoted); err != nil {
@@ -148,21 +152,25 @@ func (r *runner) viewChecker() viewsql.Checker {
 		TargetColumns: func(ctx context.Context, v *viewsql.View) ([]viewsql.Column, error) {
 			return mymy.ViewColumns(ctx, r.dst, v.Target.Bare)
 		},
-		Event: r.rep.Event,
+		Event:    r.rep.Event,
+		Previous: r.st.Views,
+		Save: func(results []viewsql.Result) {
+			r.st.Views = results
+			r.save()
+		},
 	}
 }
 
 // finishViews creates the translated views and keeps those that return
 // the same as on the source. It runs when the tables have been validated,
 // which is the one moment both databases are known to hold the same rows.
+// What becomes of each view is saved in the job's state as it goes.
 func (r *runner) finishViews(ctx context.Context) error {
 	n := len(viewsql.Kept(r.plan.Views))
 	if n == 0 {
 		return nil
 	}
 	r.rep.Event("info", fmt.Sprintf("creating %d translated view(s) and comparing each with the source", n))
-	results, err := r.viewChecker().Finish(ctx, r.plan.Views)
-	r.st.Views = results
-	r.save()
+	_, err := r.viewChecker().Finish(ctx, r.plan.Views)
 	return err
 }

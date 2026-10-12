@@ -294,9 +294,16 @@ const (
 	// Unverified: created and kept, but the comparison could not be made
 	// in the time allowed.
 	Unverified = "not verified"
-	// Dropped: the target refused it or it returned something else; it
-	// is not on the target.
+	// Dropped: created, but it returned something else than on the
+	// source, and was removed again.
 	Dropped = "dropped"
+	// NotCreated: the target refused the definition, the view reads one
+	// that was not kept, or its name was taken by the time it was its turn.
+	NotCreated = "not created"
+	// creating marks a view the job is about to create. It is saved
+	// before the view is, so that a job interrupted at this point knows
+	// the view it then finds on the target for its own.
+	creating = "creating"
 )
 
 // Result is what became of one view. A job keeps these in its state.
@@ -307,6 +314,9 @@ type Result struct {
 	Status string `json:"status"`
 	Detail string `json:"detail,omitempty"`
 }
+
+// Lost reports whether the view was attempted and is not on the target.
+func (r Result) Lost() bool { return r.Status == Dropped || r.Status == NotCreated }
 
 // DefaultTimeout is how long the comparison waits for either database to
 // describe one view.
@@ -326,11 +336,16 @@ type Checker struct {
 	// SourceRow and TargetRow run a query that returns one row and give
 	// its values as text, nil for NULL.
 	SourceRow, TargetRow func(ctx context.Context, query string) ([]*string, error)
-	// Create runs the view's statement on the target. A view that is
-	// already there counts as created: a job that was interrupted here
-	// finds its own views when it is run again.
-	Create func(ctx context.Context, v *View) error
+	// Create runs the view's statement on the target. It reports, without
+	// an error, when the target already has something of that name.
+	Create func(ctx context.Context, v *View) (existed bool, err error)
 	Drop   func(ctx context.Context, v *View) error
+	// Previous is what an earlier attempt of the same job recorded, and
+	// Save stores the record as it grows. Between them a job that was
+	// interrupted here does not repeat what it finished, and can tell a
+	// view of its own making from one that appeared under the same name.
+	Previous []Result
+	Save     func([]Result)
 	// TargetColumns reads the columns the created view has.
 	TargetColumns func(ctx context.Context, v *View) ([]Column, error)
 	// Timeout bounds each side of one comparison; zero means DefaultTimeout.
@@ -345,49 +360,79 @@ type Checker struct {
 // tables were validated, for a migration that follows changes at cutover.
 //
 // A view the target refuses, or that does not return the same as on the
-// source, is dropped again and reported; it never fails the job. A view
+// source, is not kept and is reported; it never fails the job. A view
 // whose comparison takes longer than the timeout is kept and reported as
-// not verified. The only error is the context's.
+// not verified. Something that turns up on the target under a view's name
+// without this job having put it there is left alone. The only error is
+// the context's.
 func (c Checker) Finish(ctx context.Context, views []*View) ([]Result, error) {
-	gone := map[*View]bool{}
+	previous := map[string]Result{}
+	for _, r := range c.Previous {
+		previous[r.Name] = r
+	}
 	var results []Result
+	save := func() {
+		if c.Save != nil {
+			c.Save(results)
+		}
+	}
+	gone := map[*View]bool{}
 	counts := map[string]int{}
 	for _, v := range Kept(views) {
 		if err := ctx.Err(); err != nil {
 			return results, err
 		}
-		r := Result{Name: v.Source(), Target: v.Label}
-		r.Status, r.Detail = c.one(ctx, v, gone)
-		if err := ctx.Err(); err != nil {
-			return results, err
+		r, known := previous[v.Source()]
+		if !known || r.Status == creating {
+			r = Result{Name: v.Source(), Target: v.Label, Status: creating}
+			results = append(results, r)
+			save()
+			r.Status, r.Detail = c.one(ctx, v, gone, known)
+			if err := ctx.Err(); err != nil {
+				return results, err
+			}
+			results[len(results)-1] = r
+			save()
+			switch r.Status {
+			case Verified:
+				c.Event("info", fmt.Sprintf("created view %s; it returns the same as %s on the source", v.Label, v.Source()))
+			case Unverified:
+				c.Event("warn", fmt.Sprintf("created view %s, but it was not verified against the source: %s", v.Label, r.Detail))
+			default:
+				c.Event("warn", fmt.Sprintf("view %s was not migrated: %s", v.Source(), r.Detail))
+			}
+		} else {
+			results = append(results, r)
 		}
-		switch r.Status {
-		case Verified:
-			c.Event("info", fmt.Sprintf("created view %s; it returns the same as %s on the source", v.Label, v.Source()))
-		case Unverified:
-			c.Event("warn", fmt.Sprintf("created view %s, but it was not verified against the source: %s", v.Label, r.Detail))
-		default:
+		if r.Lost() {
 			gone[v] = true
-			c.Event("warn", fmt.Sprintf("view %s was not migrated: %s", v.Source(), r.Detail))
 		}
 		counts[r.Status]++
-		results = append(results, r)
 	}
 	if len(results) > 0 {
-		c.Event("info", fmt.Sprintf("views: %d created and verified, %d created but not verified, %d not kept", counts[Verified], counts[Unverified], counts[Dropped]))
+		c.Event("info", fmt.Sprintf("views: %d created and verified, %d created but not verified, %d not kept",
+			counts[Verified], counts[Unverified], counts[Dropped]+counts[NotCreated]))
 	}
 	return results, nil
 }
 
-// one creates and verifies a single view.
-func (c Checker) one(ctx context.Context, v *View, gone map[*View]bool) (status, detail string) {
+// one creates and verifies a single view. started says an earlier attempt
+// of the job had begun on it, so a view of that name is its own.
+func (c Checker) one(ctx context.Context, v *View, gone map[*View]bool, started bool) (status, detail string) {
 	for _, need := range v.needs {
 		if gone[need] {
-			return Dropped, fmt.Sprintf("it reads the view %s, which was not kept", need.Source())
+			return NotCreated, fmt.Sprintf("it reads the view %s, which was not kept", need.Source())
 		}
 	}
-	if err := c.Create(ctx, v); err != nil {
-		return Dropped, "the target did not accept the translated definition: " + err.Error()
+	existed, err := c.Create(ctx, v)
+	switch {
+	case err != nil:
+		return NotCreated, "the target did not accept the translated definition: " + err.Error()
+	case existed && !started:
+		// Whatever was there when the job began was dealt with then, as
+		// the administrator chose. This arrived since, and is not the
+		// job's to compare or to drop.
+		return NotCreated, fmt.Sprintf("the target has had something called %s since the job started, which was left as it is", v.Label)
 	}
 	status, detail = c.verify(ctx, v)
 	if status == Dropped {

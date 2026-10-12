@@ -461,12 +461,13 @@ func (s *seq) word(n *node) error {
 		}
 		return keyword(up)
 	case "LIMIT", "OFFSET":
-		after := s.peek(2)
-		if t.o.From == Oracle || next == nil || !next.isNumber() || (after != nil && after.isOp(",")) {
-			return unsupported("it uses %s in a form that is specific to %s", up, t.o.From)
+		// Which rows a limit keeps depends on their order, and the
+		// databases do not agree on where NULL sorts: first in MySQL,
+		// last in PostgreSQL and Oracle.
+		if t.o.From == Oracle && !(next != nil && next.isNumber()) {
+			break
 		}
-		leaveFrom()
-		return keyword(up)
+		return unsupported("it uses %s, and which rows that keeps depends on how NULL is sorted, which the databases do differently", up)
 	case "JOIN":
 		if !s.inFrom {
 			return unsupported("it uses JOIN outside a FROM clause")

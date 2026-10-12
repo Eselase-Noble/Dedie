@@ -315,7 +315,7 @@ func TestMigrationViews(t *testing.T) {
 	}
 
 	st, warnings := runOffline(t, ctx, srcCfg, dstCfg, cfg)
-	if got, want := viewResults(st), "DEDIE_IW_SOLD=verified; DEDIE_IW_A_BEST=verified; DEDIE_IW_CODE_LEN=dropped; DEDIE_IW_CODE_NAMES=dropped; DEDIE_IW_LABELS=verified"; got != want {
+	if got, want := viewResults(st), "DEDIE_IW_SOLD=verified; DEDIE_IW_A_BEST=verified; DEDIE_IW_CODE_LEN=dropped; DEDIE_IW_CODE_NAMES=not created; DEDIE_IW_LABELS=verified"; got != want {
 		t.Errorf("what became of the views:\n got %s\nwant %s", got, want)
 	}
 	if got, want := targetViews(t, ctx, dst), "dedie_iw_a_best dedie_iw_labels dedie_iw_sold"; got != want {
@@ -407,7 +407,7 @@ func TestMigrationViewsTableScope(t *testing.T) {
 
 	cfg.Tables = []string{"dedie_iw_products"}
 	st, _ := runOffline(t, ctx, srcCfg, dstCfg, cfg)
-	if got, want := viewResults(st), "DEDIE_IW_CODE_LEN=dropped; DEDIE_IW_CODE_NAMES=dropped; DEDIE_IW_LABELS=verified"; got != want {
+	if got, want := viewResults(st), "DEDIE_IW_CODE_LEN=dropped; DEDIE_IW_CODE_NAMES=not created; DEDIE_IW_LABELS=verified"; got != want {
 		t.Errorf("what became of the views: %s, want %s", got, want)
 	}
 	if got := targetViews(t, ctx, dst); got != "dedie_iw_labels" {
@@ -472,7 +472,7 @@ func TestMigrationViewsExisting(t *testing.T) {
 			}
 		}
 		st, _ := runOffline(t, ctx, srcCfg, dstCfg, cfg)
-		if got, want := viewResults(st), "DEDIE_IW_SOLD=verified; DEDIE_IW_A_BEST=verified; DEDIE_IW_CODE_LEN=dropped; DEDIE_IW_CODE_NAMES=dropped"; got != want {
+		if got, want := viewResults(st), "DEDIE_IW_SOLD=verified; DEDIE_IW_A_BEST=verified; DEDIE_IW_CODE_LEN=dropped; DEDIE_IW_CODE_NAMES=not created"; got != want {
 			t.Errorf("what became of the views: %s, want %s", got, want)
 		}
 		if after := definition(ctx, dst); after != before {

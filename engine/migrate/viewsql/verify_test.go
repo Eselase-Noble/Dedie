@@ -93,7 +93,7 @@ func TestSummarySQL(t *testing.T) {
 // fakeDB answers the checker's questions from a table of rows per view.
 type fakeDB struct {
 	created, dropped []string
-	refuse           map[string]bool
+	refuse, there    map[string]bool
 	source, target   map[string][]*string
 	slow             map[string]bool
 	events           []string
@@ -117,12 +117,15 @@ func (f *fakeDB) checker() Checker {
 		TargetRow: func(ctx context.Context, query string) ([]*string, error) {
 			return f.target[strings.Trim(relation(query), `"`)], nil
 		},
-		Create: func(ctx context.Context, v *View) error {
+		Create: func(ctx context.Context, v *View) (bool, error) {
 			if f.refuse[v.Name] {
-				return errors.New("syntax error")
+				return false, errors.New("syntax error")
+			}
+			if f.there[v.Name] {
+				return true, nil
 			}
 			f.created = append(f.created, v.Name)
-			return nil
+			return false, nil
 		},
 		Drop: func(ctx context.Context, v *View) error { f.dropped = append(f.dropped, v.Name); return nil },
 		TargetColumns: func(ctx context.Context, v *View) ([]Column, error) {
@@ -185,7 +188,7 @@ func TestFinish(t *testing.T) {
 	for _, r := range results {
 		got = append(got, r.Name+"="+r.Status)
 	}
-	want := "S.GOOD=verified S.ON_GOOD=verified S.BAD=dropped S.ON_BAD=dropped S.REFUSED=dropped S.SLOW=not verified"
+	want := "S.GOOD=verified S.ON_GOOD=verified S.BAD=dropped S.ON_BAD=not created S.REFUSED=not created S.SLOW=not verified"
 	if strings.Join(got, " ") != want {
 		t.Errorf("results %q, want %q", got, want)
 	}
@@ -202,5 +205,56 @@ func TestFinish(t *testing.T) {
 	}
 	if got := strings.Join(db.created, " "); got != "GOOD ON_GOOD BAD SLOW" {
 		t.Errorf("created %q", got)
+	}
+}
+
+// TestFinishAgain is a job that was interrupted while it created its views
+// and is run again: what it finished stays finished, the view it had
+// begun is taken up, and a view of the same name as one it never reached
+// is somebody else's and is left alone.
+func TestFinishAgain(t *testing.T) {
+	naming := Naming{From: Oracle, To: Postgres, Ident: lowered,
+		Table: func(schema, name string) (Relation, bool) { return Relation{Quoted: `"t"`, Bare: "t"}, name == "T" },
+		View: func(schema, name string) (string, Relation, string) {
+			return lowered(name), Relation{Quoted: Quote(Postgres, lowered(name)), Bare: lowered(name)}, ""
+		}}
+	view := func(name string) *View {
+		return &View{Schema: "S", Name: name, Columns: []Column{{"N", Numeric}}, Definition: "select n from t"}
+	}
+	views := Plan([]*View{view("DONE"), view("BEGUN"), view("FOREIGN"), view("FRESH")}, naming)
+	same := row("2", "2", "30")
+	db := &fakeDB{there: map[string]bool{"DONE": true, "BEGUN": true, "FOREIGN": true},
+		source: map[string][]*string{"BEGUN": same, "FRESH": same}, target: map[string][]*string{"begun": row("2", "2", "31"), "fresh": same}}
+	c := db.checker()
+	c.Previous = []Result{{Name: "S.DONE", Target: "done", Status: Verified}, {Name: "S.BEGUN", Target: "begun", Status: creating}}
+	var saved [][]Result
+	c.Save = func(r []Result) { saved = append(saved, append([]Result(nil), r...)) }
+	results, err := c.Finish(context.Background(), views)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range results {
+		got = append(got, r.Name+"="+r.Status)
+	}
+	if want := "S.DONE=verified S.BEGUN=dropped S.FOREIGN=not created S.FRESH=verified"; strings.Join(got, " ") != want {
+		t.Errorf("results %q, want %q", got, want)
+	}
+	if !strings.Contains(results[2].Detail, "since the job started, which was left as it is") {
+		t.Errorf("the view that is not the job's: %q", results[2].Detail)
+	}
+	// Only the view the job began itself is compared and dropped.
+	if strings.Join(db.dropped, " ") != "BEGUN" || strings.Join(db.created, " ") != "FRESH" {
+		t.Errorf("dropped %q, created %q", db.dropped, db.created)
+	}
+	// Every view is on record as begun before it is created.
+	begun := 0
+	for _, list := range saved {
+		if last := list[len(list)-1]; last.Status == creating {
+			begun++
+		}
+	}
+	if begun != 3 {
+		t.Errorf("%d view(s) were recorded before they were created, want 3: %+v", begun, saved)
 	}
 }

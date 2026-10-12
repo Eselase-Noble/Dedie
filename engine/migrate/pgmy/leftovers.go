@@ -8,7 +8,6 @@ import (
 	"dedie/engine/connector"
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/pgpg"
-	"dedie/engine/migrate/viewsql"
 )
 
 // Why each kind of object stays behind.
@@ -37,7 +36,7 @@ func Leftovers(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate
 
 	dropped := map[string]string{}
 	for _, res := range st.Views {
-		if res.Status == viewsql.Dropped {
+		if res.Lost() {
 			dropped[res.Name] = res.Detail
 		}
 	}

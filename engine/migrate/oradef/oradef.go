@@ -155,7 +155,7 @@ var codeOrder = []string{"type", "type body", "function", "procedure", "package"
 func Leftovers(ctx context.Context, src oracle.Queryer, cat *orasrc.Catalog, tableScope bool, views []*viewsql.View, results []viewsql.Result) ([]migrate.Leftover, error) {
 	dropped := map[string]string{}
 	for _, res := range results {
-		if res.Status == viewsql.Dropped {
+		if res.Lost() {
 			dropped[res.Name] = res.Detail
 		}
 	}

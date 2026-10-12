@@ -72,15 +72,19 @@ func (r *runner) viewChecker() viewsql.Checker {
 			}
 			return row, err
 		},
-		Create: func(ctx context.Context, v *viewsql.View) error {
+		Create: func(ctx context.Context, v *viewsql.View) (bool, error) {
 			// A query that ran out of time takes its connection with it.
 			if err := r.reconnect(ctx); err != nil {
-				return err
+				return false, err
 			}
-			if _, err := r.dst.PgConn().Exec(ctx, v.SQL).ReadAll(); err != nil && !alreadyExists(err) {
-				return errors.New(pgMessage(err))
+			_, err := r.dst.PgConn().Exec(ctx, v.SQL).ReadAll()
+			switch {
+			case err == nil:
+				return false, nil
+			case alreadyExists(err):
+				return true, nil
 			}
-			return nil
+			return false, errors.New(pgMessage(err))
 		},
 		Drop: func(ctx context.Context, v *viewsql.View) error {
 			if err := r.reconnect(ctx); err != nil {
@@ -94,21 +98,25 @@ func (r *runner) viewChecker() viewsql.Checker {
 		TargetColumns: func(ctx context.Context, v *viewsql.View) ([]viewsql.Column, error) {
 			return pgpg.ViewColumns(ctx, r.dst, v.Target.Quoted)
 		},
-		Event: r.rep.Event,
+		Event:    r.rep.Event,
+		Previous: r.st.Views,
+		Save: func(results []viewsql.Result) {
+			r.st.Views = results
+			r.save()
+		},
 	}
 }
 
 // finishViews creates the translated views and keeps those that return
 // the same as on the source. It runs when the tables have been validated,
 // which is the one moment both databases are known to hold the same rows.
+// What becomes of each view is saved in the job's state as it goes.
 func (r *runner) finishViews(ctx context.Context) error {
 	n := len(viewsql.Kept(r.plan.Views))
 	if n == 0 {
 		return nil
 	}
 	r.rep.Event("info", fmt.Sprintf("creating %d translated view(s) and comparing each with the source", n))
-	results, err := r.viewChecker().Finish(ctx, r.plan.Views)
-	r.st.Views = results
-	r.save()
+	_, err := r.viewChecker().Finish(ctx, r.plan.Views)
 	return err
 }
