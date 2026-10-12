@@ -31,17 +31,33 @@ function original(l: Leftover): string {
 }
 
 /**
+ * Why the object is listed. For what has no conversion the reason quotes
+ * the first note, and the notes follow it anyway, so it is cut there
+ * rather than said twice.
+ */
+function reason(l: Leftover): string {
+  const first = l.notes?.[0];
+  const at = first ? l.reason.indexOf(first) : -1;
+  return at > 0 ? l.reason.slice(0, at).trimEnd() : l.reason;
+}
+
+/** Whether the converted statement was run on the target, so it is no longer only a draft. */
+function created(l: Leftover): boolean {
+  return l.status === "created, needs review";
+}
+
+/**
  * One object as it goes into the script. Where there is a converted draft
  * it comes first, under the notes on what to check, and the original
  * follows as a comment to compare against; otherwise the original stands
  * as it is.
  */
 function section(l: Leftover): string {
-  const out = [`-- ${l.kind} ${l.name}${l.status ? `  [${l.status}]` : ""}`, `-- ${l.reason.replace(/\n/g, " ")}`];
+  const out = [`-- ${l.kind} ${l.name}${l.status ? `  [${l.status}]` : ""}`, `-- ${reason(l).replace(/\n/g, " ")}`];
   for (const note of l.notes ?? []) out.push(`--   ${note}`);
   const draft = (l.draft ?? "").trim();
   if (!draft) return [...out, original(l), ""].join("\n");
-  out.push("-- Converted draft:", draft, "-- The original on the source:");
+  out.push(created(l) ? "-- As created on the target:" : "-- Converted draft:", draft, "-- The original on the source:");
   for (const line of original(l).split("\n")) out.push(`--   ${line}`);
   return [...out, ""].join("\n");
 }
@@ -70,23 +86,24 @@ function Item({ l, open }: { l: Leftover; open: boolean }) {
         {status && <span className={`badge ${status.tone}`}>{status.label}</span>}
       </summary>
       <div style={{ padding: "8px 12px", borderTop: "1px solid var(--border)" }}>
-        <p className="hint" style={{ margin: 0 }}>{l.reason}</p>
+        <p className="hint" style={{ margin: 0 }}>{reason(l)}</p>
         {l.notes && l.notes.length > 0 && (
           <ul className="hint" style={{ margin: "6px 0 0", paddingLeft: 18 }}>
             {l.notes.map((note) => <li key={note}>{note}</li>)}
           </ul>
         )}
+        {/* Above the definition, so the toggle stays put when the two differ in length. */}
+        <div className="actions" style={{ marginTop: 8 }}>
+          {draft && (
+            <div className="segmented small" role="group" aria-label="Which definition to show">
+              <button type="button" className={showing === "draft" ? "active" : ""} aria-pressed={showing === "draft"} onClick={() => setShowing("draft")}>{created(l) ? "As created" : "Converted draft"}</button>
+              <button type="button" className={showing === "original" ? "active" : ""} aria-pressed={showing === "original"} onClick={() => setShowing("original")}>Original</button>
+            </div>
+          )}
+          <button className="btn small" type="button" onClick={() => copyText(showing === "draft" ? draft : original(l))} disabled={!text}>Copy</button>
+        </div>
       </div>
       <pre className="mono">{text || "The source did not show this definition."}</pre>
-      <div className="actions" style={{ padding: "6px 10px", borderTop: "1px solid var(--border)" }}>
-        {draft && (
-          <div className="segmented small" role="group" aria-label="Which definition to show">
-            <button type="button" className={showing === "draft" ? "active" : ""} onClick={() => setShowing("draft")}>Converted draft</button>
-            <button type="button" className={showing === "original" ? "active" : ""} onClick={() => setShowing("original")}>Original</button>
-          </div>
-        )}
-        <button className="btn small" type="button" onClick={() => copyText(showing === "draft" ? draft : original(l))} disabled={!text}>Copy</button>
-      </div>
     </details>
   );
 }
