@@ -186,8 +186,11 @@ export default function MigrationForm({ connections, onClose, onCreated, initial
         {crossEngine && !mongo && (
           <Banner tone="info">
             Moving between engines translates the schema: tables, keys, indexes and foreign keys are recreated
-            with equivalent types on the target. Views, routines and triggers are not translated. The preflight
-            check lists every difference before anything is changed.
+            with equivalent types on the target.{" "}
+            {converting
+              ? "Views are translated where they can be, and stored procedures, functions and triggers are converted as chosen below."
+              : "Views, routines and triggers are not translated."}{" "}
+            The preflight check lists every difference before anything is changed.
           </Banner>
         )}
         {template && (
@@ -291,9 +294,9 @@ export default function MigrationForm({ connections, onClose, onCreated, initial
           {converting && (
             <Field label="Stored procedures, functions and triggers" className="span2"
               hint={code === "converted"
-                ? "Those whose conversion keeps their behaviour are created on the target. The ones that need a person's check are not: you get the converted draft and the notes."
+                ? "Those whose conversion keeps their behaviour are created on the target. Those a person has to check are not created: you get their converted drafts, with notes on what to check."
                 : code === "review"
-                  ? "Also creates the ones that may behave differently on the target, and lists them with what to check. Routines with no conversion are never created."
+                  ? "Also creates those that may behave differently on the target, and lists them with notes on what to check. What has no conversion is never created."
                   : "Nothing is converted. You get the source's definitions to convert by hand."}>
               <select className="select" value={code} onChange={(e) => setCode(e.target.value as CodeMode)}>
                 <option value="converted">Create what converts cleanly</option>
