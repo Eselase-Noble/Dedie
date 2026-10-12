@@ -69,7 +69,9 @@ dedie-server
 
 Open http://127.0.0.1:8080. On a new installation the sign-in page offers **Create account**: that creates your organization and its owner. From there:
 
-1. **Connections → Add connection** for each database. Passwords are encrypted before they are stored and are never shown again. Use **Test** before saving.
+The Overview page opens with a **Getting started** card that walks through the first connection, the first backup and the first migration, and ticks each off when it is done.
+
+1. **Connections → New connection** for each database. Passwords are encrypted before they are stored and are never shown again. Use **Test connection** before saving. Set **Environment** to production for the databases your applications run on: Dedie then asks for the connection's name before anything destructive is done to them.
 2. **Dedie users** to invite the rest of the team, each with a role (owner, admin, operator, analyst or viewer).
 3. **Account → Two-factor sign-in** for yourself, and **Security policy** if everyone should be required to use it.
 
