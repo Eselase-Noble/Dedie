@@ -626,8 +626,9 @@ func (s *seq) chain() error {
 		s.push(pPrimary, t.ident(parts[0])+".*")
 	case star && n == 2, !star && n == 3:
 		// The schema goes: on the target the table is known by its own
-		// name or by the alias the translation gave it.
-		if _, ok := t.o.Relation(parts[0], parts[1]); !ok {
+		// name or by the alias the translation gave it. MySQL also puts
+		// the database in front of an alias, when the alias is for a view.
+		if _, ok := t.o.Relation(parts[0], parts[1]); !ok && !strings.EqualFold(parts[0], t.o.Schema) {
 			return unsupported("it reads %s.%s, which is not part of the migration", parts[0], parts[1])
 		}
 		if star {

@@ -10,8 +10,11 @@
 // snapshot and never reads the binary log.
 //
 // Translation is deliberately conservative: every type maps to one that can
-// hold all of its values, and anything that cannot be carried over (views,
-// routines, triggers, expression defaults) is reported instead of guessed.
+// hold all of its values, and anything that cannot be carried over
+// (routines, triggers, expression defaults) is reported instead of guessed.
+// Views are translated where every construct they use has an equivalent
+// that means the same, created once the data is in, and kept only if they
+// then return what the source's views return; see package viewsql.
 package mypg
 
 import (
@@ -46,6 +49,14 @@ func (pipeline) Run(ctx context.Context, jobID string, cfg migrate.Config, state
 
 func (pipeline) Preview(ctx context.Context, src, dst connector.Config, cfg migrate.Config) ([]migrate.Statement, error) {
 	return Preview(ctx, src, dst, cfg)
+}
+
+func (pipeline) Leftovers(ctx context.Context, src, dst connector.Config, cfg migrate.Config, state json.RawMessage) ([]migrate.Leftover, error) {
+	var st mymy.State
+	if len(state) > 0 {
+		_ = json.Unmarshal(state, &st)
+	}
+	return Leftovers(ctx, src, dst, cfg, st)
 }
 
 // targetSchema is where the migrated tables are created.

@@ -2,6 +2,7 @@ package viewsql
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"math/big"
@@ -449,4 +450,45 @@ func (c Checker) verify(ctx context.Context, v *View) (status, detail string) {
 		return Dropped, "it does not return the same as on the source: " + diff
 	}
 	return Verified, ""
+}
+
+// Querier is the part of *sql.DB and *sql.Conn that Row needs.
+type Querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// Row runs a query that returns one row and gives its values back as
+// text, nil for NULL. It is what a Checker's SourceRow or TargetRow is for
+// a database reached through database/sql.
+func Row(ctx context.Context, db Querier, query string) ([]*string, error) {
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, sql.ErrNoRows
+	}
+	raw := make([]sql.NullString, len(cols))
+	dest := make([]any, len(cols))
+	for i := range raw {
+		dest[i] = &raw[i]
+	}
+	if err := rows.Scan(dest...); err != nil {
+		return nil, err
+	}
+	out := make([]*string, len(raw))
+	for i := range raw {
+		if raw[i].Valid {
+			out[i] = &raw[i].String
+		}
+	}
+	return out, rows.Err()
 }

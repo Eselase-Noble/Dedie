@@ -249,6 +249,38 @@ type Previewer interface {
 	Preview(ctx context.Context, src, dst connector.Config, cfg Config) ([]Statement, error)
 }
 
+// Leftover is an object of the source that a migration does not carry
+// over, with its definition as the source has it.
+type Leftover struct {
+	// Kind is what it is: "view", "function", "procedure", "trigger",
+	// "package" and so on.
+	Kind string `json:"kind"`
+	// Name is how the source knows it, qualified where that applies.
+	Name string `json:"name"`
+	// Reason says why it is not migrated.
+	Reason string `json:"reason"`
+	// Source is the statement that defines it, in the source's dialect.
+	// It is empty when the source would not show the definition.
+	Source string `json:"source"`
+	// End is what closes the statement in a script when a semicolon does
+	// not: "/" for an Oracle program unit, whose own text ends in one.
+	End string `json:"end,omitempty"`
+}
+
+// LeftoverLister is implemented by pipelines that leave some of the
+// source behind: stored code, which no pipeline between two different
+// databases translates, and the views it could not translate with the
+// same meaning. Rather than only saying so, such a pipeline hands the
+// administrator the definitions, so that converting them by hand can
+// start from one script instead of from a search through the source.
+//
+// state is the job's saved state, empty for a job that has not run; a
+// pipeline reads from it which views it created and had to drop again.
+// Like preflight, listing changes neither database.
+type LeftoverLister interface {
+	Leftovers(ctx context.Context, src, dst connector.Config, cfg Config, state json.RawMessage) ([]Leftover, error)
+}
+
 var pipelines = map[string]Pipeline{}
 
 // Kind names the pipeline for a source and target database kind.

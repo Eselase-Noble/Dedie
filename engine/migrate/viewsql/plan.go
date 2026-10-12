@@ -193,7 +193,7 @@ func Describe(views []*View) (status, detail string) {
 	}
 	if len(left) > 0 {
 		status = "warn"
-		lines = append(lines, fmt.Sprintf("%d view(s) are left out, because they could not be translated with the same meaning. Their definitions are in the script of what is not migrated:", len(left)))
+		lines = append(lines, fmt.Sprintf("%d view(s) are left out; their definitions are in the script of what is not migrated:", len(left)))
 		for i, v := range left {
 			if i == describedViews {
 				lines = append(lines, fmt.Sprintf("and %d more", len(left)-i))

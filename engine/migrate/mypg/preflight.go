@@ -14,6 +14,7 @@ import (
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/mymy"
 	"dedie/engine/migrate/pgpg"
+	"dedie/engine/migrate/viewsql"
 )
 
 // Preflight inspects both databases without changing either and reports
@@ -93,7 +94,12 @@ func preflight(ctx context.Context, src *sql.DB, dst *pgx.Conn, plan *Plan, cfg 
 		"TINYINT(1) columns become smallint, not boolean, so no value is lost.",
 		"ENUM and SET columns become text; ENUM keeps its list of allowed values as a CHECK constraint.",
 	}, "\n"))
-	r.Add("Not migrated", "warn", "views, stored routines, triggers and scheduled events are written in MySQL's dialect and are not translated; user accounts and privileges are not copied")
+	if len(plan.Views) > 0 {
+		status, detail := viewsql.Describe(plan.Views)
+		r.Add("Views", status, detail)
+	}
+	r.Add("Not migrated", "warn", "stored routines, triggers and scheduled events are written in MySQL's own language and are not translated. "+
+		"Their definitions, and those of the views that are left out, can be had as one script to convert by hand. User accounts and privileges are not copied")
 
 	var ssl bool
 	_ = dst.QueryRow(ctx, `SELECT coalesce((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false)`).Scan(&ssl)

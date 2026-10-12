@@ -10,6 +10,7 @@ import (
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/mymy"
 	"dedie/engine/migrate/pgpg"
+	"dedie/engine/migrate/viewsql"
 )
 
 // Stmt is one DDL statement to run on the target.
@@ -26,6 +27,10 @@ type Plan struct {
 	*mymy.Plan
 	Pre  []Stmt // tables
 	Post []Stmt // indexes and foreign keys
+	// Views are the source's views, translated: first those that will be
+	// created once the data is in and validated, in the order to create
+	// them, then those that are left out, each with the reason.
+	Views []*viewsql.View
 	// Notes list everything that was translated with a change in meaning
 	// or could not be carried over. Preflight shows them to the operator.
 	Notes []string
@@ -233,6 +238,11 @@ func BuildPlan(ctx context.Context, src *sql.DB, database string, cfg migrate.Co
 	if err := p.loadForeignKeys(ctx, src); err != nil {
 		return nil, err
 	}
+	views, err := loadViews(ctx, src, database)
+	if err != nil {
+		return nil, err
+	}
+	p.planViews(views, cfg.Scope() == "table")
 	return p, nil
 }
 
@@ -326,7 +336,7 @@ func (p *Plan) loadForeignKeys(ctx context.Context, src *sql.DB) error {
 // claims lists every name the plan takes in the target schema, for the
 // preflight to look up there. Apart from the tables these are the indexes,
 // read off the statements that create them, so what is checked and what is
-// created cannot drift apart. Foreign keys are named within their table,
+// created cannot drift apart, and the views that will be created. Foreign keys are named within their table,
 // and a primary key's index gets a free name from PostgreSQL.
 func (p *Plan) claims() []pgpg.Claim {
 	var out []pgpg.Claim
@@ -337,6 +347,9 @@ func (p *Plan) claims() []pgpg.Claim {
 		if s.Kind == "index" {
 			out = append(out, pgpg.Claim{Kind: s.Kind, Name: s.Name, Ident: qname(s.Name)})
 		}
+	}
+	for _, v := range viewsql.Kept(p.Views) {
+		out = append(out, pgpg.Claim{Kind: "view", Name: v.Label, Ident: v.Target.Quoted})
 	}
 	return out
 }
@@ -358,4 +371,9 @@ func (p *Plan) keep(kept []string) {
 		}
 	}
 	p.Post = out
+	for _, v := range p.Views {
+		if v.SQL != "" && is[pgpg.KeptKey("view", v.Label)] {
+			v.SQL, v.Reason = "", "the target already has a view of this name, which is kept as it is"
+		}
+	}
 }
