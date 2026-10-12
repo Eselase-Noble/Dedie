@@ -117,6 +117,23 @@ func OracleClass(dataType string) Class {
 	return Other
 }
 
+// comparable reports whether a column of one class on the source may be
+// one of another on the target. Numbers are numbers whatever their kind,
+// and a type the comparison knows nothing about (a UUID, an interval, a
+// large object) is commonly text or binary data on the other side. But a
+// number or a date that comes out as anything else, or the other way
+// round, is a translation that changed what the column is: the days
+// between two dates turned into an interval, say.
+func comparable(a, b Class) bool {
+	switch {
+	case a == b, a.countable() && b.countable():
+		return true
+	case a.countable() || b.countable() || a == Temporal || b == Temporal:
+		return false
+	}
+	return a == Other || b == Other
+}
+
 // SummarySQL writes the query that describes what a view returns, in one
 // row of text: the number of rows and then, for each column, how many of
 // its values are not NULL and a total. The total is the sum of a numeric
@@ -236,7 +253,7 @@ func Compare(names []string, src, dst []Column, a, b []*string, foldCase bool) s
 		if names[i] != dst[i].Name && !(foldCase && strings.EqualFold(names[i], dst[i].Name)) {
 			return fmt.Sprintf("column %d is called %s on the source and %s on the target", i+1, src[i].Name, dst[i].Name)
 		}
-		if x, y := src[i].Class, dst[i].Class; x != y && x != Other && y != Other && !(x.countable() && y.countable()) {
+		if x, y := src[i].Class, dst[i].Class; !comparable(x, y) {
 			return fmt.Sprintf("column %s is %s on the source and %s on the target", src[i].Name, x, y)
 		}
 	}

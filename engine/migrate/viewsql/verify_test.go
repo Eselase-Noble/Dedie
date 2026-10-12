@@ -41,6 +41,8 @@ func TestCompare(t *testing.T) {
 		{"column name", []Column{{"id", Numeric}, {"label", Text}, {"born", Temporal}}, base, "column 2 is called NAME on the source and label on the target"},
 		{"a number turned into text", []Column{{"id", Text}, {"name", Text}, {"born", Temporal}}, base, "column ID is a number on the source and text on the target"},
 		{"a type that is only counted", []Column{{"id", Numeric}, {"name", Other}, {"born", Temporal}}, row("3", "3", "6", "2", "NULL", "3", "NULL"), ""},
+		{"a number turned into something else", []Column{{"id", Other}, {"name", Text}, {"born", Temporal}}, base, "column ID is a number on the source and of another type on the target"},
+		{"a date turned into a number", []Column{{"id", Numeric}, {"name", Text}, {"born", Numeric}}, base, "column BORN is a date or time on the source and a number on the target"},
 	}
 	for _, c := range cases {
 		got := Compare(names, src, c.dst, base, c.b, false)

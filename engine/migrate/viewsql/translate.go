@@ -51,6 +51,12 @@ type Options struct {
 	// Ident maps the name of a column or an alias to the name it has on
 	// the target.
 	Ident func(name string) string
+	// Temporal reports whether some table or view the definition could
+	// read has a date or time column of this name. It may be nil. MySQL
+	// takes a date for a number in arithmetic, so that due + 30 is
+	// accepted there and means nothing; with this the translator can tell
+	// and leave such a view out.
+	Temporal func(column string) bool
 }
 
 type pieceKind int
@@ -80,12 +86,32 @@ type piece struct {
 	kind pieceKind
 	text string
 	lit  literalKind
+	// temporal says the operand is, or may be, a date or time.
+	temporal bool
 }
 
 type translator struct {
 	o     Options
 	reads []Ref
 	seen  map[Ref]bool
+	// dates counts the dates and times written so far. An expression
+	// during which it went up has one somewhere inside.
+	dates int
+}
+
+// date writes an operand that is a date or time.
+func (t *translator) date(text string) piece {
+	t.dates++
+	return piece{kind: pPrimary, text: text, temporal: true}
+}
+
+// column writes a reference to a column, which is a date if a column of
+// that name is known to be one.
+func (t *translator) column(text, name string) piece {
+	if t.o.Temporal != nil && t.o.Temporal(name) {
+		return t.date(text)
+	}
+	return piece{kind: pPrimary, text: text}
 }
 
 // Translate rewrites the query of a view for the target dialect. It
@@ -263,6 +289,7 @@ func (s *seq) group(n *node) error {
 	}
 	subquery := len(n.items) > 0 && (n.items[0].isWord("SELECT") || n.items[0].isWord("WITH"))
 	inner := &seq{t: s.t, nodes: n.items}
+	dates := s.t.dates
 	if s.expectRel && !subquery {
 		// A bracketed join, which PostgreSQL writes around every join.
 		inner.inFrom, inner.expectRel = true, true
@@ -274,7 +301,7 @@ func (s *seq) group(n *node) error {
 	if err != nil {
 		return err
 	}
-	p := piece{kind: pPrimary, text: "(" + render(out) + ")"}
+	p := piece{kind: pPrimary, text: "(" + render(out) + ")", temporal: s.t.dates > dates}
 	// (0) is still the literal 0 to whatever is applied to it.
 	if len(out) == 1 {
 		p.lit = out[0].lit
@@ -386,7 +413,7 @@ func (s *seq) word(n *node) error {
 		if !form.MatchString(next.tok.text) {
 			return unsupported("it has a %s literal that is not in the ISO form", up)
 		}
-		s.out = append(s.out, piece{kind: pPrimary, text: up + " '" + next.tok.text + "'"})
+		s.out = append(s.out, t.date(up+" '"+next.tok.text+"'"))
 		s.i += 2
 		return nil
 	}
@@ -501,7 +528,7 @@ func (s *seq) word(n *node) error {
 		return unsupported("it uses %s", up)
 	}
 	if text, ok := now[t.o.From][up][t.o.To]; ok && !called {
-		s.push(pPrimary, text)
+		s.out = append(s.out, t.date(text))
 		s.i++
 		return nil
 	}
@@ -567,7 +594,11 @@ func (s *seq) endCase() error {
 			if err != nil {
 				return err
 			}
-			s.out = append(s.out[:j], piece{kind: pPrimary, text: render(inner)})
+			whole := piece{kind: pPrimary, text: render(inner)}
+			for _, p := range inner {
+				whole.temporal = whole.temporal || p.temporal
+			}
+			s.out = append(s.out[:j], whole)
 			s.i++
 			return nil
 		}
@@ -609,11 +640,21 @@ func (s *seq) chain() error {
 		if len(parts) > 2 || (len(parts) == 2 && !(t.o.From == Postgres && parts[0] == "pg_catalog")) {
 			return unsupported("it calls %s, a function defined in the source database", strings.Join(parts, "."))
 		}
+		dates := t.dates
 		text, err := t.call(strings.ToUpper(name), args.items)
 		if err != nil {
 			return err
 		}
-		s.push(pPrimary, text)
+		upper := strings.ToUpper(name)
+		switch {
+		case yieldsDate[upper]:
+			s.out = append(s.out, t.date(text))
+		case yieldsNumber[upper]:
+			s.push(pPrimary, text)
+		default:
+			// Whatever is made of a date may be a date.
+			s.out = append(s.out, piece{kind: pPrimary, text: text, temporal: t.dates > dates})
+		}
 		s.i++
 		return nil
 	}
@@ -634,12 +675,12 @@ func (s *seq) chain() error {
 		if star {
 			s.push(pPrimary, t.ident(parts[1])+".*")
 		} else {
-			s.push(pPrimary, t.ident(parts[1])+"."+t.ident(parts[2]))
+			s.out = append(s.out, t.column(t.ident(parts[1])+"."+t.ident(parts[2]), parts[2]))
 		}
 	case !star && n == 1:
-		s.push(pPrimary, t.ident(parts[0]))
+		s.out = append(s.out, t.column(t.ident(parts[0]), parts[0]))
 	case !star && n == 2:
-		s.push(pPrimary, t.ident(parts[0])+"."+t.ident(parts[1]))
+		s.out = append(s.out, t.column(t.ident(parts[0])+"."+t.ident(parts[1]), parts[1]))
 	default:
 		return unsupported("it has a name with more parts (%s) than this translator can place", strings.Join(parts, "."))
 	}
@@ -770,8 +811,19 @@ func (s *seq) inList(negate bool, list *node) error {
 	return nil
 }
 
-// finish applies the rewrites that need whole operands, once a level has
-// been read: Oracle's division for PostgreSQL, and string concatenation.
+// yieldsDate are the functions whose result is a date or time, by their
+// name in the source, and yieldsNumber those that make a number even of a
+// date.
+var (
+	yieldsDate = map[string]bool{"NOW": true, "CURRENT_TIMESTAMP": true, "LOCALTIMESTAMP": true, "TRANSACTION_TIMESTAMP": true,
+		"CURDATE": true, "CURRENT_DATE": true, "DATE": true}
+	yieldsNumber = map[string]bool{"COUNT": true, "EXTRACT": true, "DATE_PART": true, "YEAR": true, "MONTH": true, "DAY": true,
+		"DAYOFMONTH": true, "LENGTH": true, "CHAR_LENGTH": true, "CHARACTER_LENGTH": true, "OCTET_LENGTH": true, "SIGN": true}
+)
+
+// finish applies what needs whole operands, once a level has been read:
+// the check on arithmetic with dates, Oracle's division for PostgreSQL,
+// and string concatenation.
 func (t *translator) finish(p []piece) ([]piece, error) {
 	isOp := func(i int, ops ...string) bool {
 		if i < 0 || i >= len(p) || p[i].kind != pOp {
@@ -783,6 +835,22 @@ func (t *translator) finish(p []piece) ([]piece, error) {
 			}
 		}
 		return false
+	}
+	if t.o.To == MySQL {
+		// PostgreSQL and Oracle add days to a date with + and take two
+		// dates apart with -. MySQL accepts both and computes with the
+		// digits of the date instead. The other targets refuse what they
+		// do not understand, so only this one needs watching.
+		for i := range p {
+			if !isOp(i, "+", "-") {
+				continue
+			}
+			for _, j := range []int{i - 1, i + 1} {
+				if j >= 0 && j < len(p) && p[j].kind == pPrimary && p[j].temporal {
+					return nil, unsupported("it adds to or subtracts from a date, which MySQL does not do with + and -")
+				}
+			}
+		}
 	}
 	if t.o.From == Oracle && t.o.To == Postgres {
 		// Oracle divides exactly whatever the operands are. PostgreSQL

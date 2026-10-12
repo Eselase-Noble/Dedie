@@ -98,7 +98,7 @@ func castToMySQL(p piece, typ string, sizes []int) (piece, error) {
 		return p, nil
 	}
 	as := func(mysqlType string) (piece, error) {
-		return piece{kind: pPrimary, text: "CAST(" + p.text + " AS " + mysqlType + ")"}, nil
+		return piece{kind: pPrimary, text: "CAST(" + p.text + " AS " + mysqlType + ")", temporal: p.temporal || strings.HasPrefix(mysqlType, "DATE")}, nil
 	}
 	switch typ {
 	case "text", "character varying", "varchar", "character", "char", "bpchar", "name":
@@ -109,7 +109,7 @@ func castToMySQL(p piece, typ string, sizes []int) (piece, error) {
 		// usually one that ignores case. PostgreSQL compares text exactly,
 		// and so do the migrated tables, which are created with a binary
 		// collation; the cast has to keep to that.
-		return piece{kind: pPrimary, text: "(CAST(" + p.text + " AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin)"}, nil
+		return piece{kind: pPrimary, text: "(CAST(" + p.text + " AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin)", temporal: p.temporal}, nil
 	case "integer", "int4", "int", "bigint", "int8", "smallint", "int2":
 		if p.lit == numberLiteral && wholeNumberRe.MatchString(p.text) {
 			return p, nil

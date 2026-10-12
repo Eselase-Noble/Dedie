@@ -438,6 +438,9 @@ func (r *runner) finalize(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
+	if err := r.finishViews(ctx); err != nil {
+		return false, err
+	}
 	for _, t := range r.plan.Tables {
 		if rows, err := r.dst.QueryContext(ctx, "ANALYZE TABLE "+t.QName()); err == nil {
 			rows.Close()

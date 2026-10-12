@@ -30,6 +30,11 @@ func route(from, to Dialect) Options {
 	if to == MySQL {
 		quote = func(name string) string { return "`" + name + "`" }
 	}
+	if to == MySQL {
+		o.Temporal = func(column string) bool {
+			return strings.EqualFold(column, "born") || strings.EqualFold(column, "created")
+		}
+	}
 	o.Relation = func(schema, name string) (Relation, bool) {
 		switch {
 		case schema == o.Schema && (strings.EqualFold(name, "customers") || strings.EqualFold(name, "invoices")):
@@ -206,6 +211,15 @@ func TestPostgresToMySQL(t *testing.T) {
 		{"table outside the migration", "SELECT o.id FROM shop.orders o", "reads shop.orders, which is not part of the migration"},
 		{"concatenation next to arithmetic", "SELECT c.a || c.b + 1 AS x FROM shop.customers c", "mixes || with arithmetic"},
 		{"dollar quoting", "SELECT $$a$$ AS x", "character"},
+		{"days added to a date", "SELECT (c.born + 30) AS due FROM shop.customers c", "adds to or subtracts from a date"},
+		{"two dates apart", "SELECT c.id FROM shop.customers c WHERE ((c.created - c.born) > 30)", "adds to or subtracts from a date"},
+		{"days before today", "SELECT c.id FROM shop.customers c WHERE (c.seen > (CURRENT_DATE - 7))", "adds to or subtracts from a date"},
+		{"arithmetic on something made of a date", "SELECT (COALESCE(c.born, '2000-01-01'::date) + 1) AS d FROM shop.customers c", "adds to or subtracts from a date"},
+	})
+	checkTranslations(t, o, []translation{
+		{"arithmetic on a number taken from a date is arithmetic",
+			"SELECT (EXTRACT(year FROM c.born) + (1)::numeric) AS next, (c.id - 1) AS prev FROM shop.customers c",
+			"SELECT (EXTRACT(YEAR FROM `c`.`born`) + (1)) AS `next`, (`c`.`id` - 1) AS `prev` FROM `customers` `c`"},
 	})
 }
 
@@ -283,6 +297,9 @@ func TestOracleToMySQL(t *testing.T) {
 		{"number without a precision", "SELECT CAST(c.x AS NUMBER) AS x FROM customers c", "casts to NUMBER"},
 		{"to_date", "SELECT TO_DATE('2024-01-01', 'YYYY-MM-DD') AS d FROM dual", "TO_DATE()"},
 		{"old outer join", "SELECT c.id FROM customers c, invoices i WHERE c.id = i.customer_id(+)", "(+) outer join"},
+		{"days before now", "SELECT c.id FROM customers c WHERE c.seen > SYSDATE - 7", "adds to or subtracts from a date"},
+		{"two dates apart", "SELECT c.created - c.born AS age FROM customers c", "adds to or subtracts from a date"},
+		{"a date literal moved", "SELECT c.id FROM customers c WHERE c.seen > DATE '2024-01-31' + 1", "adds to or subtracts from a date"},
 	})
 }
 

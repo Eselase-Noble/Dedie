@@ -43,6 +43,9 @@ type Naming struct {
 	View func(schema, name string) (label string, target Relation, reason string)
 	// Ident maps the name of a column or an alias.
 	Ident func(name string) string
+	// Temporal reports whether some migrated table has a date or time
+	// column of this name; see Options. A pipeline into MySQL sets it.
+	Temporal func(column string) bool
 }
 
 // Quote writes a name as a quoted identifier of the dialect.
@@ -62,16 +65,27 @@ func Quote(d Dialect, name string) string {
 // it reads another view that is itself left out.
 func Plan(views []*View, n Naming) []*View {
 	byRef := map[Ref]*View{}
+	// A view can be read by another, so its date columns count as well.
+	dates := map[string]bool{}
 	for _, v := range views {
 		v.Label, v.Target, v.Reason = n.View(v.Schema, v.Name)
 		v.SQL, v.needs = "", nil
 		byRef[Ref{v.Schema, v.Name}] = v
+		for _, c := range v.Columns {
+			if c.Class == Temporal {
+				dates[strings.ToLower(c.Name)] = true
+			}
+		}
+	}
+	var temporal func(string) bool
+	if n.Temporal != nil {
+		temporal = func(column string) bool { return dates[strings.ToLower(column)] || n.Temporal(column) }
 	}
 	for _, v := range views {
 		if v.Reason != "" {
 			continue
 		}
-		query, reads, err := Translate(v.Definition, Options{From: n.From, To: n.To, Schema: v.Schema, Ident: n.Ident,
+		query, reads, err := Translate(v.Definition, Options{From: n.From, To: n.To, Schema: v.Schema, Ident: n.Ident, Temporal: temporal,
 			Relation: func(schema, name string) (Relation, bool) {
 				if rel, ok := n.Table(schema, name); ok {
 					return rel, true

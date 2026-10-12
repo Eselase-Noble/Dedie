@@ -45,6 +45,14 @@ func (pipeline) Preview(ctx context.Context, src, dst connector.Config, cfg migr
 	return Preview(ctx, src, dst, cfg)
 }
 
+func (pipeline) Leftovers(ctx context.Context, src, dst connector.Config, cfg migrate.Config, state json.RawMessage) ([]migrate.Leftover, error) {
+	var st pgpg.State
+	if len(state) > 0 {
+		_ = json.Unmarshal(state, &st)
+	}
+	return Leftovers(ctx, src, dst, cfg, st)
+}
+
 // checkpointTable lives in the target database while a job runs.
 const checkpointTable = "dedie_pg_checkpoint"
 
