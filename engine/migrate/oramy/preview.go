@@ -8,13 +8,17 @@ import (
 	"dedie/engine/connector/mysql"
 	"dedie/engine/connector/oracle"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/oradef"
+	"dedie/engine/migrate/viewsql"
 )
 
 // Preview returns the statements a job with these options would run on the
 // target, in the order it would run them, without running any: the
 // translated tables first, then the indexes and check constraints that
-// are built once the rows are in, and the foreign keys, which are added at
-// the very end. It reads the source catalog, asks the target for its
+// are built once the rows are in, and at the very end the foreign keys and
+// the translated views. A job compares each view with the source's
+// afterwards and drops one that does not return the same, so not every
+// view shown is certain to stay. It reads the source catalog, asks the target for its
 // release, on which the translation depends, and looks there for what
 // already exists, exactly as the schema phase does. The statements come
 // from the same plan, so what is shown is what a job started now would
@@ -30,19 +34,58 @@ import (
 // logged.
 func Preview(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate.Config) ([]migrate.Statement, error) {
 	cfg.Defaults()
+	r, replaced, done, err := planned(ctx, srcCfg, dstCfg, cfg, &State{})
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+
+	var out []migrate.Statement
+	for _, f := range replaced {
+		out = append(out, migrate.Statement{Phase: migrate.PhaseSchema, Kind: "drop", Name: f.String(), SQL: f.drop()})
+	}
+	out = appendStatements(out, migrate.PhaseSchema, r.plan.Pre)
+	out = appendStatements(out, migrate.PhaseIndexing, r.plan.Post)
+	out = appendStatements(out, migrate.PhaseCutover, r.plan.Final)
+	for _, v := range viewsql.Kept(r.plan.Views) {
+		out = append(out, migrate.Statement{Phase: migrate.PhaseCutover, Kind: "view", Name: v.Label, SQL: v.SQL})
+	}
+	return out, nil
+}
+
+// planned connects to both databases and builds the plan a job with these
+// options has after its schema phase, without running anything. For a job
+// that has not settled what happens to the objects already on the target
+// it looks for them and applies the policy chosen, as the schema phase
+// does: what is to stay is left out of the plan, and what is to be
+// replaced is returned for the caller to show. The caller closes the
+// connections with the function returned.
+func planned(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate.Config, st *State) (r *runner, replaced []found, done func(), err error) {
 	src, err := oracle.Open(ctx, srcCfg)
 	if err != nil {
-		return nil, fmt.Errorf("source: %w", err)
+		return nil, nil, nil, fmt.Errorf("source: %w", err)
 	}
-	defer src.Close()
 	dst, err := mysql.Open(ctx, dstCfg, nil)
 	if err != nil {
-		return nil, fmt.Errorf("target: %w", err)
+		src.Close()
+		return nil, nil, nil, fmt.Errorf("target: %w", err)
 	}
-	defer dst.Close()
+	done = func() {
+		dst.Close()
+		src.Close()
+	}
+	r = &runner{cfg: cfg, st: st, srcCfg: srcCfg, src: src, dst: dst}
+	if replaced, err = r.settle(ctx); err != nil {
+		done()
+		return nil, nil, nil, err
+	}
+	return r, replaced, done, nil
+}
 
-	r := &runner{cfg: cfg, st: &State{}, srcCfg: srcCfg, src: src, dst: dst}
-	version, err := targetVersion(ctx, dst)
+// settle builds the runner's plan with the decision on existing objects
+// applied, and returns the objects a job would drop first.
+func (r *runner) settle(ctx context.Context) ([]found, error) {
+	version, err := targetVersion(ctx, r.dst)
 	if err != nil {
 		return nil, err
 	}
@@ -50,30 +93,40 @@ func Preview(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate.C
 	if err := r.buildPlan(ctx); err != nil {
 		return nil, err
 	}
-
-	var out []migrate.Statement
-	if policy := cfg.Existing(); policy != migrate.ExistingFail {
-		objects, err := existing(ctx, dst, r.plan)
-		if err != nil {
+	policy := r.cfg.Existing()
+	if r.st.ExistingDecided || policy == migrate.ExistingFail {
+		return nil, nil
+	}
+	objects, err := existing(ctx, r.dst, r.plan)
+	if err != nil {
+		return nil, err
+	}
+	if policy == migrate.ExistingReplace {
+		return objects, nil
+	}
+	if len(objects) > 0 {
+		if err := r.keepExisting(objects); err != nil {
 			return nil, err
 		}
-		if policy == migrate.ExistingReplace {
-			for _, f := range objects {
-				out = append(out, migrate.Statement{Phase: migrate.PhaseSchema, Kind: "drop", Name: f.String(), SQL: f.drop()})
-			}
-		} else if len(objects) > 0 {
-			if err := r.keepExisting(objects); err != nil {
-				return nil, err
-			}
-			if err := r.buildPlan(ctx); err != nil {
-				return nil, err
-			}
+		if err := r.buildPlan(ctx); err != nil {
+			return nil, err
 		}
 	}
+	return nil, nil
+}
 
-	out = appendStatements(out, migrate.PhaseSchema, r.plan.Pre)
-	out = appendStatements(out, migrate.PhaseIndexing, r.plan.Post)
-	return appendStatements(out, migrate.PhaseCutover, r.plan.Final), nil
+// Leftovers lists what a job with these options does not migrate, with
+// the statement that defines each object on the source: the views that
+// could not be translated or did not survive verification, the
+// materialized views and the PL/SQL. It changes neither database.
+func Leftovers(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate.Config, st State) ([]migrate.Leftover, error) {
+	cfg.Defaults()
+	r, _, done, err := planned(ctx, srcCfg, dstCfg, cfg, &st)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	return oradef.Leftovers(ctx, r.src, r.plan.Catalog, cfg.Scope() == "table", r.plan.Views, st.Views)
 }
 
 func appendStatements(out []migrate.Statement, phase string, list []Stmt) []migrate.Statement {

@@ -10,7 +10,9 @@ import (
 	"dedie/engine/connector/mysql"
 	"dedie/engine/connector/oracle"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/oradef"
 	"dedie/engine/migrate/orasrc"
+	"dedie/engine/migrate/viewsql"
 )
 
 // Limits of InnoDB that decide what a table can look like.
@@ -88,6 +90,10 @@ type Plan struct {
 	// until the end because rows are applied table by table while changes
 	// are followed, not in the order the source wrote them.
 	Pre, Post, Final []Stmt
+	// Views are the source's views, translated: first those that will be
+	// created once the data is in and validated, in the order to create
+	// them, then those that are left out, each with the reason.
+	Views []*viewsql.View
 	// Notes list everything that was translated with a change in meaning
 	// or could not be carried over. Preflight shows them to the operator.
 	Notes []string
@@ -141,7 +147,13 @@ func BuildPlan(ctx context.Context, src oracle.Queryer, cfg migrate.Config, targ
 	if err != nil {
 		return nil, err
 	}
-	return newPlan(cat, raw, targetVersion, kept), nil
+	p := newPlan(cat, raw, targetVersion, kept)
+	views, err := oradef.Views(ctx, src, cat.Owners)
+	if err != nil {
+		return nil, err
+	}
+	p.planViews(views, cfg.Scope() == "table")
+	return p, nil
 }
 
 // rawLengths reads the declared length of every RAW column in scope,
@@ -395,9 +407,9 @@ func (p *Plan) longNames() []string {
 	return long
 }
 
-// leaveOut removes the constraints whose names the target already has
-// in use and which are to stay as they are. Each is named by its kind
-// and its name on the target.
+// leaveOut removes the constraints and views whose names the target
+// already has in use and which are to stay as they are. Each is named by
+// its kind and its name on the target.
 func (p *Plan) leaveOut(constraints []string) {
 	if len(constraints) == 0 {
 		return
@@ -416,4 +428,9 @@ func (p *Plan) leaveOut(constraints []string) {
 		return out
 	}
 	p.Post, p.Final = filter(p.Post), filter(p.Final)
+	for _, v := range p.Views {
+		if v.SQL != "" && skip[strings.ToLower(kindView+" "+v.Target.Bare)] {
+			v.SQL, v.Reason = "", "the target already has a view or table of this name, which is kept as it is"
+		}
+	}
 }

@@ -3,8 +3,11 @@
 //
 // The schema is translated rather than copied: every Oracle type maps to
 // a MySQL type that can hold all of its values, and whatever cannot be
-// carried over (sequences, PL/SQL, views, expression defaults MySQL does
-// not know) is reported instead of guessed. MySQL has no schemas inside a
+// carried over (sequences, PL/SQL, expression defaults MySQL does not
+// know) is reported instead of guessed. Views are translated where every
+// construct they use has an equivalent that means the same, created once
+// the data is in, and kept only if they then return what the source's
+// views return; see package viewsql. MySQL has no schemas inside a
 // database, so every table goes into the database the target connection
 // names, and names that Oracle stores in upper case are written in lower
 // case, which is how they are usually written in MySQL.
@@ -33,6 +36,7 @@ import (
 	"dedie/engine/connector/mysql"
 	"dedie/engine/connector/oracle"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/viewsql"
 )
 
 func init() { migrate.Register(oracle.Kind, mysql.Kind, pipeline{}) }
@@ -54,6 +58,14 @@ func (pipeline) Run(ctx context.Context, jobID string, cfg migrate.Config, state
 
 func (pipeline) Preview(ctx context.Context, src, dst connector.Config, cfg migrate.Config) ([]migrate.Statement, error) {
 	return Preview(ctx, src, dst, cfg)
+}
+
+func (pipeline) Leftovers(ctx context.Context, src, dst connector.Config, cfg migrate.Config, state json.RawMessage) ([]migrate.Leftover, error) {
+	var st State
+	if len(state) > 0 {
+		_ = json.Unmarshal(state, &st)
+	}
+	return Leftovers(ctx, src, dst, cfg, st)
 }
 
 // State is the job's durable progress. Field names match the other
@@ -84,6 +96,11 @@ type State struct {
 	// SkippedObjects lists the foreign keys and check constraints not
 	// created for the same reason, each as its kind and name.
 	SkippedObjects []string `json:"skipped_objects,omitempty"`
+
+	// Views says what became of each view the job translated and
+	// created: kept and verified, kept without verification, or dropped
+	// again. See viewsql.Checker.
+	Views []viewsql.Result `json:"views,omitempty"`
 
 	ConsistentLSN  string    `json:"consistent_lsn"`
 	AppliedLSN     string    `json:"applied_lsn"`
