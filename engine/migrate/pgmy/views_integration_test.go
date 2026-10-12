@@ -197,7 +197,7 @@ func TestMigrationViews(t *testing.T) {
 			t.Errorf("views check lacks %q", part)
 		}
 	}
-	if c := findCheck(t, report, "Not migrated"); strings.HasPrefix(c.Detail, "views") || !strings.Contains(c.Detail, "functions, triggers") {
+	if c := findCheck(t, report, "Not migrated"); strings.HasPrefix(c.Detail, "views") || !strings.Contains(c.Detail, "functions, procedures and triggers") {
 		t.Errorf("not migrated: %s", c.Detail)
 	}
 
@@ -229,23 +229,25 @@ func TestMigrationViews(t *testing.T) {
 	}
 
 	// Before the job has run, what is not migrated is the views that could
-	// not be translated and what PostgreSQL has that MySQL has not, each
-	// with its definition.
+	// not be translated, the stored code (conversion is switched off for
+	// this job) and what PostgreSQL has that MySQL has not, each with its
+	// definition.
 	left, err := pipeline{}.Leftovers(ctx, srcCfg, dstCfg, cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, want := leftoverNames(left), "view public.ranked; view public.ranked_names; view public.recent_sales; "+
-		"function public.take_stock(); function public.vat(amount numeric); check constraint public.products stock_not_negative; "+
-		"materialized view public.stock_snapshot; trigger sales_stock on public.sales"; got != want {
+		"function public.vat(amount numeric); trigger sales_stock on public.sales; check constraint public.products stock_not_negative; "+
+		"materialized view public.stock_snapshot"; got != want {
 		t.Errorf("not migrated:\n got %s\nwant %s", got, want)
 	}
 	for _, want := range []struct{ kind, name, reason, source string }{
 		{"view", "public.ranked", "it calls RANK()", "rank() OVER (ORDER BY"},
 		{"view", "public.recent_sales", "adds to or subtracts from a date", "CURRENT_DATE - 30"},
-		{"function", "public.vat(amount numeric)", "not translated", "SELECT amount * 1.2"},
-		{"function", "public.take_stock()", "not translated", "UPDATE products SET stock = stock - NEW.qty"},
-		{"trigger", "sales_stock on public.sales", "not translated", "AFTER INSERT ON public.sales"},
+		{"function", "public.vat(amount numeric)", "PostgreSQL's own languages", "SELECT amount * 1.2"},
+		// A trigger comes with the function that holds its code.
+		{"trigger", "sales_stock on public.sales", "PostgreSQL's own languages", "UPDATE products SET stock = stock - NEW.qty"},
+		{"trigger", "sales_stock on public.sales", "switched off", "AFTER INSERT ON public.sales"},
 		{"check constraint", "public.products stock_not_negative", "not translated", "stock >= 0"},
 		{"materialized view", "public.stock_snapshot", "no materialized views", "CREATE MATERIALIZED VIEW"},
 	} {

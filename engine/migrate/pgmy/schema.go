@@ -12,6 +12,7 @@ import (
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/mymy"
 	"dedie/engine/migrate/pgpg"
+	"dedie/engine/migrate/storedcode"
 	"dedie/engine/migrate/viewsql"
 )
 
@@ -65,6 +66,10 @@ type Plan struct {
 	// created once the data is in and validated, in the order to create
 	// them, then those that are left out, each with the reason.
 	Views []*viewsql.View
+	// Code is the source's stored code in scope, with the converter's
+	// verdict on each object and whether the job will create it; and what
+	// else the source has that MySQL has no place for, to be listed.
+	Code []*storedcode.Object
 	// Notes list everything that was translated with a change in meaning
 	// or could not be carried over.
 	Notes []string
@@ -319,6 +324,12 @@ func buildPlan(ctx context.Context, src *pgx.Conn, cfg migrate.Config, skipped [
 		return nil, err
 	}
 	p.planViews(views, cfg.Scope() == "table")
+	if err := p.loadCode(ctx, src, cfg.Scope() == "table"); err != nil {
+		return nil, err
+	}
+	if err := p.planCode(ctx, src, cfg.CodeMode()); err != nil {
+		return nil, err
+	}
 	return p, nil
 }
 
@@ -585,7 +596,7 @@ func (p *Plan) objects() []mymy.Object {
 	for _, v := range viewsql.Kept(p.Views) {
 		out = append(out, mymy.Object{Kind: "view", Name: v.Target.Bare})
 	}
-	return out
+	return append(out, mymy.CodeObjects(p.Code)...)
 }
 
 // keep removes from the plan every statement that would create an object
@@ -611,6 +622,7 @@ func (p *Plan) keep(kept []string) {
 			v.SQL, v.Reason = "", "the target already has a view or table of this name, which is kept as it is"
 		}
 	}
+	mymy.KeepCode(p.Code, kept)
 }
 
 // sources translates the names tables have on the target into the names

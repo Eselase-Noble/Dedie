@@ -10,6 +10,7 @@ import (
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/mymy"
 	"dedie/engine/migrate/pgpg"
+	"dedie/engine/migrate/storedcode"
 	"dedie/engine/migrate/viewsql"
 )
 
@@ -29,6 +30,8 @@ import (
 // The translated views are shown at the end, where they are created. A
 // job compares each with the source's view afterwards and drops one that
 // does not return the same, so not every view shown is certain to stay.
+// Last come the converted functions, procedures and triggers the job will
+// create.
 func Preview(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate.Config) ([]migrate.Statement, error) {
 	cfg.Defaults()
 	r, found, done, err := planned(ctx, srcCfg, dstCfg, cfg, &pgpg.State{})
@@ -43,7 +46,9 @@ func Preview(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate.C
 	for _, v := range viewsql.Kept(r.plan.Views) {
 		out = append(out, migrate.Statement{Phase: migrate.PhaseCutover, Kind: "view", Name: v.Label, SQL: v.SQL})
 	}
-	return out, nil
+	// A routine's body has semicolons inside, so a script has to end it
+	// with something else.
+	return append(out, storedcode.Statements(r.plan.Code, "//")...), nil
 }
 
 // planned connects to both databases and builds the plan a job with these

@@ -6,14 +6,16 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"dedie/engine/connector"
+	"dedie/engine/connector/mysql"
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/pgpg"
+	"dedie/engine/migrate/storedcode"
 )
 
-// Why each kind of object stays behind.
+// Why each kind of object stays behind when no conversion is tried.
 var leftoverReasons = map[string]string{
-	"function":             "functions and procedures are written in PostgreSQL's own languages, which are not translated",
-	"trigger":              "a trigger calls a PostgreSQL function, and those are not translated",
+	"function":             "it is written in one of PostgreSQL's own languages",
+	"trigger":              "its code is a function in one of PostgreSQL's own languages",
 	"materialized view":    "MySQL has no materialized views; this needs a table and something to refresh it",
 	"check constraint":     "check constraints are written in PostgreSQL's dialect and are not translated",
 	"exclusion constraint": "MySQL has no exclusion constraints",
@@ -21,10 +23,11 @@ var leftoverReasons = map[string]string{
 
 // Leftovers lists what a job with these options does not migrate, with
 // the statement that defines each object on the source: the views that
-// could not be translated or did not survive verification, and the
-// functions, triggers, materialized views and check constraints. The
-// definitions are PostgreSQL's own, as its catalog functions print them
-// and as the PostgreSQL to PostgreSQL pipeline would run them. It changes
+// could not be translated or did not survive verification, the functions,
+// procedures and triggers the job does not create or created with a
+// caveat, with the converted draft where there is one, and the
+// materialized views and check constraints. The definitions are
+// PostgreSQL's own, as its catalog functions print them. It changes
 // neither database.
 func Leftovers(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate.Config, st pgpg.State) ([]migrate.Leftover, error) {
 	cfg.Defaults()
@@ -54,14 +57,5 @@ func Leftovers(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate
 		}
 		out = append(out, l)
 	}
-	// The source plan already holds the other definitions, read for the
-	// pipeline that copies them as they are.
-	for _, list := range [][]pgpg.Stmt{r.plan.Plan.Pre, r.plan.Plan.Post, r.plan.Plan.Final} {
-		for _, s := range list {
-			if reason, ok := leftoverReasons[s.Kind]; ok {
-				out = append(out, migrate.Leftover{Kind: s.Kind, Name: s.Name, Reason: reason, Source: s.SQL})
-			}
-		}
-	}
-	return out, nil
+	return append(out, storedcode.Leftovers(mysql.Kind, r.plan.Code, st.Code)...), nil
 }

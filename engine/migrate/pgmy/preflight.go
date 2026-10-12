@@ -14,6 +14,7 @@ import (
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/mymy"
 	"dedie/engine/migrate/pgpg"
+	"dedie/engine/migrate/storedcode"
 	"dedie/engine/migrate/viewsql"
 )
 
@@ -88,8 +89,21 @@ func preflight(ctx context.Context, src *pgx.Conn, dst *sql.DB, plan *Plan, cfg 
 		status, detail := viewsql.Describe(plan.Views)
 		r.Add("Views", status, detail)
 	}
-	r.Add("Not migrated", "warn", "functions, triggers, check constraints, materialized views, sequences that are not a column default, and types are specific to PostgreSQL and are not translated. "+
-		"The definitions of the functions, triggers, constraints and materialized views, and of the views that are left out, can be had as one script to convert by hand. Roles and privileges are not copied")
+	scope := ""
+	if cfg.Scope() == "table" {
+		scope = tableScopeNote
+	}
+	var code []*storedcode.Object
+	for _, o := range plan.Code {
+		if o.Kind == "function" || o.Kind == "procedure" || o.Kind == "trigger" {
+			code = append(code, o)
+		}
+	}
+	status, detail := storedcode.Describe(postgres.Kind, mysql.Kind, code, cfg.CodeMode(), scope)
+	r.Add("Stored code", status, detail)
+	r.Add("Not migrated", "warn", "check constraints, materialized views, sequences that are not a column default, and types are specific to PostgreSQL and are not translated; "+
+		"functions, procedures and triggers are created only where their conversion can be vouched for. "+
+		"The definitions of what stays behind, with the converted drafts where there are any, can be had as one script. Roles and privileges are not copied")
 
 	var ssl bool
 	_ = src.QueryRow(ctx, `SELECT coalesce((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false)`).Scan(&ssl)
