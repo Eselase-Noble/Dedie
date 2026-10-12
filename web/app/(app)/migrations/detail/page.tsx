@@ -319,7 +319,7 @@ function Detail({ id }: { id: string }) {
             <div className="actions">
               {manage && (st.objects.review > 0 || st.objects.left > 0) && (
                 <button className="btn small" onClick={() => setLeftovers(true)}
-                  title="What was left behind or wants checking, with its definition, the converted draft and the notes">See what needs you</button>
+                  title="What was left behind or wants checking, with its definition, the converted draft and the notes">See what needs attention</button>
               )}
             </div>
           </div>
@@ -464,7 +464,10 @@ function Detail({ id }: { id: string }) {
           <Figure label="Objects already on the target">{onExisting === "skip" ? "keep and skip" : onExisting === "replace" ? "replace" : "refuse"}</Figure>
           {leavesBehind(job.kind) && (
             <Figure label="Stored code">
-              {job.config.code === "off" ? "not converted" : job.config.code === "review" ? "created, also what needs review" : "created where it converts cleanly"}
+              {/* Short enough for one cell; the sentence is there on hover. */}
+              {job.config.code === "off" ? <span title="Nothing is converted; the source's definitions are handed over">not converted</span>
+                : job.config.code === "review" ? <span title="Created on the target, including what may behave differently and needs review">all conversions</span>
+                  : <span title="Created on the target where the conversion keeps the behaviour; the rest is handed over as drafts">clean conversions</span>}
             </Figure>
           )}
           {job.kind === "postgres-postgres" && !offline && <Figure label="Keep replication slot">{job.config.keep_slot ? "yes" : "no"}</Figure>}

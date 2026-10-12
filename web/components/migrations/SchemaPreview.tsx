@@ -75,8 +75,8 @@ export default function SchemaPreview({ jobId, name, onClose }: { jobId: string;
       {list && (
         <>
           <p className="hint">
-            These are the statements the migration would run, in order, with the source&apos;s tables translated for the
-            target. Nothing has been run: reading this changes neither database.
+            These are the statements the migration would run, in order, with the source&apos;s definitions translated for
+            the target. Nothing has been run: reading this changes neither database.
           </p>
           <div className="preflight-bar" style={{ padding: "8px 0" }}>
             <span>
