@@ -34,13 +34,13 @@ function Health({ c }: { c: ConnectionSummary }) {
 function Freshness({ c }: { c: ConnectionSummary }) {
   if (!c.backups_apply) return <span className="fresh faint">not backed up by Dedie</span>;
   if (isZeroTime(c.last_backup_at)) {
-    return <span className="fresh never">never backed up{c.scheduled && <span className="faint"> · scheduled</span>}</span>;
+    return <span className="fresh never">never backed up<span className="faint">{c.scheduled ? "scheduled" : "no schedule"}</span></span>;
   }
   const days = (Date.now() - new Date(c.last_backup_at).getTime()) / 86_400_000;
   return (
     <span className={`fresh ${days > STALE_DAYS && !c.scheduled ? "stale" : ""}`} title={formatTime(c.last_backup_at)}>
       backed up {formatAgo(c.last_backup_at)}
-      <span className="faint"> · {c.scheduled ? "scheduled" : "no schedule"}</span>
+      <span className="faint">{c.scheduled ? "scheduled" : "no schedule"}</span>
     </span>
   );
 }

@@ -267,7 +267,7 @@ function Detail({ id }: { id: string }) {
               </button>
             )}
             {canPause && <button className="btn" disabled={!!busy || job.desired === "pause"} onClick={() => act("pause")}>Pause</button>}
-            {!offline && (
+            {!offline && status !== "completed" && status !== "aborted" && (
               <button className="btn primary" disabled={!canCutover || !!busy || job.desired === "cutover"}
                 title={canCutover ? undefined : "Available while the migration is streaming changes"}
                 onClick={() => setConfirm(confirmations.cutover)}>

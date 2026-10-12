@@ -693,6 +693,7 @@ ul.plain li { margin-bottom: 6px; }
 .checks { list-style: none; margin: 0; padding: 0; }
 .checks li { display: grid; grid-template-columns: 64px 200px minmax(0, 1fr); gap: 4px 16px; padding: 11px 16px; border-bottom: 1px solid var(--border); align-items: start; }
 .checks li:last-child { border-bottom: none; }
+.checks .badge { justify-self: start; }
 .checks .check-detail { white-space: pre-line; overflow-wrap: anywhere; color: var(--text); }
 
 /* The statements a migration would run, grouped by when they run. */
@@ -724,6 +725,7 @@ ul.plain li { margin-bottom: 6px; }
 .health .sub { display: block; color: var(--text-muted); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .health .progress { margin-top: 6px; max-width: 220px; }
 .health .fresh { text-align: right; font-size: var(--fs-sm); }
+.health .fresh .faint { display: block; font-weight: 400; }
 .health .fresh.stale, .health .fresh.never { color: var(--warn); font-weight: 550; }
 /* The three first steps of a new installation. */
 .checklist { list-style: none; margin: 0; padding: 0; counter-reset: step; }
@@ -797,6 +799,8 @@ ul.plain li { margin-bottom: 6px; }
   .checks .check-detail { grid-column: 1 / -1; }
   .health li { grid-template-columns: minmax(0, 1fr) auto; }
   .health .fresh { grid-column: 1 / -1; text-align: left; }
+  .health .fresh .faint { display: inline; }
+  .health .fresh .faint::before { content: " · "; }
   /* The button moves under the words it belongs to. */
   .attention li, .checklist li { flex-wrap: wrap; }
   .attention .note-text, .checklist .note-text { flex: 1 1 200px; }
