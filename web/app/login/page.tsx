@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import { ApiError, api, errorMessage } from "@/lib/api";
+import { Logo } from "@/components/icons";
 import { Banner, Field } from "@/components/ui";
 
 /** Sign-in. This is the first screen of the application. */
@@ -35,8 +36,9 @@ export default function LoginPage() {
 
   return (
     <div className="auth-page">
+      <div className="auth-brand"><Logo size={36} /><span>Dedie</span></div>
       <form className="auth-card" onSubmit={submit}>
-        <h1>Dedie</h1>
+        <h1>{needCode ? "Two-factor sign-in" : "Sign in"}</h1>
         <p className="muted" style={{ marginBottom: 18 }}>
           {needCode ? "Enter the 6-digit code from your authenticator app." : "Sign in to your organization."}
         </p>
@@ -79,6 +81,7 @@ export default function LoginPage() {
           </div>
         )}
       </form>
+      <div className="auth-foot">Dedie is Ewe for “safe”.</div>
     </div>
   );
 }

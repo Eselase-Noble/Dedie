@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
-import { Banner, Field } from "@/components/ui";
+import { Logo } from "@/components/icons";
+import { Banner, Field, Loading } from "@/components/ui";
 
 const MIN_PASSWORD = 12;
 
@@ -51,13 +52,14 @@ export default function SetupPage() {
 
   return (
     <div className="auth-page">
+      <div className="auth-brand"><Logo size={36} /><span>Dedie</span></div>
       <form className="auth-card" onSubmit={submit}>
         <h1>Create account</h1>
         <p className="muted" style={{ marginBottom: 18 }}>
           Set up your organization and its first owner account.
         </p>
         {error && <Banner tone="error">{error}</Banner>}
-        {needsSetup === null && !error && <div className="loading">Loading…</div>}
+        {needsSetup === null && !error && <Loading lines={3} />}
 
         {needsSetup === false && (
           <Banner tone="info">
