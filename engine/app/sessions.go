@@ -180,10 +180,16 @@ type kept struct {
 	// session itself, and broken once a call ended in a way that leaves
 	// the connection's state unknown.
 	changed, broken bool
-	once            sync.Once
+	// queried is set once a statement was run at all. A result cut off
+	// at the row limit is abandoned by dropping or interrupting the
+	// connection, so such a session is asked whether it still answers
+	// before it is kept.
+	queried bool
+	once    sync.Once
 }
 
 func (k *kept) Query(ctx context.Context, text string, opts connector.QueryOptions) ([]connector.ResultSet, error) {
+	k.queried = true
 	if !opts.ReadOnly {
 		k.changed = true
 	}
@@ -200,7 +206,7 @@ func (k *kept) Close(ctx context.Context) error {
 	k.once.Do(func() {
 		ctx = context.WithoutCancel(ctx)
 		reusable := k.Session.(connector.Reusable)
-		if !k.broken && (!k.changed || reusable.Reset(ctx)) && k.pool.put(k.key, k.Session) {
+		if !k.broken && (!k.changed || reusable.Reset(ctx)) && (!k.queried || reusable.Alive(ctx)) && k.pool.put(k.key, k.Session) {
 			return
 		}
 		err = k.Session.Close(ctx)
