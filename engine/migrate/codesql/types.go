@@ -405,7 +405,8 @@ func typePGMy(d *dataType) (mapped, bool) {
 	case "NUMERIC", "DECIMAL":
 		// MySQL's DECIMAL stops at 65 digits, 30 of them after the point.
 		if !has0 {
-			return mapped{text: "DECIMAL(65,20)", typ: typ{cNum, 20}}, true
+			// The scale is MySQL's; a PostgreSQL value has its own.
+			return mapped{text: "DECIMAL(65,20)", typ: tNum}, true
 		}
 		if !has1 {
 			return mapped{text: fmt.Sprintf("DECIMAL(%d)", n0), typ: tWhole}, true

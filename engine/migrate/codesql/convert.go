@@ -128,9 +128,16 @@ func dialect(kind string) Dialect {
 // database's procedural language to another's. from and to are connector
 // kinds: "oracle", "mysql", "postgres". It never fails: an object it
 // cannot translate comes back Unconverted with the reason.
-func Convert(from, to string, obj Object, opt Options) Result {
+func Convert(from, to string, obj Object, opt Options) (res Result) {
+	// A routine the converter trips over must not take the migration
+	// down with it: it is one more routine left for a person.
+	defer func() {
+		if p := recover(); p != nil {
+			res = Result{Status: Unconverted, Notes: []string{fmt.Sprintf("%s: %v", internalError, p)}}
+		}
+	}()
 	f, t := dialect(from), dialect(to)
-	supported := (f == Oracle && t == Postgres) || (f == MySQL && t == Postgres) || (f == Postgres && t == MySQL)
+	supported := (f == Oracle && (t == Postgres || t == MySQL)) || (f == MySQL && t == Postgres) || (f == Postgres && t == MySQL)
 	if !supported {
 		return Result{Status: Unconverted, Notes: []string{fmt.Sprintf("routines are not converted from %s to %s", from, to)}}
 	}
@@ -188,6 +195,10 @@ func Signature(from string, obj Object) (Routine, bool) {
 	}
 	return out, true
 }
+
+// internalError starts the note of a routine that made the converter
+// itself fail.
+const internalError = "the converter could not handle this routine"
 
 // explain words a parser's error as a note.
 func explain(err error) string {

@@ -340,6 +340,18 @@ func (g *gen) name(n *nameExpr) (string, typ) {
 		g.note(n.line, "%s is not a variable or a column known here; it is written as it is", n.parts[0].name)
 		return g.ident(n.parts[0]), tUnknown
 	}
+	// PL/SQL and PL/pgSQL let a variable be named through the routine it
+	// belongs to, to tell it from a column of the same name.
+	if len(n.parts) == 2 && g.from != MySQL && g.sameName(n.parts[0], g.r.name[len(g.r.name)-1].name) {
+		if own := g.lookup(n.parts[1].name); own != nil && own.kind != "cursor" {
+			if _, table := g.findColumn(n.parts[1], &n.parts[0]); table == nil {
+				if g.to == MySQL {
+					return own.out, own.typ
+				}
+				return g.ident(g.r.name[len(g.r.name)-1]) + "." + own.out, own.typ
+			}
+		}
+	}
 	// A qualified name: a field of a record, or a column of a table.
 	if v != nil && (v.kind == "record" || v.kind == "row") && len(n.parts) == 2 {
 		if _, table := g.findColumn(n.parts[1], &n.parts[0]); table == nil || g.from != Oracle {
@@ -480,7 +492,7 @@ func (g *gen) findColumn(name ident, qualifier *ident) (*Column, *boundTable) {
 func (g *gen) unknownTables() bool {
 	for _, level := range g.bound {
 		for _, b := range level {
-			if b.table == nil {
+			if b.table == nil && b.sub == nil && !isDual(b.ref) {
 				return true
 			}
 		}
@@ -650,9 +662,12 @@ func (g *gen) asText(e expr, s string, t typ, use string) string {
 		return s
 	case t.whole():
 		return cast()
-	case t.class == cNum && g.from != Oracle:
+	case t.class == cNum && (g.from == MySQL || (g.from == Postgres && t.scale >= 0)):
 		// MySQL and PostgreSQL both write a decimal with all the digits
 		// of its scale.
+		return cast()
+	case t.class == cNum && g.from == Postgres:
+		g.note(e.exprLine(), "the number %s is %s; its type has no fixed scale in PostgreSQL, which writes the digits the value has, and a fixed one in MySQL, which writes them all", describeExpr(e), use)
 		return cast()
 	case t.class == cNum && g.to == Postgres:
 		// Oracle writes a number without trailing zeros and without a

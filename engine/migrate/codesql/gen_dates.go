@@ -195,6 +195,14 @@ func (g *gen) plainSum(e *binExpr, l string, lt typ, r string, rt typ) (string, 
 }
 
 func (g *gen) addOracle(e *binExpr) (string, typ) {
+	if g.to == MySQL {
+		// An interval literal exists in MySQL only next to the date it
+		// is added to.
+		if n, unit, ok := g.intervalOf(e.r); ok {
+			l, lt := g.value(e.l)
+			return "(" + l + " " + e.op + " INTERVAL " + n + " " + unit + ")", lt
+		}
+	}
 	rounded := g.rounded > 0
 	// A number of days added to a date is multiplied by an interval, and
 	// only whole seconds of it survive: the digits of a division such as
@@ -299,8 +307,10 @@ func (g *gen) dateAdd(line int, date, n expr, unit, op string) (string, typ) {
 	case dt.class == cDate && wholeDays[unit]:
 		// MySQL keeps a DATE a DATE; PostgreSQL makes it a timestamp.
 		return "(" + s + ")::date", tDate
+	case dt.class == cDate:
+		return "(" + s + ")", typ{cTime, 0}
 	case dt.temporal():
-		return "(" + s + ")", tTime
+		return "(" + s + ")", dt
 	}
 	g.note(line, "an interval is added to %s, whose type is not known here; MySQL gives a date or a date and time depending on the value, PostgreSQL always a timestamp", describeExpr(date))
 	return "(" + s + ")", tTime
@@ -403,27 +413,44 @@ func (g *gen) addPostgres(e *binExpr) (string, typ) {
 
 // Date formats.
 
-// oracleDateFormat checks an Oracle date format against the elements
-// PostgreSQL's to_char and to_timestamp read the same way. It returns
-// the first element that is not among them.
-func oracleDateFormat(f string) (bad string) {
+// oracleDateFormat rewrites an Oracle date format for PostgreSQL's
+// to_char and to_timestamp, and returns the first element that is not
+// among those the two read the same way. The one element that has to
+// change is FM: in Oracle it switches padding off for everything after
+// it, and on again when it occurs a second time; in PostgreSQL it only
+// affects the element it stands in front of.
+func oracleDateFormat(f string) (out, bad string) {
 	up := strings.ToUpper(f)
+	var b strings.Builder
+	plain := false
 	for i := 0; i < len(up); {
 		if up[i] == '"' {
 			end := strings.IndexByte(up[i+1:], '"')
 			if end < 0 {
-				return "an unclosed quote"
+				return f, "an unclosed quote"
 			}
+			b.WriteString(f[i : i+end+2])
 			i += end + 2
 			continue
 		}
 		if !(up[i] >= 'A' && up[i] <= 'Z') {
+			b.WriteByte(f[i])
 			i++
 			continue
 		}
+		if strings.HasPrefix(up[i:], "FM") {
+			plain = !plain
+			i += 2
+			continue
+		}
 		matched := false
-		for _, el := range []string{"YYYY", "MONTH", "HH24", "HH12", "DDD", "MON", "DAY", "FF1", "FF2", "FF3", "FF4", "FF5", "FF6", "YY", "MM", "DD", "DY", "HH", "MI", "SS", "IW", "AM", "PM", "FM", "Q"} {
+		for _, el := range []string{"YYYY", "MONTH", "HH24", "HH12", "DDD", "MON", "DAY", "FF1", "FF2", "FF3", "FF4", "FF5", "FF6", "YY", "MM", "DD", "DY", "HH", "MI", "SS", "IW", "AM", "PM", "Q"} {
 			if strings.HasPrefix(up[i:], el) {
+				if plain && el != "AM" && el != "PM" {
+					b.WriteString("FM")
+				}
+				// The case of the element decides the case of names.
+				b.WriteString(f[i : i+len(el)])
 				i += len(el)
 				matched = true
 				break
@@ -434,10 +461,14 @@ func oracleDateFormat(f string) (bad string) {
 			for end < len(up) && up[end] >= 'A' && up[end] <= 'Z' {
 				end++
 			}
-			return up[i:end]
+			if bad == "" {
+				bad = up[i:end]
+			}
+			b.WriteString(f[i:end])
+			i = end
 		}
 	}
-	return ""
+	return b.String(), bad
 }
 
 // numberFormat reports whether a format is a number format made only of

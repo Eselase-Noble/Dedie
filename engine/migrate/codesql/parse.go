@@ -50,6 +50,10 @@ var eof = token{kind: tEOF}
 func (p *parser) peek() token { return p.peekAt(0) }
 
 func (p *parser) peekAt(n int) token {
+	if p.pos < 0 {
+		// A parser that stepped back from the end of an empty text.
+		p.pos = 0
+	}
 	if p.pos+n < len(p.toks) {
 		return p.toks[p.pos+n]
 	}

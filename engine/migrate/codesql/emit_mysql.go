@@ -377,7 +377,11 @@ func (g *gen) myCondition(c condition, line int) []string {
 	case "DIVISION_BY_ZERO", "ZERO_DIVIDE":
 		g.refuse(line, "a handler for division by zero: MySQL gives NULL instead of raising an error")
 	default:
-		g.refuse(line, "a handler for %s, which has no counterpart in MySQL", strings.ToLower(c.value))
+		name := c.value
+		if g.from == Postgres {
+			name = strings.ToLower(name)
+		}
+		g.refuse(line, "a handler for %s, which has no counterpart in MySQL", name)
 	}
 	return []string{"SQLEXCEPTION"}
 }

@@ -1,7 +1,7 @@
 // Package codesql converts stored functions, procedures and triggers
 // from one database's procedural language to another's: Oracle's PL/SQL
-// and MySQL's stored programs to PostgreSQL's PL/pgSQL, and PL/pgSQL to
-// MySQL. It is a library without side effects: it is
+// and MySQL's stored programs to PostgreSQL's PL/pgSQL, and PL/SQL and
+// PL/pgSQL to MySQL. It is a library without side effects: it is
 // given the definition of a routine as the source database prints it and
 // returns the statements that create the same routine on the target.
 //
@@ -313,4 +313,65 @@
 //     UPDATE OF columns, transition tables, trigger arguments, a trigger
 //     that returns NULL or a row other than the one it was given, and a
 //     trigger that changes its own table.
+//
+// # Oracle to MySQL
+//
+// The PL/SQL is read as for PostgreSQL and written as for MySQL from
+// PostgreSQL, so what the two sections above say about the source and
+// about the target holds here too. What is particular to the pair:
+//
+// Converted:
+//
+//   - Functions with IN parameters, procedures, and row triggers. A
+//     trigger on several events becomes one trigger for each, with
+//     INSERTING, UPDATING and DELETING decided while converting; a WHEN
+//     clause becomes an IF around the body.
+//   - SELECT ... INTO raises SQLSTATE P0002 when it finds no row, which
+//     handlers for NO_DATA_FOUND catch; TOO_MANY_ROWS and
+//     DUP_VAL_ON_INDEX are MySQL's errors 1172 and 1062; a declared
+//     exception gets an SQLSTATE of its own, and RAISE_APPLICATION_ERROR
+//     (-20nnn) raises SQLSTATE 45nnn.
+//   - cursor%FOUND and %NOTFOUND through a variable set by a NOT FOUND
+//     handler; SQL%ROWCOUNT, SQL%FOUND and SQL%NOTFOUND after INSERT and
+//     DELETE.
+//   - FOR loops over a query or a cursor, when the pipeline described
+//     the tables so that every column has a type.
+//   - A handler that runs after the block changed data needs no caveat
+//     here: neither database undoes the block.
+//   - The empty string and "||" as for PostgreSQL, with CONCAT_WS in
+//     place of concat(); a variable that has the name of a column of the
+//     statement is told apart by naming the column through its table,
+//     because MySQL would take the variable where Oracle takes the
+//     column.
+//   - A date plus or minus a number of days, dates subtracted inside
+//     ROUND or TRUNC, TRUNC of a date to the day, month, year, hour or
+//     minute, LAST_DAY, TO_CHAR of a date with numeric elements.
+//
+// Review, beyond what the PostgreSQL target has:
+//
+//   - Parameters with defaults, which MySQL does not have.
+//   - A number with decimals written into text: MySQL writes all the
+//     digits of the scale, Oracle none it does not need.
+//   - A division by anything but a non-zero literal (MySQL gives NULL for
+//     a divisor of 0), and one whose result is not rounded to four
+//     places or fewer.
+//   - SQL%ROWCOUNT, SQL%FOUND and SQL%NOTFOUND after an UPDATE.
+//   - DBMS_OUTPUT.PUT_LINE, which is dropped; TO_DATE and TO_NUMBER,
+//     which fail in Oracle on text that does not fit and give NULL or a
+//     partial value in MySQL; a function that changes data.
+//   - A variable used in a query on a table the pipeline did not
+//     describe: it may also be a column there.
+//
+// Unconverted, beyond what the PostgreSQL target has:
+//
+//   - Sequences; RETURNING; cursors with parameters; WHERE CURRENT OF;
+//     functions with OUT parameters; column%TYPE and loops over tables
+//     the pipeline did not describe.
+//   - Statement-level triggers, UPDATE OF columns, a trigger that changes
+//     its own table, COMMIT in a function or a trigger.
+//   - Handlers for ZERO_DIVIDE, VALUE_ERROR and INVALID_NUMBER; RAISE of
+//     a predefined exception other than NO_DATA_FOUND.
+//   - TO_CHAR of a number with a format, date formats with the names of
+//     months and days, TRUNC of a date to the quarter or the week,
+//     INITCAP, LISTAGG, LTRIM and RTRIM with a set of characters.
 package codesql

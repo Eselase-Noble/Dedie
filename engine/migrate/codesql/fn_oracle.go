@@ -363,10 +363,11 @@ func oraToChar(g *gen, c *callExpr, a []argv) (string, typ, bool) {
 		}
 		return "DATE_FORMAT(" + a[0].s + ", " + g.stringLit(my) + ")", tStr, true
 	}
-	if bad := oracleDateFormat(format); bad != "" {
+	pg, bad := oracleDateFormat(format)
+	if bad != "" {
 		g.note(c.line, "the date format element %s is not one PostgreSQL is known to read as Oracle does", bad)
 	}
-	return "to_char(" + a[0].s + ", " + a[1].s + ")", tStr, true
+	return "to_char(" + a[0].s + ", " + g.stringLit(pg) + ")", tStr, true
 }
 
 func oraToDate(g *gen, c *callExpr, a []argv) (string, typ, bool) {
@@ -398,10 +399,11 @@ func oraToDate(g *gen, c *callExpr, a []argv) (string, typ, bool) {
 		}
 		return "CAST(STR_TO_DATE(" + a[0].s + ", " + g.stringLit(my) + ") AS DATETIME)", tTime, true
 	}
-	if bad := oracleDateFormat(format); bad != "" {
+	pg, bad := oracleDateFormat(format)
+	if bad != "" {
 		g.note(c.line, "the date format element %s is not one PostgreSQL is known to read as Oracle does", bad)
 	}
-	return "to_timestamp(" + a[0].s + ", " + a[1].s + ")::timestamp(0)", tTime, true
+	return "to_timestamp(" + a[0].s + ", " + g.stringLit(pg) + ")::timestamp(0)", tTime, true
 }
 
 // truncUnits are the units Oracle's TRUNC of a date takes, by what the

@@ -15,7 +15,9 @@ func Assumptions(from, to string) []string {
 			"Text is compared and sorted by the collation of the PostgreSQL database; Oracle compares byte by byte unless NLS_SORT says otherwise.",
 			"A routine runs with the rights of its caller, PostgreSQL's default; Oracle's default is the rights of its owner.",
 			"Error messages reach the client without the ORA- number in front; RAISE_APPLICATION_ERROR(-20nnn, ...) raises SQLSTATE 45nnn.",
+			"The names of months and days in dates written as text are English, as they are with Oracle's default language.",
 			"A function called from an SQL statement that fails with NO_DATA_FOUND makes the statement fail; Oracle would continue with NULL.",
+			"Where Oracle converts between text and numbers on its own, in a comparison or an assignment, PostgreSQL is left to do the same; where it will not, the routine fails with a type error when it runs.",
 			"PostgreSQL 14 or later: procedures with OUT parameters, and trim_scale for numbers written as text.",
 			"Comments are not carried over.",
 		}
@@ -26,7 +28,20 @@ func Assumptions(from, to string) []string {
 			"MySQL does not fire triggers for rows changed by a cascading foreign key; PostgreSQL does.",
 			"A routine runs with the rights of its caller, PostgreSQL's default; MySQL's default is the rights of its definer.",
 			"Text longer than a VARCHAR parameter or result declares is passed on as it is; MySQL would reject it.",
+			"Where MySQL converts between text, numbers and dates on its own, as in COALESCE over values of different types, PostgreSQL is left to do the same; where it will not, the routine fails with a type error when it is created or run.",
 			"PostgreSQL 14 or later: procedures with OUT parameters.",
+			"Comments are not carried over.",
+		}
+	case f == Oracle && t == MySQL:
+		out = []string{
+			"No text passed to a routine or stored in a table is the empty string. Oracle has none: it stores NULL. MySQL keeps '' apart from NULL, and a converted routine that is handed one may treat it differently from NULL.",
+			"The tables on MySQL compare text byte by byte, as the migration creates them; the variables of a converted routine are declared with the same collation (Options.Collation).",
+			"NUMBER without a precision becomes DECIMAL(65,30), as for columns: 35 digits before the decimal point and 30 after it.",
+			"The current date and time are the time the calling statement began, in the MySQL session's time zone; Oracle's SYSDATE is the clock of the database server.",
+			"The MySQL server runs in a strict SQL mode, so a value that does not fit is an error.",
+			"Error messages reach the client without the ORA- number in front and are at most 128 characters long; RAISE_APPLICATION_ERROR(-20nnn, ...) raises SQLSTATE 45nnn.",
+			"A function called from an SQL statement that fails with NO_DATA_FOUND makes the statement fail; Oracle would continue with NULL.",
+			"MySQL fires the triggers of a table in the order they were created. Create them in the order Oracle fires them, where that matters.",
 			"Comments are not carried over.",
 		}
 	case f == Postgres && t == MySQL:
