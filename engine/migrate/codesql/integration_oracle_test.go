@@ -380,13 +380,7 @@ func oracleOptions(t *testing.T, src *oraEngine, targetSchema string) Options {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var routines []Routine
-	for _, c := range oracleCases {
-		if r, ok := Signature("oracle", Object{Source: c.ddl}); ok {
-			routines = append(routines, r)
-		}
-	}
-	return Options{Tables: tables, Routines: routines, TargetSchema: targetSchema}
+	return Options{Tables: tables, Routines: signatures("oracle", oracleCases), TargetSchema: targetSchema}
 }
 
 func setupOracle(t *testing.T, src *oraEngine) {
