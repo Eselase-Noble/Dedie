@@ -3,13 +3,21 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <title>Dedie: live database migration, query browser and administration</title>
 <meta name="description" content="Dedie moves PostgreSQL and MySQL databases to a new version or a new engine while they stay online, with a query browser, encrypted backups and an audit trail.">
 <style>
+  /* The same typeface and colours as the application. Inter is served from
+     this site (SIL Open Font License, see fonts/); nothing comes from another host. */
+  @font-face {
+    font-family: "Inter Variable"; font-style: normal; font-display: swap; font-weight: 100 900;
+    src: url("fonts/inter-latin-wght-normal.woff2") format("woff2");
+  }
   :root {
-    --bg: #ffffff; --soft: #f6f8fb; --line: #e3e7ee; --text: #18202c; --muted: #5a6577;
-    --accent: #1f5fd1; --accent-dark: #174aa6; --accent-soft: #eaf1fd; --ok: #17753f; --ok-soft: #e6f4ec; --warn: #8a5a00; --warn-soft: #fdf3dc;
-    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --bg: #ffffff; --soft: #f8f9fb; --line: #e4e7ec; --text: #101828; --muted: #475467;
+    --accent: #1d4ed8; --accent-dark: #1a43bb; --accent-soft: #eef3ff; --ok: #107a43; --ok-soft: #e9f7ef; --warn: #8a4b00; --warn-soft: #fff5dc;
+    --danger: #b42318;
+    --font: "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
@@ -20,20 +28,26 @@
   .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
   header.top { position: sticky; top: 0; background: rgba(255,255,255,0.92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); z-index: 10; }
   header.top .wrap { display: flex; align-items: center; gap: 28px; height: 60px; }
-  .logo { font-weight: 700; font-size: 19px; letter-spacing: -0.02em; color: var(--text); }
+  .logo { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; font-size: 19px; letter-spacing: -0.02em; color: var(--text); }
+  .logo:hover { text-decoration: none; }
+  .logo svg { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .env { display: inline-block; padding: 1px 7px; border-radius: 5px; background: var(--danger); color: #fff; font-size: 11px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; vertical-align: 2px; }
   nav { display: flex; gap: 22px; flex: 1; font-size: 15px; }
   nav a { color: var(--muted); }
-  .btn { display: inline-flex; align-items: center; height: 42px; padding: 0 20px; border-radius: 8px; font-weight: 600; border: 1px solid var(--line); color: var(--text); background: #fff; }
+  .btn { display: inline-flex; align-items: center; height: 42px; padding: 0 20px; border-radius: 10px; font-weight: 600; border: 1px solid #d0d5dd; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05); color: var(--text); background: #fff; }
   .btn:hover { text-decoration: none; background: var(--soft); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .btn.primary:hover { background: var(--accent-dark); }
   .btn.small { height: 36px; padding: 0 14px; font-size: 14px; }
   .hero { padding: 76px 0 40px; text-align: center; }
+  main { background: radial-gradient(1100px 480px at 50% -60px, #e6edff 0%, rgba(230, 237, 255, 0) 70%); }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
   .eyebrow { display: inline-block; background: var(--accent-soft); color: var(--accent); font-weight: 600; font-size: 13px; padding: 4px 12px; border-radius: 999px; margin-bottom: 20px; }
   h1 { font-size: clamp(34px, 5.2vw, 56px); line-height: 1.08; letter-spacing: -0.03em; margin: 0 auto 18px; max-width: 880px; }
   .lead { font-size: clamp(17px, 2vw, 20px); color: var(--muted); max-width: 720px; margin: 0 auto 30px; }
   .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-  .shot { margin: 48px auto 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: 0 24px 60px rgba(16, 24, 40, 0.12); max-width: 1080px; }
+  .shot { margin: 48px auto 0; border: 1px solid var(--line); border-radius: 14px; background: #fff; overflow: hidden; box-shadow: 0 24px 60px rgba(16, 24, 40, 0.12); max-width: 1080px; }
   .shot img { display: block; width: 100%; height: auto; }
   section { padding: 72px 0; }
   section.alt { background: var(--soft); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
@@ -74,6 +88,9 @@
     section { padding: 52px 0; }
     .hero { padding-top: 52px; }
     th, td { padding: 11px 12px; }
+    /* A table wider than the phone scrolls by itself, not the page with it. */
+    table { display: block; overflow-x: auto; }
+    header.top .wrap { gap: 12px; justify-content: space-between; }
   }
 </style>
 </head>
@@ -81,11 +98,15 @@
 
 <header class="top">
   <div class="wrap">
-    <a class="logo" href="#top">Dedie</a>
+    <a class="logo" href="#top">
+      <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true"><path fill="currentColor" d="M16 2.5 4.5 6.6v8.2c0 7 4.7 12.3 11.5 14.7 6.8-2.4 11.5-7.7 11.5-14.7V6.6L16 2.5Z"/><g fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round"><ellipse cx="16" cy="11" rx="5.6" ry="2.3"/><path d="M10.4 11v4.6c0 1.3 2.5 2.3 5.6 2.3s5.6-1 5.6-2.3V11"/><path d="M10.4 15.6v4.3c0 1.3 2.5 2.3 5.6 2.3s5.6-1 5.6-2.3v-4.3"/></g></svg>
+      Dedie
+    </a>
     <nav>
       <a href="#features">Features</a>
       <a href="#paths">Migration paths</a>
       <a href="#how">How it works</a>
+      <a href="#safe">Production</a>
       <a href="#security">Security</a>
       <a href="#start">Get started</a>
     </nav>
@@ -103,7 +124,7 @@
       <a class="btn" href="https://github.com/Eselase-Noble/Dedie/blob/main/docs/setup.md">Set it up</a>
       <a class="btn" href="https://github.com/Eselase-Noble/Dedie#readme">Read the documentation</a>
     </div>
-    <div class="shot"><img src="img/migration-detail.png" alt="A completed migration in Dedie: six phases from schema to done, replication figures, and each table validated as matching between source and target." width="1440" height="813"></div>
+    <div class="shot"><img src="img/migration-detail.png" alt="A completed migration in Dedie from a production PostgreSQL 16 to PostgreSQL 18: six phases from schema to done, the replication figures, and the preflight report with every check listed." width="1440" height="1000"></div>
   </div>
 
   <section id="features" class="alt">
@@ -124,6 +145,8 @@
         <div class="card"><h3>Server administration</h3><p>Who is connected and what they are running. Cancel a query, end a session, change who owns a database, schema or table, and spot replication slots that hold WAL.</p></div>
         <div class="card"><h3>Notifications</h3><p>A bell in the corner, a message when something finishes or fails, and system notifications in the browser and the desktop application: migrations, backups, restores, alerts, and decisions waiting for you.</p></div>
         <div class="card"><h3>See it before it runs</h3><p>Preview the exact statements a migration would run on the target, translated for its engine, and download the script for review. If the target already has some of the objects, you choose: refuse, keep them, or replace them.</p></div>
+        <div class="card"><h3>Production safeguards</h3><p>Label a connection production and Dedie asks for its name before a DROP, an unfiltered DELETE, a restore over it, a replacing migration or a disconnect. The label follows the connection onto every page.</p></div>
+        <div class="card"><h3>An overview that starts with what is wrong</h3><p>What needs attention comes first: a database that stopped answering, a migration waiting for a decision, a failed backup, a production database nothing backs up. Then every connection with its health and its last backup.</p></div>
         <div class="card"><h3>Built for organizations</h3><p>Five roles, two-factor sign-in, API tokens, per-connection permissions, encrypted credentials, and a tamper-evident audit log of every statement and change.</p></div>
         <div class="card"><h3>Web, command line and desktop</h3><p>One engine behind all three. Sign the command line in to your Dedie server and run migrations and backups from any machine or from CI.</p></div>
       </div>
@@ -194,7 +217,7 @@
           <li><strong>Told when it is done.</strong> A notification when a migration finishes, fails, or waits for you, in the browser and in the desktop application.</li>
         </ul>
       </div>
-      <div class="shot"><img src="img/preflight-existing.png" alt="Dedie asking what to do about 24 objects that already exist on the target: refuse, keep them and skip them, or replace them." width="1440" height="900" loading="lazy"></div>
+      <div class="shot"><img src="img/preflight-existing.png" alt="Dedie asking what to do about 10 objects that already exist on the target: refuse, keep them and skip them, or replace them." width="1440" height="900" loading="lazy"></div>
     </div>
   </section>
 
@@ -211,7 +234,7 @@
           <li><strong>Read-only by default.</strong> Writes need permission and a deliberate switch.</li>
         </ul>
       </div>
-      <div class="shot"><img src="img/query.png" alt="The Dedie query browser: schema tree on the left, tabs for queries and tables, a formatted SQL statement and its results below." width="1500" height="863" loading="lazy"></div>
+      <div class="shot"><img src="img/query.png" alt="The Dedie query browser: schema tree on the left, tabs for queries and tables, a formatted SQL statement and its results below." width="1440" height="863" loading="lazy"></div>
     </div>
   </section>
 
@@ -226,7 +249,7 @@
           <li><strong>Prometheus metrics</strong> and a health endpoint for your own dashboards and load balancers.</li>
         </ul>
       </div>
-      <div class="shot"><img src="img/monitoring.png" alt="The Dedie monitoring page: one database reported as not answering, the others online with uptime and response time, and an alert channel that delivered." width="1500" height="863" loading="lazy"></div>
+      <div class="shot"><img src="img/monitoring.png" alt="The Dedie monitoring page: one database reported as not answering, the others online with their environment, uptime, response time and a bar for every check of the last day." width="1440" height="860" loading="lazy"></div>
     </div>
   </section>
 
@@ -243,7 +266,7 @@
           <li><strong>Passwords stay private.</strong> PostgreSQL receives a SCRAM verifier, never the password, and Dedie does not store it.</li>
         </ul>
       </div>
-      <div class="shot"><img src="img/dbusers.png" alt="The Dedie database users page: server connections by application, connection pools per user with a button to close idle connections, the rule for closing them automatically, and users with their privileges and limits." width="1500" height="1163" loading="lazy"></div>
+      <div class="shot"><img src="img/dbusers.png" alt="The Dedie database users page: server connections by application, connection pools per user with a button to close idle connections, the rule for closing them automatically, and users with their privileges and limits." width="1440" height="1589" loading="lazy"></div>
     </div>
   </section>
 
@@ -259,11 +282,27 @@
           <li><strong>Weak encryption is flagged.</strong> Connections that do not require TLS are marked.</li>
         </ul>
       </div>
-      <div class="shot"><img src="img/connections.png" alt="The Dedie connections page listing three connections, each marked online with its response time." width="1440" height="813" loading="lazy"></div>
+      <div class="shot"><img src="img/connections.png" alt="The Dedie connections page: six connections labelled production, staging or development, five online with their response time and one offline." width="1440" height="813" loading="lazy"></div>
     </div>
   </section>
 
-  <section id="security">
+  <section id="safe">
+    <div class="wrap split">
+      <div>
+        <h2>Production is named, and has to be named again</h2>
+        <p class="sub" style="margin-bottom:0">Dedie means &ldquo;safe&rdquo;. The mistake it guards against hardest is the right statement on the wrong database.</p>
+        <ul class="checks">
+          <li><strong>Environments.</strong> Mark each connection production, staging or development. The label sits beside its name everywhere, and the query browser wears a red strip while it is pointed at production.</li>
+          <li><strong>Type the name to go on.</strong> Dropping, truncating, deleting or updating without a WHERE, editing rows, restoring over it, replacing objects in a migration, fencing it for cutover and ending its sessions all wait for the connection&rsquo;s name.</li>
+          <li><strong>Enforced by the server.</strong> The web interface, the command line and the API are held to the same rule, and every confirmed action is in the audit log.</li>
+          <li><strong>Out of the way otherwise.</strong> Reading, ordinary writes and backups ask nothing.</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="img/production-confirm.png" alt="Dedie asking for the name of a production connection before running DROP TABLE on it: a dialog with a field to type shop-prod, over the query browser with its red production strip." width="1440" height="900" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section id="security" class="alt">
     <div class="wrap">
       <h2>Security you can explain to an auditor</h2>
       <p class="sub">Dedie holds the keys to your databases, so it is built to be trusted with them.</p>
@@ -278,7 +317,7 @@
     </div>
   </section>
 
-  <section id="start" class="alt">
+  <section id="start">
     <div class="wrap">
       <h2>Get started</h2>
       <p class="sub">Download a release, or build from source. The server, the command line and the desktop application share one engine.</p>

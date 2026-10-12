@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
 import type { CodeMode, ColumnSpec, Connection, Migration, MigrationConfig, Validation, OnExisting } from "@/lib/types";
 import { leavesBehind } from "@/components/migrations/NotMigrated";
+import { connectionOption } from "./Environment";
 import { Banner, Checkbox, Field, Modal } from "./ui";
 
 /** Splits a comma or newline separated list, dropping blanks. */
@@ -94,6 +95,7 @@ export default function MigrationForm({ connections, onClose, onCreated, initial
   const sync = mode === "sync";
   const offline = mode === "offline";
   const oracle = source?.kind === "oracle";
+  const target = candidates.find((c) => c.id === targetId) ?? null;
   const crossEngine = !!source && !!targetId && candidates.find((c) => c.id === targetId)?.kind !== source.kind;
   // Between two kinds of database stored code has to be converted, and
   // how far to trust the conversion is the administrator's call.
@@ -222,14 +224,22 @@ export default function MigrationForm({ connections, onClose, onCreated, initial
           </Field>
           <Field label="Source" hint={(offline ? OFFLINE_HINTS : SOURCE_HINTS)[source?.kind ?? "postgres"]}>
             <select className="select" value={sourceId} onChange={(e) => setSourceId(e.target.value)} required>
-              {candidates.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.kind}, {c.database})</option>)}
+              {candidates.map((c) => <option key={c.id} value={c.id}>{connectionOption(c)}</option>)}
             </select>
           </Field>
           <Field label="Target" hint="Best empty. What happens to objects it already has is chosen below.">
             <select className="select" value={targetId} onChange={(e) => setTargetId(e.target.value)} required>
-              {targets.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.kind}, {c.database})</option>)}
+              {targets.map((c) => <option key={c.id} value={c.id}>{connectionOption(c)}</option>)}
             </select>
           </Field>
+          {target?.environment === "production" && (
+            <div className="span2">
+              <Banner tone="warn">
+                <strong>{target.name}</strong> is a production connection. A migration only adds to it unless you choose to
+                replace existing objects below; starting one that replaces asks for the connection&apos;s name.
+              </Banner>
+            </div>
+          )}
           <Field label="Level" className="span2"
             hint={scope === "database"
               ? oracle ? "Every table of the connecting user's own schema is migrated. Choose the schema level to name other schemas."

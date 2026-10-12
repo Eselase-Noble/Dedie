@@ -163,7 +163,7 @@ export default function Channels({ channels, mayManage, reload }: {
             No alert channels. Alerts are still recorded below{mayManage ? "; add a channel to be told when something needs attention." : "."}
           </div>
         ) : (
-          <table className="data">
+          <table className="data stack">
             <thead><tr><th>Name</th><th>Delivers to</th><th>Alerts</th><th>Last delivery</th><th /></tr></thead>
             <tbody>
               {channels.map((ch) => (

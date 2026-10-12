@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 import type { Backend } from "@/lib/types";
+import { EnvBadge, connectionOption } from "@/components/Environment";
 import { Badge, Banner, ConfirmDialog, Loading, PageHeader, StatusBadge } from "@/components/ui";
 
 // Inactive slots holding more WAL than this are flagged: nothing is
@@ -21,6 +22,8 @@ export default function ServerPage() {
     if (!connId && connections.data?.[0]) setConnId(connections.data[0].id);
   }, [connections.data, connId]);
 
+  const connection = connections.data?.find((c) => c.id === connId) ?? null;
+
   const { data, error, loading, reload } = useLoad(
     async () => (connId ? api.overview(connId) : null),
     [connId],
@@ -36,8 +39,9 @@ export default function ServerPage() {
       <div className="toolbar">
         <select className="select" value={connId} onChange={(e) => setConnId(e.target.value)} aria-label="Connection">
           {(!connections.data || connections.data.length === 0) && <option value="">No connections</option>}
-          {connections.data?.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.host})</option>)}
+          {connections.data?.map((c) => <option key={c.id} value={c.id}>{connectionOption(c, c.host)}</option>)}
         </select>
+        <EnvBadge env={connection?.environment} />
         <button className="btn" onClick={() => reload()} disabled={!connId}>Refresh</button>
         <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
@@ -51,10 +55,10 @@ export default function ServerPage() {
       {data && (
         <>
           <div className="card">
-            <div className="card-head"><h2>Activity</h2><span className="muted">{data.activity.length} sessions</span></div>
+            <div className="card-head"><h2>Activity</h2><span className="muted">{data.activity.length} {data.activity.length === 1 ? "session" : "sessions"}</span></div>
             <div className="card-body flush table-wrap">
               {data.activity.length === 0 ? <div className="empty">No other sessions.</div> : (
-                <table className="data">
+                <table className="data stack">
                   <thead>
                     <tr><th className="num">PID</th><th>User</th><th>Database</th><th>Application</th><th>Client</th><th>State</th><th>Waiting on</th><th className="num">For</th><th>Statement</th><th /></tr>
                   </thead>
@@ -88,7 +92,7 @@ export default function ServerPage() {
             <div className="card-head"><h2>Replication slots</h2></div>
             <div className="card-body flush table-wrap">
               {data.replication_slots.length === 0 ? <div className="empty">No replication slots.</div> : (
-                <table className="data">
+                <table className="data stack">
                   <thead>
                     <tr><th>Slot</th><th>Plugin</th><th>Database</th><th>State</th><th className="num">Retained WAL</th></tr>
                   </thead>
@@ -118,7 +122,7 @@ export default function ServerPage() {
             <div className="card">
               <div className="card-head"><h2>Databases</h2></div>
               <div className="card-body flush table-wrap">
-                <table className="data">
+                <table className="data stack">
                   <thead><tr><th>Name</th><th className="num">Size</th></tr></thead>
                   <tbody>
                     {data.databases.map((d) => (
@@ -131,7 +135,7 @@ export default function ServerPage() {
             <div className="card">
               <div className="card-head"><h2>Settings</h2></div>
               <div className="card-body flush table-wrap">
-                <table className="data">
+                <table className="data stack">
                   <thead><tr><th>Setting</th><th>Value</th></tr></thead>
                   <tbody>
                     {Object.entries(data.settings).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => (
@@ -150,9 +154,10 @@ export default function ServerPage() {
           title={target.terminate ? `Terminate session ${target.backend.pid}?` : `Cancel the statement of session ${target.backend.pid}?`}
           confirmLabel={target.terminate ? "Terminate session" : "Cancel statement"}
           danger
+          typeName={target.terminate && connection?.environment === "production" ? connection.name : undefined}
           onClose={() => setTarget(null)}
-          onConfirm={async () => {
-            await api.cancelBackend(connId, target.backend.pid, target.terminate);
+          onConfirm={async (typed) => {
+            await api.cancelBackend(connId, target.backend.pid, target.terminate, typed);
             await reload();
           }}
         >

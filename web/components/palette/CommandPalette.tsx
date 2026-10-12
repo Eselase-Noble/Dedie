@@ -79,13 +79,13 @@ export default function CommandPalette({ pages, onClose }: { pages: PaletteEntry
         { id: "new-sync", group: "Action", label: "New continuous sync", href: "/migrations/?new=sync" },
       );
     }
-    if (can("backups.create")) actions.push({ id: "backup", group: "Action", label: "Run a backup", href: "/backups/" });
+    if (can("backups.create")) actions.push({ id: "backup", group: "Action", label: "Run a backup", href: "/backups/?new=1" });
     return [
       ...pages,
       ...actions,
       ...connections.map((c): PaletteEntry => ({
         id: `connection-${c.id}`, group: "Connection", label: `Open in query browser: ${c.name}`,
-        detail: `${c.kind}, ${c.database}`, href: `/query/?connection=${encodeURIComponent(c.id)}`,
+        detail: `${c.environment ? `${c.environment} · ` : ""}${c.kind}, ${c.database}`, href: `/query/?connection=${encodeURIComponent(c.id)}`,
       })),
       ...migrations.map((m): PaletteEntry => ({
         id: `migration-${m.id}`, group: "Migration", label: m.name, detail: m.status,

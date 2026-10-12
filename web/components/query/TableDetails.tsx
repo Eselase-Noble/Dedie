@@ -12,7 +12,7 @@ export default function TableDetails({ schema, table, onClose }: { schema: strin
         {table.owner && <>Owned by <strong>{table.owner}</strong> · </>}About {formatNumber(table.est_rows)} rows · {formatBytes(table.size_bytes)} · {table.columns.length} columns · {table.indexes.length} indexes
       </p>
       <div className="table-wrap" style={{ marginBottom: 16 }}>
-        <table className="data">
+        <table className="data stack">
           <thead><tr><th>Column</th><th>Type</th><th>Null</th><th>Default</th></tr></thead>
           <tbody>
             {table.columns.map((c) => (

@@ -34,7 +34,11 @@ Setup
   user add                     add a user to the organization
 
 Connections
-  conn add                     save a database connection
+  conn add                     save a database connection; --env labels it
+                               production, staging or development
+  conn env <name> <environment>
+                               label a saved connection, or "none" to take
+                               the label off
   conn list                    list saved connections
   conn test <name>             connect and show server details
   conn rm <name>               delete a connection
@@ -78,6 +82,11 @@ Backups
   backup schedule add|list|rm  recurring backups with retention
   backup location add|list|rm  directories backups may be written to
 
+Overview
+  overview                     what needs attention, then every connection
+                               with its environment, whether it answers and
+                               when it was last backed up
+
 Notifications
   notifications                list what happened recently: migrations,
                                backups, databases that stopped answering.
@@ -96,6 +105,13 @@ Environment
   DEDIE_DATA_DIR     data directory in local mode (default ~/.dedie)
   DEDIE_MASTER_KEY   base64 32-byte master key (default: <data dir>/master.key)
   DEDIE_PASSWORD     password for commands that would otherwise prompt
+
+Production connections
+  Anything that destroys or disrupts on a connection labelled production
+  (a DROP, TRUNCATE or unfiltered DELETE or UPDATE with query --write, a
+  restore over it, a migration that replaces objects on it, a cutover that
+  fences it) asks you to type the connection's name. In a script, pass it
+  with --confirm-production <name>.
 
 Run "dedie <command> -h" for the flags of a command.
 `
@@ -178,6 +194,8 @@ func (c *cli) dispatch(args []string) error {
 			return c.connAdd(rest)
 		case "list":
 			return c.connList()
+		case "env":
+			return c.connEnv(rest)
 		case "test":
 			return c.connTest(rest)
 		case "rm":
@@ -251,6 +269,8 @@ func (c *cli) dispatch(args []string) error {
 				return c.scheduleRemove(rest)
 			}
 		}
+	case "overview":
+		return c.overview()
 	case "notifications":
 		return c.notifications(args[1:])
 	case "audit":

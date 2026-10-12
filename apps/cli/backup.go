@@ -71,13 +71,17 @@ func (c *cli) backupRestore(args []string) error {
 	fs.BoolVar(&in.Clean, "clean", false, "drop existing objects before recreating them")
 	fs.BoolVar(&in.KeepOwners, "keep-owners", false, "restore object ownership and privileges")
 	fs.StringVar(&in.Confirm, "confirm", "", "the name of the database being restored into, to confirm")
+	confirm := confirmFlag(fs)
 	id, err := oneArg(parse(fs, args), "backup id")
 	if err != nil {
 		return err
 	}
 	in.Tables = splitList(*tables)
 	fmt.Println("Restoring", id, "...")
-	if _, err := c.be.RestoreBackup(id, in, true); err != nil {
+	if err := c.confirmed(*confirm, func() error {
+		_, err := c.be.RestoreBackup(id, in, true)
+		return err
+	}); err != nil {
 		return err
 	}
 	fmt.Println("Restore completed.")

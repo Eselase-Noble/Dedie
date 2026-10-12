@@ -7,6 +7,7 @@ import { formatNumber, formatTime } from "@/lib/format";
 import { clearHistory, loadHistory, pushHistory, type HistoryItem } from "@/lib/history";
 import { beginDrag, useStoredSize } from "@/lib/resize";
 import type { Connection, QueryResponse } from "@/lib/types";
+import { useProductionGuard } from "@/components/Environment";
 import SqlEditor from "@/components/SqlEditor";
 import { Badge, Banner } from "@/components/ui";
 import ResultPanel from "./ResultPanel";
@@ -46,6 +47,7 @@ export default function QueryTab({ connection, mayWrite, completions, sql, onSql
   const [maximized, setMaximized] = useState(false);
   const selection = useRef<() => string>(() => "");
   const abort = useRef<AbortController | null>(null);
+  const { guarded, dialog } = useProductionGuard();
   const [editorHeight, setEditorHeight] = useStoredSize("dedie.query.editor", 280, 110, () => Math.max(160, window.innerHeight - 300));
 
   useEffect(() => setHistory(loadHistory(connection.id)), [connection.id, active]);
@@ -63,7 +65,14 @@ export default function QueryTab({ connection, mayWrite, completions, sql, onSql
     setError("");
     try {
       // A plan is only read, whatever the statement would do.
-      const res = await api.query(connection.id, { sql: statement, write: !wrap && write && mayWrite, max_rows: maxRows }, controller.signal);
+      // On a production connection a statement that drops, truncates or
+      // rewrites a whole table comes back asking for the connection's name.
+      const res = await guarded(connection.name, (confirm) =>
+        api.query(connection.id, { sql: statement, write: !wrap && write && mayWrite, max_rows: maxRows }, controller.signal, confirm), "Run it");
+      if (!res) {
+        setError("Not run. The connection's name was not confirmed.");
+        return;
+      }
       setResponse(res);
       setResultTab(0);
     } catch (err) {
@@ -193,6 +202,7 @@ export default function QueryTab({ connection, mayWrite, completions, sql, onSql
           </>
         )}
       </div>
+      {dialog}
     </div>
   );
 }

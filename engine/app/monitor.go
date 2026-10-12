@@ -142,6 +142,7 @@ type ConnectionHealth struct {
 	ConnectionID string `json:"connection_id"`
 	Name         string `json:"name"`
 	Kind         string `json:"kind"`
+	Environment  string `json:"environment"`
 	// Checks is the number of samples in the window; UptimePercent is
 	// meaningful only when it is above zero.
 	Checks        int                  `json:"checks"`
@@ -187,7 +188,7 @@ func (a *App) GetMonitoring(ctx context.Context, actor Actor) (Monitoring, error
 		if err != nil {
 			return out, err
 		}
-		h := ConnectionHealth{ConnectionID: c.ID, Name: c.Name, Kind: c.Kind, Checks: len(samples)}
+		h := ConnectionHealth{ConnectionID: c.ID, Name: c.Name, Kind: c.Kind, Environment: c.Environment, Checks: len(samples)}
 		var up int
 		var latency int64
 		for _, s := range samples {

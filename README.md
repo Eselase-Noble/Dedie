@@ -53,6 +53,8 @@ Dedie moves a production database to a newer server version, or to a different d
 
 **Server administration.** Live sessions with cancel and terminate, database sizes, replication slots and the WAL they retain, and the settings that matter for replication and security.
 
+**Production safeguards.** Label a connection production, staging or development. The label is shown wherever the connection is named, and anything that destroys or disrupts on a production connection asks you to type its name first.
+
 **Organization controls.** Users with five roles, two-factor sign-in, API tokens, per-connection permissions, a password policy, encrypted credential storage, and a hash-chained audit log that records every statement and every change.
 
 ## Documentation
@@ -139,8 +141,8 @@ bin/dedie-server --addr 127.0.0.1:8080 --behind-tls-proxy
 
 | Page | What you do there |
 |---|---|
-| Overview | See connections, migrations and recent backups at a glance. |
-| Connections | Add, edit, test and delete connections, see which servers are online, and restrict a connection to chosen people. Passwords are write-only; weak SSL modes are flagged. |
+| Overview | See what needs attention, whether each connection answers and when it was last backed up, and what is running. A new installation is walked through its first connection, backup and migration. |
+| Connections | Add, edit, test and delete connections, label each with its environment, see which servers are online, and restrict a connection to chosen people. Passwords are write-only; weak SSL modes are flagged. |
 | Query browser | Browse schemas; open tables and edit their rows; write, format, explain and save SQL in tabs; sort, filter and export results; create databases, schemas and tables; change owners. |
 | Migrations | Create an online or offline migration or a continuous sync at database, schema or table level; see every supported path; run the preflight check and keep its report; preview the schema that will be created; have views and stored code converted between engines and get the rest as a worklist; decide what happens to objects the target already has; watch phase, progress, lag and time remaining; pause, resume, cut over, abort or duplicate. |
 | Backups | Take a backup of any type, schedule backups with retention, verify, download, restore into an existing or a new database, and review restore history. |
@@ -154,7 +156,39 @@ bin/dedie-server --addr 127.0.0.1:8080 --behind-tls-proxy
 
 Navigation and actions a role may not use are hidden; the server enforces the same rules regardless.
 
-**Ctrl+K** (Cmd+K on macOS) opens a palette that jumps to any page, connection or migration and starts the common actions.
+**Ctrl+K** (Cmd+K on macOS) opens a palette that jumps to any page, connection or migration and starts the common actions. **?** lists every keyboard shortcut; **G** followed by a letter goes to a page (G then C for Connections, G then Q for the query browser, and so on). The interface is light and works at phone width, where tables turn into one block per row. Dialogs keep the keyboard focus inside them and hand it back when they close. Its typeface, Inter, is shipped with the application (`web/public/fonts`, SIL Open Font License); nothing is fetched from another host, so it looks the same on a closed network and in the desktop application.
+
+### The overview
+
+The first page answers what an operator asks on arriving.
+
+- **Needs attention** lists, most pressing first: connections that have stopped answering, migrations that failed, were paused, or are waiting for a decision about objects on the target, connections whose latest backup failed, schedules that could not run, a write-ahead log archiver that has stopped, and production connections that no backup schedule covers. Each links to the page where it is dealt with. When nothing is waiting it says so.
+- **Connections** shows each one with its environment, whether it answered the last check, and when it was last backed up and whether a schedule will do it again.
+- **Migrations** puts running ones first, with the progress of their copy.
+- **Getting started** appears on a new installation and ticks off three steps as they are done: save a connection, take a backup, create a migration. It goes away when all three are done, or when you hide it.
+
+You are shown only what your role could see elsewhere: a connection restricted to other people does not appear, and backups are left out for roles that may not see them. `dedie overview` prints the same on the command line.
+
+### Environments and production safeguards
+
+A connection can be labelled **production**, **staging** or **development**, in its form or with `dedie conn add --env production` and `dedie conn env <name> <environment>`. The label appears beside the connection's name on every page, in every list a connection is chosen from, and in `dedie conn list`. The query browser shows a red strip for as long as it is pointed at production.
+
+On a connection labelled production, these ask you to type the connection's name before they do anything:
+
+| Action | Where |
+|---|---|
+| A `DROP`, `TRUNCATE` or `ALTER … DROP`, a `DELETE` or `UPDATE` with no `WHERE`, and on MongoDB `drop`, `dropDatabase`, `dropIndexes` and a `delete` with an empty filter | a query run with writes allowed |
+| Editing, adding or deleting rows | the table editor; the name is typed once when editing is switched on in a tab |
+| Ending a session, disconnecting sessions, closing idle connections by hand | Server activity, Database users |
+| Dropping a database user | Database users |
+| Restoring a backup over the connection's own database | Backups; restoring into a new database beside it asks nothing |
+| Starting a migration that was told to replace objects the target already has | the migration's page, when the target is production |
+| A cutover that fences the source: makes it read-only and disconnects its clients | the migration's page, when the source is production |
+| Taking the production label off | the connection's form |
+
+The server enforces this, not the page: a request without the name is refused before the database is contacted, whether it comes from the interface, the command line or a script calling the API. Each confirmed action leaves a `production.confirm` entry in the audit log naming the connection and the action. On the command line you are asked for the name on a terminal; a script passes `--confirm-production <name>`.
+
+The check reads the statement you typed, skipping comments, quoted text and dollar-quoted bodies. It is there to make you look twice at the obvious mistake on the wrong database, and does not look inside a function or procedure that a statement calls. It adds to the other rules and replaces none of them: a role still needs the permission, a read-only connection still refuses writes, and a restricted connection is still hidden from those it is not granted to. Reading, ordinary writes with a `WHERE`, creating objects and taking backups ask nothing. Rules that close idle connections automatically keep running on a production connection once they have been set up.
 
 ### Notifications
 
@@ -196,7 +230,9 @@ dedie status                              # which server, which user
 dedie conn add --name prod-16 --host db-old.internal --db shop --user migrator --sslmode verify-full
 dedie conn add --kind mysql --name orders --host mysql.internal --db orders --user migrator
 dedie conn add --kind mongodb --name events --host mongo.internal --db events --user reader
+dedie conn env prod-16 production         # label it; destructive actions on it now ask for its name
 dedie conn list
+dedie overview                            # what needs attention, connection health, last backups
 dedie query prod-16 "select count(*) from orders"      # read-only unless --write
 dedie backup create prod-16 --note "before upgrade"
 dedie conn add --kind oracle --name erp --host ora.internal --db ORCLPDB1 --user migrator
@@ -926,6 +962,8 @@ An organization always keeps at least one active owner.
 
 **Connection permissions.** A connection can be restricted to chosen people. It then disappears for everyone else except owners and admins: from lists, from the query browser, and from the API, which answers as if it did not exist. What a permitted person may do with it still follows their role.
 
+**Production connections.** Destructive and disruptive actions on a connection labelled production are refused until the caller supplies the connection's name, and each one that goes ahead is audited. See [Environments and production safeguards](#environments-and-production-safeguards) for the list. This guards against acting on the wrong database; it gives nobody access they did not have.
+
 **Queries.** The browser runs statements in a read-only session unless the user has write permission, the connection is not marked read-only, and they switch writes on for that run. The database server enforces it. Edits made in the grid bind their values as parameters and are applied only when they touch exactly one row. This is a guard rail; the real boundary is the database account a connection uses, so give each connection the least privilege it needs.
 
 **Audit log.** Sign-ins, every executed statement, every row edited in the grid, and every change to connections, users, database users, migrations, backups, schedules and alert channels are recorded, with the API token used where there was one. Each entry includes a hash of the previous one, so an edited or deleted entry breaks the chain; `dedie audit verify` or the Audit page reports where. Removing entries from the end of the log is not detectable from the log alone, so export it regularly if you need that guarantee.
@@ -938,7 +976,7 @@ An organization always keeps at least one active owner.
 
 ## HTTP API
 
-Everything the interface and the remote CLI do goes through a JSON API under `/api/v1`. Authenticate with an API token (`Authorization: Bearer dedie_pat_…`), or with the session cookie, in which case every request that changes state must also carry the header `X-Dedie-Request: 1`. Errors are `{"error": "..."}` with a matching status, and a `code` where a client is expected to react to the condition.
+Everything the interface and the remote CLI do goes through a JSON API under `/api/v1`. Authenticate with an API token (`Authorization: Bearer dedie_pat_…`), or with the session cookie, in which case every request that changes state must also carry the header `X-Dedie-Request: 1`. Errors are `{"error": "..."}` with a matching status, and a `code` where a client is expected to react to the condition. One such code is `confirm_production`, with status 428: the action touches a production connection and wants its name. Send the request again with the header `X-Dedie-Confirm` set to the connection's name, percent-encoded.
 
 | Area | Endpoints |
 |---|---|
@@ -952,6 +990,7 @@ Everything the interface and the remote CLI do goes through a JSON API under `/a
 | Database users | `GET/POST /connections/{id}/accounts`, `DELETE /connections/{id}/accounts/{user}`, `POST /connections/{id}/connection-limit`, `POST /connections/{id}/sessions/terminate`, `GET/PUT /connections/{id}/idle-policy` |
 | Migrations | `POST /connections/{id}/suggest-columns`, `GET/POST /migrations`, `GET /migrations/{id}`, `POST /migrations/{id}/preflight`, `GET /migrations/{id}/preview`, `GET /migrations/{id}/leftovers`, `POST /migrations/{id}/on-existing`, `POST /migrations/{id}/actions/{start,pause,resume,cutover,abort,delete}` |
 | Backups | `GET/POST /backups`, `DELETE /backups/{id}`, `POST /backups/{id}/verify`, `POST /backups/{id}/restore`, `GET /backups/{id}/download`, `GET /restores`, `GET/POST /schedules`, `PUT/DELETE /schedules/{id}`, `POST /schedules/{id}/run`, `GET/POST /backup-locations`, `DELETE /backup-locations/{id}`, `GET /wal-archives`, `PUT /connections/{id}/wal-archive` |
+| Overview | `GET /summary` |
 | Monitoring | `GET /monitoring`, `GET /alerts/events`, `GET/POST /alerts/channels`, `PUT/DELETE /alerts/channels/{id}`, `POST /alerts/channels/{id}/test` |
 | Audit | `GET /audit`, `GET /audit/verify` |
 

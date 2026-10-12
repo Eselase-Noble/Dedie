@@ -42,6 +42,7 @@ import type {
   ServerObjects,
   Session,
   SessionFilter,
+  Summary,
   SessionInfo,
   User,
   UserUpdate,
@@ -70,6 +71,17 @@ interface RequestOptions {
   // Aborting the signal abandons the request; the server then cancels the
   // statement it was running for it.
   signal?: AbortSignal;
+  // The name of a production connection, typed by the user to confirm an
+  // action that destroys or disrupts.
+  confirm?: string;
+}
+
+/** The reason the API gives when it wants a production connection's name typed first. */
+export const CONFIRM_PRODUCTION = "confirm_production";
+
+/** Whether an error is the API asking for a production connection's name. */
+export function asksForProductionName(err: unknown): boolean {
+  return err instanceof ApiError && err.code === CONFIRM_PRODUCTION;
 }
 
 async function request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<T> {
@@ -80,6 +92,8 @@ async function request<T>(method: string, path: string, opts: RequestOptions = {
     headers["X-Dedie-Request"] = "1";
     headers["Content-Type"] = "application/json";
   }
+  // Percent-encoded: a header carries ASCII only, a connection's name need not be.
+  if (opts.confirm) headers["X-Dedie-Confirm"] = encodeURIComponent(opts.confirm);
   let res: Response;
   try {
     res = await fetch(BASE + path, {
@@ -151,8 +165,8 @@ export const api = {
   // Connections
   connections: () => get<Connection[]>("/connections"),
   createConnection: (body: ConnectionInput) => post<Connection>("/connections", body),
-  updateConnection: (connId: string, body: ConnectionInput) =>
-    request<Connection>("PUT", `/connections/${id(connId)}`, { body }),
+  updateConnection: (connId: string, body: ConnectionInput, confirm?: string) =>
+    request<Connection>("PUT", `/connections/${id(connId)}`, { body, confirm }),
   deleteConnection: (connId: string) => request<{ ok: boolean }>("DELETE", `/connections/${id(connId)}`),
   testConnection: (connId: string) => post<ServerInfo>(`/connections/${id(connId)}/test`),
   testConnectionInput: (body: ConnectionInput) => post<ServerInfo>("/connections/test", body),
@@ -172,19 +186,20 @@ export const api = {
   setOwner: (connId: string, body: OwnerChange, database = "") =>
     post<{ ok: boolean }>(`/connections/${id(connId)}/owner${inDatabase(database)}`, body),
   catalog: (connId: string) => get<Catalog>(`/connections/${id(connId)}/catalog`),
-  query: (connId: string, body: { sql: string; write: boolean; max_rows: number }, signal?: AbortSignal) =>
-    post<QueryResponse>(`/connections/${id(connId)}/query`, body, { signal }),
-  changeRow: (connId: string, body: RowChange) => post<{ ok: boolean }>(`/connections/${id(connId)}/rows`, body),
+  query: (connId: string, body: { sql: string; write: boolean; max_rows: number }, signal?: AbortSignal, confirm?: string) =>
+    post<QueryResponse>(`/connections/${id(connId)}/query`, body, { signal, confirm }),
+  changeRow: (connId: string, body: RowChange, confirm?: string) =>
+    post<{ ok: boolean }>(`/connections/${id(connId)}/rows`, body, { confirm }),
 
   // Users and connections of a database server
   dbAccounts: (connId: string) => get<DbAccounts>(`/connections/${id(connId)}/accounts`),
   saveDbAccount: (connId: string, body: AccountChange) => post<{ ok: boolean }>(`/connections/${id(connId)}/accounts`, body),
-  dropDbAccount: (connId: string, user: string, host: string, handOver: boolean) =>
-    request<{ ok: boolean }>("DELETE", `/connections/${id(connId)}/accounts/${id(user)}?host=${id(host)}${handOver ? "&hand_over=1" : ""}`),
+  dropDbAccount: (connId: string, user: string, host: string, handOver: boolean, confirm?: string) =>
+    request<{ ok: boolean }>("DELETE", `/connections/${id(connId)}/accounts/${id(user)}?host=${id(host)}${handOver ? "&hand_over=1" : ""}`, { confirm }),
   setConnectionLimit: (connId: string, body: { scope: "account" | "database"; name: string; host: string; limit: number }) =>
     post<{ ok: boolean }>(`/connections/${id(connId)}/connection-limit`, body),
-  terminateSessions: (connId: string, filter: SessionFilter) =>
-    post<{ sessions: number; open_now: number }>(`/connections/${id(connId)}/sessions/terminate`, filter),
+  terminateSessions: (connId: string, filter: SessionFilter, confirm?: string) =>
+    post<{ sessions: number; open_now: number }>(`/connections/${id(connId)}/sessions/terminate`, filter, { confirm }),
 
   idlePolicy: (connId: string) => get<IdlePolicy>(`/connections/${id(connId)}/idle-policy`),
   setIdlePolicy: (connId: string, body: Pick<IdlePolicy, "enabled" | "idle_minutes" | "tx_minutes" | "min_usage_percent" | "exclude_users">) =>
@@ -196,8 +211,8 @@ export const api = {
     queryId ? request<SavedQuery>("PUT", `/queries/${id(queryId)}`, { body }) : post<SavedQuery>("/queries", body),
   deleteSavedQuery: (queryId: string) => request<{ ok: boolean }>("DELETE", `/queries/${id(queryId)}`),
   overview: (connId: string) => get<Overview>(`/connections/${id(connId)}/overview`),
-  cancelBackend: (connId: string, pid: number, terminate: boolean) =>
-    post<{ ok: boolean }>(`/connections/${id(connId)}/backends/${pid}/cancel${terminate ? "?terminate=1" : ""}`),
+  cancelBackend: (connId: string, pid: number, terminate: boolean, confirm?: string) =>
+    post<{ ok: boolean }>(`/connections/${id(connId)}/backends/${pid}/cancel${terminate ? "?terminate=1" : ""}`, undefined, { confirm }),
 
   suggestColumns: (connId: string, tables: string[], exclude_tables: string[]) =>
     post<Record<string, ColumnSpec[]>>(`/connections/${id(connId)}/suggest-columns`, { tables, exclude_tables }),
@@ -210,8 +225,8 @@ export const api = {
   previewMigration: (jobId: string) => get<PreviewStatement[]>(`/migrations/${id(jobId)}/preview`),
   migrationLeftovers: (jobId: string) => get<Leftover[]>(`/migrations/${id(jobId)}/leftovers`),
   setOnExisting: (jobId: string, policy: OnExisting) => post<Migration>(`/migrations/${id(jobId)}/on-existing`, { policy }),
-  migrationAction: (jobId: string, action: MigrationAction) =>
-    post<{ ok: boolean }>(`/migrations/${id(jobId)}/actions/${action}`),
+  migrationAction: (jobId: string, action: MigrationAction, confirm?: string) =>
+    post<{ ok: boolean }>(`/migrations/${id(jobId)}/actions/${action}`, undefined, { confirm }),
 
   // Backups
   backups: () => get<Backup[]>("/backups"),
@@ -231,10 +246,12 @@ export const api = {
   runSchedule: (scheduleId: string) => post<{ ok: boolean }>(`/schedules/${id(scheduleId)}/run`),
   deleteBackup: (backupId: string) => request<{ ok: boolean }>("DELETE", `/backups/${id(backupId)}`),
   verifyBackup: (backupId: string) => post<{ ok: boolean }>(`/backups/${id(backupId)}/verify`),
-  restoreBackup: (backupId: string, body: RestoreInput) => post<Restore>(`/backups/${id(backupId)}/restore`, body),
+  restoreBackup: (backupId: string, body: RestoreInput, confirm?: string) =>
+    post<Restore>(`/backups/${id(backupId)}/restore`, body, { confirm }),
   restores: () => get<Restore[]>("/restores"),
 
   // Monitoring and alerts
+  summary: () => get<Summary>("/summary"),
   monitoring: () => get<Monitoring>("/monitoring"),
   alertChannels: () => get<AlertChannel[]>("/alerts/channels"),
   saveAlertChannel: (channelId: string, body: ChannelInput) =>

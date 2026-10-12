@@ -15,6 +15,11 @@ import (
 // on the data directory of this machine, remote talks to a Dedie server
 // over its HTTP API. Commands are written once against this interface.
 type backend interface {
+	// Confirm sets the name the user gave to confirm an action on a
+	// production connection; it accompanies the requests that follow
+	// until it is set to something else.
+	Confirm(name string)
+
 	CreateUser(name, email, password, role string) (store.User, error)
 
 	ListConnections() ([]store.Connection, error)
@@ -56,6 +61,10 @@ type backend interface {
 	ListSchedules() ([]store.Schedule, error)
 	DeleteSchedule(id string) error
 
+	// Summary is the overview: the health of each connection, its last
+	// backup, and what is waiting for somebody.
+	Summary() (app.Summary, error)
+
 	ListAudit(before int64, limit int) ([]store.AuditEntry, error)
 	VerifyAudit() (app.AuditVerification, error)
 
@@ -73,6 +82,7 @@ type local struct {
 	actor app.Actor
 }
 
+func (l *local) Confirm(name string) { l.actor.Confirm = name }
 func (l *local) CreateUser(name, email, password, role string) (store.User, error) {
 	return l.app.CreateUser(l.ctx, l.actor, name, email, password, role)
 }
@@ -146,6 +156,7 @@ func (l *local) SaveSchedule(id string, in app.ScheduleInput) (store.Schedule, e
 }
 func (l *local) ListSchedules() ([]store.Schedule, error) { return l.app.ListSchedules(l.ctx, l.actor) }
 func (l *local) DeleteSchedule(id string) error           { return l.app.DeleteSchedule(l.ctx, l.actor, id) }
+func (l *local) Summary() (app.Summary, error)            { return l.app.GetSummary(l.ctx, l.actor) }
 func (l *local) ListAudit(before int64, limit int) ([]store.AuditEntry, error) {
 	return l.app.ListAudit(l.ctx, l.actor, before, limit)
 }

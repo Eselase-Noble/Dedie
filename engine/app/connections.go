@@ -24,6 +24,8 @@ type ConnectionInput struct {
 	SSLMode     string `json:"sslmode"`
 	SSLRootCert string `json:"ssl_root_cert"`
 	ReadOnly    bool   `json:"read_only"`
+	// Environment is "production", "staging", "development" or empty.
+	Environment string `json:"environment"`
 }
 
 func (in *ConnectionInput) validate() (connector.Driver, error) {
@@ -57,6 +59,10 @@ func (in *ConnectionInput) validate() (connector.Driver, error) {
 	}
 	if !sslModes[in.SSLMode] {
 		return nil, invalid("unknown SSL mode %q", in.SSLMode)
+	}
+	in.Environment = strings.ToLower(strings.TrimSpace(in.Environment))
+	if !validEnvironment(in.Environment) {
+		return nil, invalid("environment must be production, staging or development, or left empty")
 	}
 	return drv, nil
 }
@@ -167,8 +173,16 @@ func (a *App) SaveConnection(ctx context.Context, actor Actor, id string, in Con
 		if existing.Kind != in.Kind {
 			return c, invalid("the database kind of a connection cannot be changed")
 		}
+		// Taking the production label off removes the safeguards that
+		// come with it, so it asks for the same confirmation they do.
+		if in.Environment != EnvProduction {
+			if err := a.confirmProduction(ctx, actor, existing, "connection.unlabel", "stop treating it as production"); err != nil {
+				return c, err
+			}
+		}
 		c, action = existing, "connection.update"
 	}
+	c.Environment = in.Environment
 	c.Name, c.Kind, c.Host, c.Port = in.Name, in.Kind, in.Host, in.Port
 	c.Database, c.Username, c.SSLMode, c.SSLRootCert, c.ReadOnly = in.Database, in.Username, in.SSLMode, in.SSLRootCert, in.ReadOnly
 	if in.Password != "" || id == "" {
@@ -182,7 +196,7 @@ func (a *App) SaveConnection(ctx context.Context, actor Actor, id string, in Con
 		return c, invalid("%s", err.Error())
 	}
 	a.sessions.drop(c.ID)
-	a.audit(ctx, actor, action, c.ID, map[string]any{"name": c.Name, "host": c.Host, "database": c.Database, "sslmode": c.SSLMode})
+	a.audit(ctx, actor, action, c.ID, map[string]any{"name": c.Name, "host": c.Host, "database": c.Database, "sslmode": c.SSLMode, "environment": c.Environment})
 	return c, nil
 }
 

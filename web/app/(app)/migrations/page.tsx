@@ -10,7 +10,9 @@ import { phaseSummary } from "@/lib/progress";
 import MigrationForm from "@/components/MigrationForm";
 import MigrationPaths from "@/components/migrations/MigrationPaths";
 import { useSession } from "@/components/session";
-import { Badge, Banner, Loading, PageHeader, StatusBadge } from "@/components/ui";
+import { TransferIcon } from "@/components/icons";
+import { ConnectionName } from "@/components/Environment";
+import { Badge, Banner, EmptyState, Loading, PageHeader, StatusBadge } from "@/components/ui";
 
 export default function MigrationsPage() {
   const { can } = useSession();
@@ -35,7 +37,7 @@ export default function MigrationsPage() {
     [],
     3000,
   );
-  const nameOf = (id: string) => data?.connections.find((c) => c.id === id)?.name ?? id;
+  const named = (id: string) => <ConnectionName connection={data?.connections.find((c) => c.id === id)} name={id} />;
 
   return (
     <div className="content">
@@ -49,9 +51,18 @@ export default function MigrationsPage() {
       <div className="card">
         <div className="card-body flush table-wrap">
           {loading ? <Loading /> : !data || data.jobs.length === 0 ? (
-            <div className="empty">No migrations yet.</div>
+            <EmptyState icon={<TransferIcon size={20} />} title="No migrations yet"
+              action={can("migrations.manage") && (
+                <>
+                  <button className="btn primary" onClick={() => { setMode("migrate"); setCreating(true); }}>New migration</button>
+                  <button className="btn" onClick={() => { setMode("offline"); setCreating(true); }}>Offline copy</button>
+                </>
+              )}>
+              A migration copies a database to another server or another engine and checks the result. Creating one
+              changes nothing; the preflight check tells you what would happen first.
+            </EmptyState>
           ) : (
-            <table className="data">
+            <table className="data stack">
               <thead>
                 <tr><th>Name</th><th>Source</th><th>Target</th><th>Status</th><th>Phase</th><th className="num">Lag</th><th>Updated</th></tr>
               </thead>
@@ -63,8 +74,8 @@ export default function MigrationsPage() {
                       {m.config.mode === "sync" && <Badge tone="info">sync</Badge>}
                       {m.config.mode === "offline" && <Badge>offline</Badge>}
                     </td>
-                    <td>{nameOf(m.source_id)}</td>
-                    <td>{nameOf(m.target_id)}</td>
+                    <td>{named(m.source_id)}</td>
+                    <td>{named(m.target_id)}</td>
                     <td><StatusBadge status={m.status} /></td>
                     <td title={m.copy ? `${formatNumber(m.copy.rows_copied)} of about ${formatNumber(m.copy.rows_expected)} rows copied` : undefined}>
                       {phaseSummary(m) || <span className="faint">—</span>}

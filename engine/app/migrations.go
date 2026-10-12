@@ -326,6 +326,9 @@ func (a *App) MigrationAction(ctx context.Context, actor Actor, id, action strin
 	case "start", "resume":
 		switch j.Status {
 		case StatusDraft, StatusPaused, StatusFailed:
+			if err := a.confirmReplace(ctx, actor, j); err != nil {
+				return err
+			}
 			set = map[string]any{"status": StatusQueued, "desired": "run", "error": ""}
 		default:
 			return conflict("a %s migration cannot be started", j.Status)
@@ -338,6 +341,9 @@ func (a *App) MigrationAction(ctx context.Context, actor Actor, id, action strin
 	case "cutover":
 		if j.Status != StatusRunning || j.Phase != migrate.PhaseStreaming {
 			return conflict("cutover is possible only while the migration is streaming changes")
+		}
+		if err := a.confirmFence(ctx, actor, j); err != nil {
+			return err
 		}
 		set["desired"] = "cutover"
 	case "abort":
@@ -387,6 +393,42 @@ func (a *App) MigrationAction(ctx context.Context, actor Actor, id, action strin
 		a.notifyJob(ctx, j, NoteMigrationStarted, LevelInfo, "Migration resumed", "Resumed by "+actor.User.Email+" after it was paused.")
 	}
 	return nil
+}
+
+// confirmReplace asks for the target's name before a migration that was
+// told to replace what the target already has is started against a
+// production connection. Once the migration has created its objects there
+// is nothing left for it to drop, and a later resume asks nothing.
+func (a *App) confirmReplace(ctx context.Context, actor Actor, j store.Job) error {
+	var cfg migrate.Config
+	_ = json.Unmarshal(j.Config, &cfg)
+	var progress struct {
+		SchemaDone bool `json:"schema_done"`
+	}
+	_ = json.Unmarshal(j.State, &progress)
+	if cfg.OnExisting != migrate.ExistingReplace || progress.SchemaDone {
+		return nil
+	}
+	target, err := a.Store.GetConnection(ctx, j.OrgID, j.TargetID)
+	if err != nil {
+		return nil // the run itself reports a connection that is gone
+	}
+	return a.confirmProduction(ctx, actor, target, "migration.replace", "let this migration drop and replace objects on it")
+}
+
+// confirmFence asks for the source's name before a cutover that makes a
+// production source read-only and disconnects its clients.
+func (a *App) confirmFence(ctx context.Context, actor Actor, j store.Job) error {
+	var cfg migrate.Config
+	_ = json.Unmarshal(j.Config, &cfg)
+	if !cfg.FenceSource {
+		return nil
+	}
+	source, err := a.Store.GetConnection(ctx, j.OrgID, j.SourceID)
+	if err != nil {
+		return nil
+	}
+	return a.confirmProduction(ctx, actor, source, "migration.fence", "make it read-only and disconnect its clients at cutover")
 }
 
 // SuggestColumns samples a MongoDB connection and proposes which fields

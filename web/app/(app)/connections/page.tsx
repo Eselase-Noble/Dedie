@@ -6,9 +6,11 @@ import { formatTime } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 import type { Connection, ConnectionStatus, ServerInfo } from "@/lib/types";
 import ConnectionAccessDialog from "@/components/ConnectionAccessDialog";
-import ConnectionForm, { ServerInfoSummary } from "@/components/ConnectionForm";
+import ConnectionForm, { KIND_LABELS, ServerInfoSummary } from "@/components/ConnectionForm";
+import { ConnectionName } from "@/components/Environment";
+import { PlugIcon } from "@/components/icons";
 import { useSession } from "@/components/session";
-import { Badge, Banner, ConfirmDialog, Loading, PageHeader } from "@/components/ui";
+import { Badge, Banner, ConfirmDialog, EmptyState, Loading, PageHeader } from "@/components/ui";
 
 const WEAK_SSL = ["disable", "allow", "prefer"];
 
@@ -23,10 +25,10 @@ function StatusCell({ status }: { status?: ConnectionStatus }) {
     );
   }
   return (
-    <span className="status" title={status.error}>
-      <span className="dot offline" />Offline
-      <span className="status-error">{status.error}</span>
-    </span>
+    <div title={status.error}>
+      <span className="status"><span className="dot offline" />Offline</span>
+      <span className="sub status-error">{status.error}</span>
+    </div>
   );
 }
 
@@ -76,27 +78,38 @@ export default function ConnectionsPage() {
       <div className="card">
         <div className="card-body flush table-wrap">
           {loading ? <Loading /> : !data || data.length === 0 ? (
-            <div className="empty">No connections yet.{manage && " Add one to start browsing or migrating."}</div>
+            <EmptyState icon={<PlugIcon size={20} />} title="No connections yet"
+              action={manage && <button className="btn primary" onClick={() => setEditing(null)}>New connection</button>}>
+              A connection is a saved database: where it is and the account Dedie uses. Everything else starts from
+              one{manage ? "." : "; ask an operator or an administrator to add it."}
+            </EmptyState>
           ) : (
-            <table className="data">
+            <table className="data stack">
               <thead>
-                <tr><th>Name</th><th>Status</th><th>Type</th><th>Server</th><th>Database</th><th>User</th><th>SSL</th><th>Created</th><th /></tr>
+                <tr><th>Name</th><th>Status</th><th>Server</th><th>Database</th><th>SSL</th><th><span className="sr-only">Actions</span></th></tr>
               </thead>
               <tbody>
                 {data.map((c) => (
                   <tr key={c.id}>
-                    <td>
-                      <strong>{c.name}</strong>{" "}
+                    <td title={`Added ${formatTime(c.created_at)} by ${c.created_by}`}>
+                      <ConnectionName connection={c} strong />{" "}
                       {c.read_only && <Badge>read-only</Badge>}{" "}
                       {c.restricted && <Badge tone="warn">restricted</Badge>}
                     </td>
-                    <td className="nowrap"><StatusCell status={statuses?.[c.id]} /></td>
-                    <td>{c.kind}</td>
-                    <td className="mono">{c.host}:{c.port}</td>
-                    <td>{c.database}</td>
-                    <td>{c.username}</td>
+                    <td><StatusCell status={statuses?.[c.id]} /></td>
+                    <td>
+                      <div>
+                        {KIND_LABELS[c.kind] ?? c.kind}
+                        <span className="sub mono">{c.host}:{c.port}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div>
+                        {c.database}
+                        <span className="sub">{c.username ? `as ${c.username}` : "no account"}</span>
+                      </div>
+                    </td>
                     <td><Badge tone={WEAK_SSL.includes(c.sslmode) ? "warn" : "ok"}>{c.sslmode}</Badge></td>
-                    <td className="nowrap muted" title={c.created_by}>{formatTime(c.created_at)}</td>
                     <td>
                       <div className="row-actions">
                         <button className="btn small" onClick={() => test(c)} disabled={testing === c.id}>
@@ -104,7 +117,7 @@ export default function ConnectionsPage() {
                         </button>
                         {manageAccess && <button className="btn small" onClick={() => setSharing(c)}>Access</button>}
                         {manage && <button className="btn small" onClick={() => setEditing(c)}>Edit</button>}
-                        {manage && <button className="btn small" onClick={() => setDeleting(c)}>Delete</button>}
+                        {manage && <button className="btn small danger-quiet" onClick={() => setDeleting(c)}>Delete</button>}
                       </div>
                     </td>
                   </tr>

@@ -28,7 +28,7 @@ export default function Sessions() {
       <div className="card-body flush table-wrap">
         {error && <Banner tone="error">{error}</Banner>}
         {loading ? <Loading /> : (
-          <table className="data">
+          <table className="data stack">
             <thead><tr><th>Device</th><th>Address</th><th>Signed in</th><th>Last active</th><th>Expires</th><th /></tr></thead>
             <tbody>
               {data?.map((s) => (

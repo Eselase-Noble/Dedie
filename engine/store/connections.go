@@ -22,26 +22,29 @@ type Connection struct {
 	ReadOnly    bool   `json:"read_only"`
 	// Restricted limits the connection to administrators and the users
 	// it has been granted to.
-	Restricted bool      `json:"restricted"`
-	CreatedBy  string    `json:"created_by"`
-	CreatedAt  time.Time `json:"created_at"`
+	Restricted bool `json:"restricted"`
+	// Environment says where the database sits: "production", "staging",
+	// "development", or empty when nobody has said.
+	Environment string    `json:"environment"`
+	CreatedBy   string    `json:"created_by"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
-const connCols = `id,org_id,name,kind,host,port,database,username,secret_enc,sslmode,ssl_root_cert,read_only,created_by,created_at,restricted`
+const connCols = `id,org_id,name,kind,host,port,database,username,secret_enc,sslmode,ssl_root_cert,read_only,created_by,created_at,restricted,environment`
 
 func scanConn(row interface{ Scan(...any) error }) (Connection, error) {
 	var c Connection
 	var created string
-	err := row.Scan(&c.ID, &c.OrgID, &c.Name, &c.Kind, &c.Host, &c.Port, &c.Database, &c.Username, &c.SecretEnc, &c.SSLMode, &c.SSLRootCert, &c.ReadOnly, &c.CreatedBy, &created, &c.Restricted)
+	err := row.Scan(&c.ID, &c.OrgID, &c.Name, &c.Kind, &c.Host, &c.Port, &c.Database, &c.Username, &c.SecretEnc, &c.SSLMode, &c.SSLRootCert, &c.ReadOnly, &c.CreatedBy, &created, &c.Restricted, &c.Environment)
 	c.CreatedAt = parseTime(created)
 	return c, one(err)
 }
 
 func (s *Store) SaveConnection(ctx context.Context, c Connection) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO connections(`+connCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO connections(`+connCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET name=excluded.name,host=excluded.host,port=excluded.port,database=excluded.database,
-		username=excluded.username,secret_enc=excluded.secret_enc,sslmode=excluded.sslmode,ssl_root_cert=excluded.ssl_root_cert,read_only=excluded.read_only`,
-		c.ID, c.OrgID, c.Name, c.Kind, c.Host, c.Port, c.Database, c.Username, c.SecretEnc, c.SSLMode, c.SSLRootCert, c.ReadOnly, c.CreatedBy, now(), c.Restricted)
+		username=excluded.username,secret_enc=excluded.secret_enc,sslmode=excluded.sslmode,ssl_root_cert=excluded.ssl_root_cert,read_only=excluded.read_only,environment=excluded.environment`,
+		c.ID, c.OrgID, c.Name, c.Kind, c.Host, c.Port, c.Database, c.Username, c.SecretEnc, c.SSLMode, c.SSLRootCert, c.ReadOnly, c.CreatedBy, now(), c.Restricted, c.Environment)
 	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
 		return errors.New("a connection with that name already exists")
 	}

@@ -86,3 +86,14 @@ func (s *Server) testAlertChannel(w http.ResponseWriter, r *http.Request, actor 
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
+
+// summary answers the overview: connection health, backup freshness and
+// what is waiting for somebody, as far as the caller's role may see.
+func (s *Server) summary(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+	out, err := s.app.GetSummary(r.Context(), actor)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}

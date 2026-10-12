@@ -8,6 +8,7 @@ import type { ConnectionUsage, DbAccount, SessionFilter } from "@/lib/types";
 import IdleRule from "@/components/dbusers/IdleRule";
 import Pools from "@/components/dbusers/Pools";
 import UserForm from "@/components/dbusers/UserForm";
+import { EnvBadge, connectionOption } from "@/components/Environment";
 import { Badge, Banner, Checkbox, ConfirmDialog, Field, Loading, Modal, PageHeader, Progress } from "@/components/ui";
 
 const limitText = (n: number) => (n < 0 ? "no limit" : String(n));
@@ -70,6 +71,7 @@ export default function DatabaseUsersPage() {
     await reload();
   };
   const readOnly = !!connection?.read_only;
+  const production = connection?.environment === "production";
   const usable = data ? Math.max(1, data.max_connections - data.reserved_connections) : 1;
   const nearFull = !!data && data.used_connections / usable >= 0.8;
 
@@ -86,8 +88,9 @@ export default function DatabaseUsersPage() {
       <div className="toolbar">
         <select className="select" value={connId} onChange={(e) => { setConnId(e.target.value); setNotice(""); }} aria-label="Connection">
           {(!connections.data || connections.data.length === 0) && <option value="">No PostgreSQL or MySQL connections</option>}
-          {connections.data?.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.host})</option>)}
+          {connections.data?.map((c) => <option key={c.id} value={c.id}>{connectionOption(c, c.host)}</option>)}
         </select>
+        <EnvBadge env={connection?.environment} />
         <button className="btn" onClick={() => void reload()} disabled={!connId}>Refresh</button>
         {connection && <span className="hint">Managed as {connection.username}. The server decides what that account may change.</span>}
       </div>
@@ -117,7 +120,7 @@ export default function DatabaseUsersPage() {
               )}
             </div>
             <div className="card-body flush table-wrap">
-              <table className="data">
+              <table className="data stack">
                 <thead>
                   <tr>
                     <th>User</th><th>Application</th><th>From</th><th>Database</th><th className="num">Connections</th>
@@ -159,7 +162,7 @@ export default function DatabaseUsersPage() {
           <div className="card">
             <div className="card-head"><h2>Users and roles</h2><span className="muted">{data.accounts.length}</span></div>
             <div className="card-body flush table-wrap">
-              <table className="data">
+              <table className="data stack">
                 <thead>
                   <tr><th>Name</th><th>Sign-in</th><th>Privileges</th><th>Member of</th><th className="num">Connections</th><th className="num">Limit</th><th /></tr>
                 </thead>
@@ -170,7 +173,7 @@ export default function DatabaseUsersPage() {
                       <tr key={`${a.name}@${a.host ?? ""}`}>
                         <td><strong className="mono">{a.name}</strong>{a.host && <span className="muted mono">@{a.host}</span>}{self && <span className="muted"> (this connection)</span>}</td>
                         <td><Badge tone={a.can_login ? "ok" : ""}>{a.can_login ? "user" : connection.kind === "mysql" ? "locked" : "role"}</Badge></td>
-                        <td>
+                        <td className="wrap" style={{ maxWidth: 260 }}>
                           {a.superuser && <Badge tone="danger">superuser</Badge>}{" "}
                           {a.replication && <Badge tone="info">replication</Badge>}{" "}
                           {a.create_db && <Badge>create database</Badge>}{" "}
@@ -188,7 +191,7 @@ export default function DatabaseUsersPage() {
                                 onClick={() => setDisconnecting({ label: `all ${a.connections} connection${a.connections === 1 ? "" : "s"} of ${a.name}`, filter: { user: a.name } })}>
                                 Disconnect
                               </button>
-                              <button className="btn small" disabled={self} onClick={() => { setHandOver(false); setDropping(a); }}>Drop</button>
+                              <button className="btn small danger-quiet" disabled={self} onClick={() => { setHandOver(false); setDropping(a); }}>Drop</button>
                             </div>
                           )}
                         </td>
@@ -204,7 +207,7 @@ export default function DatabaseUsersPage() {
             <div className="card">
               <div className="card-head"><h2>Limits per database</h2></div>
               <div className="card-body flush table-wrap">
-                <table className="data">
+                <table className="data stack">
                   <thead><tr><th>Database</th><th className="num">Connections</th><th className="num">Limit</th><th /></tr></thead>
                   <tbody>
                     {data.databases.map((d) => (
@@ -244,8 +247,9 @@ export default function DatabaseUsersPage() {
           )}
           {disconnecting && (
             <ConfirmDialog title="Disconnect these sessions?" confirmLabel="Disconnect" danger onClose={() => setDisconnecting(null)}
-              onConfirm={async () => {
-                const res = await api.terminateSessions(connection.id, disconnecting.filter);
+              typeName={production ? connection.name : undefined}
+              onConfirm={async (typed) => {
+                const res = await api.terminateSessions(connection.id, disconnecting.filter, typed);
                 await done(`Disconnected ${res.sessions} session${res.sessions === 1 ? "" : "s"}.` + (res.sessions > 0 && res.open_now > 0
                   ? ` ${res.open_now} ${res.open_now === 1 ? "is" : "are"} connected again already: the application reconnects by itself. To keep it out, lower its connection limit or disable its user.`
                   : ""));
@@ -259,8 +263,9 @@ export default function DatabaseUsersPage() {
           )}
           {dropping && (
             <ConfirmDialog title={`Drop ${dropping.name}?`} confirmLabel="Drop user" danger onClose={() => setDropping(null)}
-              onConfirm={async () => {
-                await api.dropDbAccount(connection.id, dropping.name, dropping.host ?? "", handOver);
+              typeName={production ? connection.name : undefined}
+              onConfirm={async (typed) => {
+                await api.dropDbAccount(connection.id, dropping.name, dropping.host ?? "", handOver, typed);
                 await done(`${dropping.name} was dropped.`);
               }}>
               <p style={{ marginBottom: 10 }}>

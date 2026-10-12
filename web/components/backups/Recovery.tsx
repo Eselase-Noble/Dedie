@@ -4,7 +4,8 @@ import { useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
 import { copyText } from "@/lib/desktop";
 import { formatBytes, formatTime, isZeroTime } from "@/lib/format";
-import type { WalArchive } from "@/lib/types";
+import type { Connection, WalArchive } from "@/lib/types";
+import { ConnectionName } from "@/components/Environment";
 import { Badge, Banner, ConfirmDialog, Field, Modal } from "@/components/ui";
 
 /** Switches log archiving on for a connection. */
@@ -85,8 +86,8 @@ function HowTo({ archive, onClose }: { archive: WalArchive; onClose: () => void 
 }
 
 /** Continuous log archiving and recovery to a moment, per PostgreSQL connection. */
-export default function Recovery({ archives, mayManage, reload }: {
-  archives: WalArchive[]; mayManage: boolean; reload: () => Promise<void>;
+export default function Recovery({ archives, connections, mayManage, reload }: {
+  archives: WalArchive[]; connections: Connection[]; mayManage: boolean; reload: () => Promise<void>;
 }) {
   const [enabling, setEnabling] = useState<WalArchive | null>(null);
   const [stopping, setStopping] = useState<WalArchive | null>(null);
@@ -96,12 +97,12 @@ export default function Recovery({ archives, mayManage, reload }: {
     <div className="card">
       <div className="card-head"><h2>Point-in-time recovery</h2><span className="muted">PostgreSQL</span></div>
       <div className="card-body flush table-wrap">
-        <table className="data">
+        <table className="data stack">
           <thead><tr><th>Connection</th><th>Log archiving</th><th className="num">Archive size</th><th>Last received</th><th>Can recover to any moment since</th><th /></tr></thead>
           <tbody>
             {archives.map((w) => (
               <tr key={w.connection_id}>
-                <td><strong>{w.connection_name}</strong></td>
+                <td><ConnectionName connection={connections.find((c) => c.id === w.connection_id)} name={w.connection_name} strong /></td>
                 <td>
                   {!w.enabled ? <Badge>off</Badge> : w.receiving ? <Badge tone="ok">receiving</Badge> : <Badge tone="warn">not receiving</Badge>}
                   {w.enabled && w.retention_days > 0 && <span className="muted"> · kept {w.retention_days} days</span>}

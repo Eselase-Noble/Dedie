@@ -22,7 +22,7 @@ export default function MigrationPaths() {
     <div className="card">
       <div className="card-head"><h2>Supported paths</h2></div>
       <div className="card-body flush table-wrap">
-        <table className="data">
+        <table className="data stack">
           <thead>
             <tr><th>From</th><th>To</th><th>What moves</th><th>Online, it follows</th></tr>
           </thead>

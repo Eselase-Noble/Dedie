@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { api, errorMessage } from "@/lib/api";
 import { formatTime } from "@/lib/format";
 import type { BackupLocations, Connection, Schedule } from "@/lib/types";
+import { ConnectionName, connectionOption } from "@/components/Environment";
 import { Banner, Checkbox, ConfirmDialog, Field, Modal, StatusBadge } from "@/components/ui";
 import BackupOptions, { type BackupChoice } from "./BackupOptions";
 import { METHODS, levelLabel, methodOf, typeLabel } from "./options";
@@ -77,7 +78,7 @@ function ScheduleForm({ schedule, connections, locations, onClose, onDone }: {
         <Field label="Connection">
           <select className="select" value={connId} required
             onChange={(e) => { setConnId(e.target.value); setChoice({ ...choice, type: "full", level: "full", tables: [] }); }}>
-            {candidates.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.database})</option>)}
+            {candidates.map((c) => <option key={c.id} value={c.id}>{connectionOption(c, c.database)}</option>)}
           </select>
         </Field>
         <BackupOptions connection={connection} locations={locations} value={choice} onChange={setChoice} />
@@ -148,7 +149,7 @@ export default function Schedules({ schedules, connections, locations, mayManage
         {schedules.length === 0 ? (
           <div className="empty">No schedules. Create one to take backups automatically and delete old ones.</div>
         ) : (
-          <table className="data">
+          <table className="data stack">
             <thead>
               <tr><th>Name</th><th>Connection</th><th>Type</th><th>When</th><th>Retention</th><th>Last run</th><th>Next run</th><th /></tr>
             </thead>
@@ -156,7 +157,7 @@ export default function Schedules({ schedules, connections, locations, mayManage
               {schedules.map((s) => (
                 <tr key={s.id}>
                   <td>{s.name}{!s.enabled && <div className="muted">disabled</div>}</td>
-                  <td>{connName(s.connection_id)}</td>
+                  <td><ConnectionName connection={connections.find((c) => c.id === s.connection_id)} name={connName(s.connection_id)} /></td>
                   <td>{METHODS[methodOf(s.type)].label} · {levelLabel(s.level)}<div className="muted">{typeLabel(s.type)}</div></td>
                   <td title={s.cron}>{describe(s.cron)}</td>
                   <td>

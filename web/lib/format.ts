@@ -32,6 +32,20 @@ export function formatTime(value: string | undefined | null): string {
   });
 }
 
+/**
+ * How long ago a moment was, in the words one would say: "just now",
+ * "40 minutes ago", "3 days ago". Empty for a time that was never set.
+ */
+export function formatAgo(value: string | undefined | null, now = Date.now()): string {
+  if (isZeroTime(value)) return "";
+  const seconds = Math.max(0, Math.round((now - new Date(value as string).getTime()) / 1000));
+  const say = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"} ago`;
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return say(Math.floor(seconds / 60), "minute");
+  if (seconds < 48 * 3600) return say(Math.floor(seconds / 3600), "hour");
+  return say(Math.floor(seconds / 86400), "day");
+}
+
 export function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;

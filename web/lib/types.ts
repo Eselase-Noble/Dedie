@@ -103,9 +103,13 @@ export interface Connection {
   ssl_root_cert: string;
   read_only: boolean;
   restricted: boolean;
+  environment: Environment;
   created_by: string;
   created_at: string;
 }
+
+/** Where a database sits. Empty when nobody has said. */
+export type Environment = "" | "production" | "staging" | "development";
 
 export interface ConnectionInput {
   name: string;
@@ -118,6 +122,7 @@ export interface ConnectionInput {
   sslmode: string;
   ssl_root_cert: string;
   read_only: boolean;
+  environment: Environment;
 }
 
 export interface ServerInfo {
@@ -500,6 +505,7 @@ export interface ConnectionHealth {
   connection_id: string;
   name: string;
   kind: string;
+  environment: Environment;
   checks: number;
   uptime_percent: number;
   avg_latency_ms: number;
@@ -759,4 +765,37 @@ export interface NotificationQuery {
   /** Returns notifications older than this id. */
   before?: number;
   limit?: number;
+}
+
+/** One connection on the overview: its health and its last backup. */
+export interface ConnectionSummary {
+  id: string;
+  name: string;
+  kind: string;
+  environment: Environment;
+  /** False until the monitor has looked at the connection. */
+  checked: boolean;
+  online: boolean;
+  latency_ms: number;
+  checked_at: string;
+  /** False for the kinds of database Dedie does not back up, and for roles that may not see backups. */
+  backups_apply: boolean;
+  last_backup_at: string;
+  scheduled: boolean;
+}
+
+/** Something that is waiting for somebody. */
+export interface Attention {
+  level: "error" | "warning";
+  title: string;
+  detail: string;
+  link: string;
+  at: string;
+}
+
+/** The overview: connections, what needs attention, and a new installation's first steps. */
+export interface Summary {
+  connections: ConnectionSummary[];
+  attention: Attention[];
+  setup?: { connection: boolean; backup: boolean; migration: boolean };
 }
