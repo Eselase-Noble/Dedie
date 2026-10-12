@@ -20,7 +20,9 @@ function script(name: string, list: PreviewStatement[]): string {
     const part = list.filter((s) => s.phase === phase);
     if (part.length === 0) continue;
     out.push(`-- ===== ${title} =====`, "");
-    for (const s of part) out.push(`-- ${s.kind} ${s.name}`, `${s.sql.trim().replace(/;$/, "")};`, "");
+    for (const s of part) {
+      out.push(`-- ${s.kind} ${s.name}`, s.end ? `${s.sql.trim()}\n${s.end}` : `${s.sql.trim().replace(/;$/, "")};`, "");
+    }
   }
   return out.join("\n");
 }

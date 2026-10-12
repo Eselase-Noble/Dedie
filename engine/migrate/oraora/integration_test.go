@@ -1000,3 +1000,135 @@ func TestMigrationExistingObjects(t *testing.T) {
 		t.Error("the checkpoint table was left on the target")
 	}
 }
+
+// named lists the tests' objects in a schema, by type and name.
+func named(t *testing.T, ctx context.Context, db *sql.DB) string {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `SELECT object_type || ' ' || object_name FROM user_objects
+		WHERE UPPER(object_name) LIKE 'DEDIE\_IT\_%' ESCAPE '\' AND object_type NOT LIKE '%PARTITION' ORDER BY 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, s)
+	}
+	return strings.Join(out, "\n")
+}
+
+// TestMigrationPreview reads the statements of a migration before it is
+// started. A preview must be the real script, so the test runs it, as it
+// is, against the target, and finds every object of the source there; and
+// it must be only a preview, so both schemas are compared with what they
+// were before.
+func TestMigrationPreview(t *testing.T) {
+	var _ migrate.Previewer = pipeline{}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	srcCfg, dstCfg, src, dst := setup(t, ctx, fixture)
+	user := mustOne(t, ctx, dst, `SELECT USER FROM dual`)
+	source := named(t, ctx, src)
+
+	// A job that follows changes would switch key logging on at the
+	// source; its preview must not.
+	list, err := Preview(ctx, srcCfg, dstCfg, migrate.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := named(t, ctx, src); got != source || logGroups(t, ctx, src) != 0 {
+		t.Errorf("the preview changed the source:\n%s", got)
+	}
+	if got := named(t, ctx, dst); got != "" {
+		t.Errorf("the preview created on the target:\n%s", got)
+	}
+
+	order := map[string]int{migrate.PhaseSchema: 1, migrate.PhaseIndexing: 2, migrate.PhaseCutover: 3}
+	last := 0
+	at := map[string]string{}
+	for _, s := range list {
+		if order[s.Phase] < last || order[s.Phase] == 0 || s.Kind == "" || s.Name == "" || strings.TrimSpace(s.SQL) == "" {
+			t.Errorf("%s | %s | %s: out of order or incomplete", s.Phase, s.Kind, s.Name)
+		}
+		last = order[s.Phase]
+		if _, ok := at[s.Kind+" "+s.Name]; !ok {
+			at[s.Kind+" "+s.Name] = s.Phase + s.End
+		}
+		// Everything is written for the receiving schema.
+		if strings.Contains(s.SQL, `"`+srcCfg.Username+`"`) || strings.Contains(s.SQL, `"`+strings.ToUpper(srcCfg.Username)+`"`) {
+			t.Errorf("%s %s still names the source schema:\n%s", s.Kind, s.Name, s.SQL)
+		}
+	}
+	// Tables and sequences before the copy; code, views and indexes after
+	// it; foreign keys and triggers at the very end. A program unit is
+	// closed with a slash in a script.
+	for name, want := range map[string]string{
+		"sequence " + user + ".DEDIE_IT_SEQ":                           migrate.PhaseSchema,
+		"table " + user + ".DEDIE_IT_CUSTOMERS":                        migrate.PhaseSchema,
+		"table " + user + ".Dedie_It_Mixed":                            migrate.PhaseSchema,
+		"function " + user + ".DEDIE_IT_TWICE":                         migrate.PhaseIndexing + "/",
+		"package body " + user + ".DEDIE_IT_PKG":                       migrate.PhaseIndexing + "/",
+		"view " + user + ".DEDIE_IT_TOTALS":                            migrate.PhaseIndexing,
+		"synonym " + user + ".DEDIE_IT_SYN":                            migrate.PhaseIndexing,
+		"index " + user + ".DEDIE_IT_CUST_NUMS":                        migrate.PhaseIndexing,
+		"foreign key " + user + ".DEDIE_IT_INVOICES DEDIE_IT_INV_CUST": migrate.PhaseCutover,
+		"trigger " + user + ".DEDIE_IT_AUDIT":                          migrate.PhaseCutover + "/",
+	} {
+		if got, ok := at[name]; !ok || got != want {
+			t.Errorf("%s: previewed at %q, want %q", name, got, want)
+		}
+	}
+
+	// The script, run as it is written, builds the source's schema.
+	for _, s := range list {
+		if _, err := dst.ExecContext(ctx, s.SQL); err != nil {
+			t.Errorf("%s %s does not run: %v\n%s", s.Kind, s.Name, err, s.SQL)
+		}
+	}
+	if got := named(t, ctx, dst); got != source {
+		t.Errorf("the script built:\n%s\nthe source has:\n%s", got, source)
+	}
+	mustExec(t, ctx, dst, `BEGIN DBMS_UTILITY.COMPILE_SCHEMA(USER, FALSE); END;`)
+	if n := mustOne(t, ctx, dst, `SELECT COUNT(*) FROM user_objects WHERE status <> 'VALID' AND object_name LIKE 'DEDIE_IT%'`); n != "0" {
+		t.Errorf("%s object(s) built by the script do not compile", n)
+	}
+
+	// Everything is on the target now. Keeping it leaves nothing to do.
+	if _, err := Preview(ctx, srcCfg, dstCfg, migrate.Config{Mode: migrate.ModeOffline, OnExisting: migrate.ExistingSkip}); err == nil || !strings.Contains(err.Error(), "nothing to migrate") {
+		t.Errorf("a preview with every table kept: %v", err)
+	}
+	// Replacing it drops first: tables before the rest, and nothing that
+	// went with a table already. The drops run as written too.
+	list, err = Preview(ctx, srcCfg, dstCfg, migrate.Config{Mode: migrate.ModeOffline, OnExisting: migrate.ExistingReplace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drops, tablesDone := 0, false
+	for _, s := range list {
+		if s.Kind != "drop" {
+			break
+		}
+		drops++
+		isTable := strings.HasPrefix(s.SQL, "DROP TABLE ")
+		if isTable && tablesDone {
+			t.Errorf("%s comes after other objects were dropped", s.SQL)
+		}
+		tablesDone = tablesDone || !isTable
+		if strings.HasPrefix(s.SQL, "DROP INDEX ") || strings.HasPrefix(s.SQL, "DROP TRIGGER ") {
+			t.Errorf("%s: its table is dropped before it", s.SQL)
+		}
+		if _, err := dst.ExecContext(ctx, s.SQL); err != nil {
+			t.Errorf("%s does not run: %v", s.SQL, err)
+		}
+	}
+	if drops == 0 || !tablesDone {
+		t.Errorf("replacing previews %d drop(s)", drops)
+	}
+	if got := named(t, ctx, dst); got != "" {
+		t.Errorf("the drops left:\n%s", got)
+	}
+}

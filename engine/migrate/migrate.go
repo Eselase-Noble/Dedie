@@ -236,6 +236,9 @@ type Statement struct {
 	Kind string `json:"kind"`
 	Name string `json:"name"`
 	SQL  string `json:"sql"`
+	// End is what closes the statement in a script when a semicolon does
+	// not: "/" for an Oracle program unit, whose own text ends in one.
+	End string `json:"end,omitempty"`
 }
 
 // Previewer is implemented by pipelines that can show the statements they

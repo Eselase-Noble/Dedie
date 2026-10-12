@@ -255,6 +255,8 @@ export interface PreviewStatement {
   kind: string;
   name: string;
   sql: string;
+  /** What closes the statement in a script when a semicolon does not. */
+  end?: string;
 }
 
 /** Something on the target with the name of an object being migrated. */
