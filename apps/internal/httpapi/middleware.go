@@ -114,8 +114,22 @@ func (s *Server) authed(h handler) http.HandlerFunc {
 				Message: "your organization requires two-factor sign-in; set it up on the Account page first"})
 			return
 		}
+		actor.Confirm = confirmation(r)
 		h(w, r, actor)
 	}
+}
+
+// confirmHeader carries the name of a production connection that the user
+// typed to confirm the request. It is percent-encoded, as a connection may
+// be named in any script.
+const confirmHeader = "X-Dedie-Confirm"
+
+func confirmation(r *http.Request) string {
+	typed, err := url.PathUnescape(r.Header.Get(confirmHeader))
+	if err != nil {
+		return ""
+	}
+	return typed
 }
 
 func (s *Server) setSession(w http.ResponseWriter, token string, ttl time.Duration) {
