@@ -12,8 +12,10 @@ import (
 	"dedie/engine/connector/oracle"
 	"dedie/engine/connector/postgres"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/oradef"
 	"dedie/engine/migrate/orasrc"
 	"dedie/engine/migrate/pgpg"
+	"dedie/engine/migrate/viewsql"
 )
 
 // Preflight inspects both databases without changing either and reports
@@ -97,7 +99,12 @@ func preflight(ctx context.Context, src *sql.DB, dst *pgx.Conn, plan *Plan, cfg 
 		"DATE becomes timestamp(0), because an Oracle DATE has a time of day. NUMBER without a precision becomes numeric.",
 		"Foreign keys are added at the very end, after the data has been validated.",
 	}, "\n"))
-	r.Add("Not migrated", "warn", "views, materialized views, PL/SQL (procedures, functions, packages, triggers), synonyms, database links and partitioning are not translated; a partitioned table arrives as one ordinary table. Users, roles and grants are not copied")
+	if len(plan.Views) > 0 {
+		status, detail := viewsql.Describe(plan.Views)
+		r.Add("Views", status, detail)
+	}
+	r.Add("Not migrated", "warn", "materialized views, PL/SQL (procedures, functions, packages, triggers), synonyms, database links and partitioning are not translated; "+
+		"a partitioned table arrives as one ordinary table. "+oradef.Describe+". Users, roles and grants are not copied")
 
 	var ssl bool
 	_ = dst.QueryRow(ctx, `SELECT coalesce((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false)`).Scan(&ssl)

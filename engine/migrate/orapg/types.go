@@ -3,8 +3,11 @@
 //
 // The schema is translated rather than copied: every Oracle type maps to
 // a PostgreSQL type that can hold all of its values, and whatever cannot
-// be carried over (PL/SQL, views, expression defaults PostgreSQL does not
-// know) is reported instead of guessed. Each Oracle schema becomes a
+// be carried over (PL/SQL, expression defaults PostgreSQL does not know)
+// is reported instead of guessed. Views are translated where every
+// construct they use has an equivalent that means the same, created once
+// the data is in, and kept only if they then return what the source's
+// views return; see package viewsql. Each Oracle schema becomes a
 // PostgreSQL schema of the same name, and names that Oracle stores in
 // upper case are written in lower case, which is what unquoted names
 // mean in each database.
@@ -35,6 +38,7 @@ import (
 	"dedie/engine/connector/oracle"
 	"dedie/engine/connector/postgres"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/viewsql"
 )
 
 func init() { migrate.Register(oracle.Kind, postgres.Kind, pipeline{}) }
@@ -56,6 +60,14 @@ func (pipeline) Run(ctx context.Context, jobID string, cfg migrate.Config, state
 
 func (pipeline) Preview(ctx context.Context, src, dst connector.Config, cfg migrate.Config) ([]migrate.Statement, error) {
 	return Preview(ctx, src, dst, cfg)
+}
+
+func (pipeline) Leftovers(ctx context.Context, src, dst connector.Config, cfg migrate.Config, state json.RawMessage) ([]migrate.Leftover, error) {
+	var st State
+	if len(state) > 0 {
+		_ = json.Unmarshal(state, &st)
+	}
+	return Leftovers(ctx, src, dst, cfg, st)
 }
 
 // State is the job's durable progress. Field names match the other
@@ -99,6 +111,11 @@ type State struct {
 	KeptObjects []string `json:"kept_objects,omitempty"`
 	// DropFirst are the statements that remove what the job replaces.
 	DropFirst []string `json:"drop_first,omitempty"`
+
+	// Views says what became of each view the job translated and
+	// created: kept and verified, kept without verification, or dropped
+	// again. See viewsql.Checker.
+	Views []viewsql.Result `json:"views,omitempty"`
 }
 
 // metaSchema holds the checkpoint table on the target while a job runs.
