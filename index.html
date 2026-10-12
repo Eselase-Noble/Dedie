@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<title>Dedie: live database migration, query browser and administration</title>
+<meta name="description" content="Dedie moves PostgreSQL and MySQL databases to a new version or a new engine while they stay online, with a query browser, encrypted backups and an audit trail.">
+<style>
+  /* The same typeface and colours as the application. Inter is served from
+     this site (SIL Open Font License, see fonts/); nothing comes from another host. */
+  @font-face {
+    font-family: "Inter Variable"; font-style: normal; font-display: swap; font-weight: 100 900;
+    src: url("fonts/inter-latin-wght-normal.woff2") format("woff2");
+  }
+  :root {
+    --bg: #ffffff; --soft: #f8f9fb; --line: #e4e7ec; --text: #101828; --muted: #475467;
+    --accent: #1d4ed8; --accent-dark: #1a43bb; --accent-soft: #eef3ff; --ok: #107a43; --ok-soft: #e9f7ef; --warn: #8a4b00; --warn-soft: #fff5dc;
+    --danger: #b42318;
+    --font: "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; font-family: var(--font); color: var(--text); background: var(--bg); line-height: 1.6; font-size: 16px; -webkit-font-smoothing: antialiased; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+  header.top { position: sticky; top: 0; background: rgba(255,255,255,0.92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); z-index: 10; }
+  header.top .wrap { display: flex; align-items: center; gap: 28px; height: 60px; }
+  .logo { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; font-size: 19px; letter-spacing: -0.02em; color: var(--text); }
+  .logo:hover { text-decoration: none; }
+  .logo svg { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .env { display: inline-block; padding: 1px 7px; border-radius: 5px; background: var(--danger); color: #fff; font-size: 11px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; vertical-align: 2px; }
+  nav { display: flex; gap: 22px; flex: 1; font-size: 15px; }
+  nav a { color: var(--muted); }
+  .btn { display: inline-flex; align-items: center; height: 42px; padding: 0 20px; border-radius: 10px; font-weight: 600; border: 1px solid #d0d5dd; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05); color: var(--text); background: #fff; }
+  .btn:hover { text-decoration: none; background: var(--soft); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: var(--accent-dark); }
+  .btn.small { height: 36px; padding: 0 14px; font-size: 14px; }
+  .hero { padding: 76px 0 40px; text-align: center; }
+  main { background: radial-gradient(1100px 480px at 50% -60px, #e6edff 0%, rgba(230, 237, 255, 0) 70%); }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  .eyebrow { display: inline-block; background: var(--accent-soft); color: var(--accent); font-weight: 600; font-size: 13px; padding: 4px 12px; border-radius: 999px; margin-bottom: 20px; }
+  h1 { font-size: clamp(34px, 5.2vw, 56px); line-height: 1.08; letter-spacing: -0.03em; margin: 0 auto 18px; max-width: 880px; }
+  .lead { font-size: clamp(17px, 2vw, 20px); color: var(--muted); max-width: 720px; margin: 0 auto 30px; }
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .shot { margin: 48px auto 0; border: 1px solid var(--line); border-radius: 14px; background: #fff; overflow: hidden; box-shadow: 0 24px 60px rgba(16, 24, 40, 0.12); max-width: 1080px; }
+  .shot img { display: block; width: 100%; height: auto; }
+  section { padding: 72px 0; }
+  section.alt { background: var(--soft); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  h2 { font-size: clamp(26px, 3.2vw, 36px); letter-spacing: -0.02em; margin: 0 0 12px; line-height: 1.15; }
+  .sub { color: var(--muted); font-size: 18px; max-width: 720px; margin: 0 0 40px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; }
+  .card h3 { margin: 0 0 6px; font-size: 18px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15.5px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; font-size: 15.5px; }
+  th, td { text-align: left; padding: 13px 18px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--soft); font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  tr:last-child td { border-bottom: none; }
+  .tag { display: inline-block; font-size: 12.5px; font-weight: 700; padding: 2px 10px; border-radius: 999px; background: var(--ok-soft); color: var(--ok); white-space: nowrap; }
+  .tag.soon { background: var(--warn-soft); color: var(--warn); }
+  .steps { counter-reset: step; display: grid; gap: 14px; }
+  .step { display: grid; grid-template-columns: 44px 1fr; gap: 16px; background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 18px 22px; }
+  .step::before { counter-increment: step; content: counter(step); width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 700; display: grid; place-items: center; }
+  .step h3 { margin: 4px 0 4px; font-size: 17px; }
+  .step p { margin: 0; color: var(--muted); font-size: 15.5px; }
+  .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 44px; align-items: center; }
+  .split.flip > :first-child { order: 2; }
+  .split .shot { margin: 0; box-shadow: 0 14px 36px rgba(16, 24, 40, 0.1); }
+  ul.checks { list-style: none; padding: 0; margin: 18px 0 0; }
+  ul.checks li { padding-left: 28px; position: relative; margin-bottom: 10px; color: var(--muted); }
+  ul.checks li::before { content: "✓"; position: absolute; left: 0; color: var(--ok); font-weight: 700; }
+  ul.checks strong { color: var(--text); }
+  pre { background: #0f1722; color: #e6edf5; padding: 20px 22px; border-radius: 12px; overflow-x: auto; font-family: var(--mono); font-size: 14px; line-height: 1.65; margin: 0; }
+  pre .c { color: #8a9bb0; }
+  code { font-family: var(--mono); font-size: 0.92em; background: var(--soft); padding: 1px 6px; border-radius: 4px; }
+  .note { color: var(--muted); font-size: 15px; margin-top: 16px; }
+  footer { padding: 40px 0 56px; color: var(--muted); font-size: 15px; border-top: 1px solid var(--line); }
+  footer .wrap { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+  @media (max-width: 820px) {
+    nav { display: none; }
+    .split, .split.flip { grid-template-columns: 1fr; gap: 24px; }
+    .split.flip > :first-child { order: 0; }
+    section { padding: 52px 0; }
+    .hero { padding-top: 52px; }
+    th, td { padding: 11px 12px; }
+    /* A table wider than the phone scrolls by itself, not the page with it. */
+    table { display: block; overflow-x: auto; }
+    header.top .wrap { gap: 12px; justify-content: space-between; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="logo" href="#top">
+      <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true"><path fill="currentColor" d="M16 2.5 4.5 6.6v8.2c0 7 4.7 12.3 11.5 14.7 6.8-2.4 11.5-7.7 11.5-14.7V6.6L16 2.5Z"/><g fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round"><ellipse cx="16" cy="11" rx="5.6" ry="2.3"/><path d="M10.4 11v4.6c0 1.3 2.5 2.3 5.6 2.3s5.6-1 5.6-2.3V11"/><path d="M10.4 15.6v4.3c0 1.3 2.5 2.3 5.6 2.3s5.6-1 5.6-2.3v-4.3"/></g></svg>
+      Dedie
+    </a>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#paths">Migration paths</a>
+      <a href="#how">How it works</a>
+      <a href="#safe">Production</a>
+      <a href="#security">Security</a>
+      <a href="#start">Get started</a>
+    </nav>
+    <a class="btn small" href="https://github.com/Eselase-Noble/Dedie">GitHub</a>
+  </div>
+</header>
+
+<main id="top">
+  <div class="wrap hero">
+    <span class="eyebrow">For PostgreSQL, MySQL, Oracle and MongoDB</span>
+    <h1>Move a live database without taking it down</h1>
+    <p class="lead">Dedie upgrades a database to a new version, or moves it to another engine, while the old one keeps serving your application, or as a one-time offline copy when that is all you need. It also gives your team a query browser, scheduled encrypted backups, monitoring with alerts, database user management and a full audit trail.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/Eselase-Noble/Dedie/releases/latest">Download the latest release</a>
+      <a class="btn" href="https://github.com/Eselase-Noble/Dedie/blob/main/docs/setup.md">Set it up</a>
+      <a class="btn" href="https://github.com/Eselase-Noble/Dedie#readme">Read the documentation</a>
+    </div>
+    <div class="shot"><img src="img/migration-detail.png" alt="A completed migration in Dedie from a production PostgreSQL 16 to PostgreSQL 18: six phases from schema to done, the replication figures, and the preflight report with every check listed." width="1440" height="1000"></div>
+  </div>
+
+  <section id="features" class="alt">
+    <div class="wrap">
+      <h2>One tool for the life of a database</h2>
+      <p class="sub">Everything runs on the same engine, behind the same access rules, whether you use the web interface, the command line or the desktop application.</p>
+      <div class="grid">
+        <div class="card"><h3>Online migration</h3><p>Copy a consistent snapshot, follow the replication log to stay in step, and switch over in a write pause measured in seconds. Pause and resume at any point, at database, schema or table level.</p></div>
+        <div class="card"><h3>Offline migration</h3><p>Every path also runs as a one-time copy: the source is read as it stood at one moment, the result is validated, and the job finishes by itself. It needs no replication set up, only an account that can read the tables.</p></div>
+        <div class="card"><h3>Out of Oracle</h3><p>Move Oracle 12c and newer to a newer Oracle, to PostgreSQL or to MySQL. Tables are read with flashback queries. Changes are followed with LogMiner, or from undo data where the source is not set up for it, so a database without archived redo can still be migrated online. No Oracle client to install.</p></div>
+        <div class="card"><h3>Views and stored code</h3><p>Between different engines, views are translated and kept only if they answer as the source does. Procedures, functions and triggers are rewritten where that is safe; the rest comes back as a worklist with the original source, a converted draft and notes on what to check.</p></div>
+        <div class="card"><h3>Continuous sync</h3><p>Keep a second database following the first for as long as you like: a reporting copy on another engine, or MongoDB collections you can query in SQL.</p></div>
+        <div class="card"><h3>Query browser</h3><p>Tabs, a SQL editor that knows your tables, explain plans, saved queries, and a grid built for wide and long results. Open a table and edit its rows in place.</p></div>
+        <div class="card"><h3>Backup and recovery</h3><p>Logical and physical backups, full, differential or incremental, kept in a directory you choose or in S3-compatible object storage, encrypted by default. Schedules take them, verify them and delete old ones. Restore a whole chain, into a new database, or one table at a time.</p></div>
+        <div class="card"><h3>Point-in-time recovery</h3><p>Dedie receives a PostgreSQL server's write-ahead log as it is written. Rebuild the server as it was at any moment: a minute before a bad deployment, or a second before a table was dropped.</p></div>
+        <div class="card"><h3>Monitoring and alerts</h3><p>Every database is checked each minute. Uptime, response time and migration lag on one page and in Prometheus, with alerts to Slack, a webhook or email.</p></div>
+        <div class="card"><h3>Database users and connections</h3><p>Create database users, grant roles or a ready-made access level, cap connections per user or database, see which applications hold the connections, and disconnect them.</p></div>
+        <div class="card"><h3>Server administration</h3><p>Who is connected and what they are running. Cancel a query, end a session, change who owns a database, schema or table, and spot replication slots that hold WAL.</p></div>
+        <div class="card"><h3>Notifications</h3><p>A bell in the corner, a message when something finishes or fails, and system notifications in the browser and the desktop application: migrations, backups, restores, alerts, and decisions waiting for you.</p></div>
+        <div class="card"><h3>See it before it runs</h3><p>Preview the exact statements a migration would run on the target, translated for its engine, and download the script for review. If the target already has some of the objects, you choose: refuse, keep them, or replace them.</p></div>
+        <div class="card"><h3>Production safeguards</h3><p>Label a connection production and Dedie asks for its name before a DROP, an unfiltered DELETE, a restore over it, a replacing migration or a disconnect. The label follows the connection onto every page.</p></div>
+        <div class="card"><h3>An overview that starts with what is wrong</h3><p>What needs attention comes first: a database that stopped answering, a migration waiting for a decision, a failed backup, a production database nothing backs up. Then every connection with its health and its last backup.</p></div>
+        <div class="card"><h3>Built for organizations</h3><p>Five roles, two-factor sign-in, API tokens, per-connection permissions, encrypted credentials, and a tamper-evident audit log of every statement and change.</p></div>
+        <div class="card"><h3>Web, command line and desktop</h3><p>One engine behind all three. Sign the command line in to your Dedie server and run migrations and backups from any machine or from CI.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="paths">
+    <div class="wrap">
+      <h2>Migration paths</h2>
+      <p class="sub">Each path is covered by an end-to-end test that migrates a database under write load, pauses and resumes mid-stream, cuts over and compares the result.</p>
+      <table>
+        <thead><tr><th>From</th><th>To</th><th>What moves</th><th>State</th></tr></thead>
+        <tbody>
+          <tr><td>PostgreSQL 10 or newer</td><td>Any newer PostgreSQL</td><td>Tables, data, types, sequences, functions, views, indexes, constraints, triggers</td><td><span class="tag">Working</span></td></tr>
+          <tr><td>MySQL 5.6 or newer</td><td>Any newer MySQL</td><td>Tables, data, views, routines, triggers, events</td><td><span class="tag">Working</span></td></tr>
+          <tr><td>MySQL</td><td>PostgreSQL</td><td>Tables, data, keys, indexes and foreign keys, translated to PostgreSQL types</td><td><span class="tag">Working</span></td></tr>
+          <tr><td>PostgreSQL</td><td>MySQL 8.0 or newer</td><td>Tables, data, keys, indexes and foreign keys, translated to MySQL types</td><td><span class="tag">Working</span></td></tr>
+          <tr><td>Oracle 12c or newer</td><td>A newer Oracle</td><td>Tables, data, sequences, indexes, constraints, views, synonyms, PL/SQL and triggers, from Oracle's own definitions</td><td><span class="tag">Working</span></td></tr>
+          <tr><td>Oracle 12c or newer</td><td>PostgreSQL</td><td>Tables, data, keys, sequences, identity columns, indexes, check constraints and foreign keys, translated to PostgreSQL types</td><td><span class="tag">Working</span></td></tr>
+          <tr><td>Oracle 12c or newer</td><td>MySQL 8.0 or newer</td><td>Tables, data, keys, identity columns, indexes, check constraints and foreign keys, translated to MySQL types</td><td><span class="tag">Working</span></td></tr>
+          <tr><td>MongoDB 4.0 or newer (replica set)</td><td>PostgreSQL</td><td>Every collection becomes a table that holds each document in full as <code>jsonb</code>, with the fields you choose lifted into typed columns</td><td><span class="tag">Working</span></td></tr>
+        </tbody>
+      </table>
+      <p class="note">Every path runs online, offline as a one-time copy, or as a continuous sync that never cuts over. The PostgreSQL test runs version 16 to 18; the MySQL tests use MySQL 8.0, the MongoDB test 8.0 and the Oracle tests 23ai, and other versions of those three have not been exercised yet, Oracle 12c included. Moving between engines does not translate views, routines or triggers, MongoDB indexes are not translated, and the preflight check lists every difference before anything is changed.</p>
+    </div>
+  </section>
+
+  <section id="how" class="alt">
+    <div class="wrap">
+      <h2>How a migration works</h2>
+      <p class="sub">Your application keeps reading and writing the source until the last step. If source and target differ at the end, nothing is switched.</p>
+      <div class="steps">
+        <div class="step"><div><h3>Preflight</h3><p>Both databases are inspected without changing either. Anything that would block the migration, or change in meaning on the way, is listed before you start. If the target already has some of the objects, you are shown them and choose: refuse, keep and skip them, or replace them.</p></div></div>
+        <div class="step"><div><h3>Schema</h3><p>Tables and the objects they depend on are recreated on the target from the source's own definitions.</p></div></div>
+        <div class="step"><div><h3>Snapshot</h3><p>Every table is copied in parallel from one consistent point in time, and the replication position of that point is recorded.</p></div></div>
+        <div class="step"><div><h3>Streaming</h3><p>Changes made since the snapshot are applied in order. Each transaction is stored together with its position, so a crash or a restart never loses or repeats a change.</p></div></div>
+        <div class="step"><div><h3>Cutover</h3><p>The source is made read-only, the last changes drain, counters are synchronized and every table is compared. Then you point your application at the target.</p></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap split">
+      <div>
+        <h2>Nothing happens to the target that you did not see first</h2>
+        <p class="sub" style="margin-bottom:0">A migration creates objects in a database that somebody owns. Dedie shows what it is about to do, and asks before touching anything that is already there.</p>
+        <ul class="checks">
+          <li><strong>Preview the schema.</strong> Read every statement the migration would run, translated for the target engine and grouped by when it runs. Download the script and attach it to the change request.</li>
+          <li><strong>Existing objects are your call.</strong> If the target already has a table, view, function, trigger or sequence being migrated, you are shown the list and choose: refuse, keep them and skip them, or replace them. Replacing has to be typed.</li>
+          <li><strong>A preflight report you can keep.</strong> What blocks, what to read, what passed; filter it, copy it, download it.</li>
+          <li><strong>Types are matched, not guessed.</strong> Every type maps to one that holds all of its values; every change of meaning is listed per column, and a type with no safe equivalent stops the migration before it starts.</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="img/schema-preview.png" alt="The schema preview in Dedie: the CREATE TABLE statements a migration would run on the target, grouped under 'Before the copy', with a filter by kind of object." width="1440" height="900" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section class="alt">
+    <div class="wrap split flip">
+      <div>
+        <h2>Online when it must stay up, offline when it need not</h2>
+        <p class="sub" style="margin-bottom:0">The same eight paths run three ways, chosen when you create the migration.</p>
+        <ul class="checks">
+          <li><strong>Online.</strong> Copy, follow every change, and cut over in seconds. For production.</li>
+          <li><strong>Offline.</strong> One consistent copy, validated, finished. No replication slot, binary log, replica set or LogMiner needed on the source: an account that can read the tables is enough.</li>
+          <li><strong>Continuous sync.</strong> Keep a second database following the first for as long as you like.</li>
+          <li><strong>Progress you can plan around.</strong> Rows copied, speed, and the time remaining while the estimate holds.</li>
+          <li><strong>Told when it is done.</strong> A notification when a migration finishes, fails, or waits for you, in the browser and in the desktop application.</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="img/preflight-existing.png" alt="Dedie asking what to do about 10 objects that already exist on the target: refuse, keep them and skip them, or replace them." width="1440" height="900" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap split">
+      <div>
+        <h2>A query browser with room to work</h2>
+        <p class="sub" style="margin-bottom:0">Open as many tabs as you need. The editor and the results share the window, and you decide how much each one gets.</p>
+        <ul class="checks">
+          <li><strong>Browse and edit tables.</strong> Page through any table, filter it, and change a cell or add a row. Every edit is one audited statement that must touch exactly one row.</li>
+          <li><strong>Understand a query.</strong> Explain shows the plan; Analyze shows where the time went. Format tidies the SQL, and Cancel stops a statement that runs too long.</li>
+          <li><strong>Work with results.</strong> Sort, filter, and export what you see as CSV, JSON or SQL.</li>
+          <li><strong>Save and share.</strong> Keep queries for yourself or for the whole team.</li>
+          <li><strong>Read-only by default.</strong> Writes need permission and a deliberate switch.</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="img/query.png" alt="The Dedie query browser: schema tree on the left, tabs for queries and tables, a formatted SQL statement and its results below." width="1440" height="863" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section class="alt">
+    <div class="wrap split flip">
+      <div>
+        <h2>Know when something needs you</h2>
+        <p class="sub" style="margin-bottom:0">Dedie checks every database once a minute and tells you when one stops answering, a migration falls behind or a backup fails.</p>
+        <ul class="checks">
+          <li><strong>Uptime and response time</strong> for every connection over the last day.</li>
+          <li><strong>Alerts where you already look.</strong> Slack, Teams, a signed webhook or email, with a test button.</li>
+          <li><strong>Prometheus metrics</strong> and a health endpoint for your own dashboards and load balancers.</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="img/monitoring.png" alt="The Dedie monitoring page: one database reported as not answering, the others online with their environment, uptime, response time and a bar for every check of the last day." width="1440" height="860" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap split">
+      <div>
+        <h2>Manage who uses the database</h2>
+        <p class="sub" style="margin-bottom:0">Database accounts and the connections they hold, without writing the SQL by hand.</p>
+        <ul class="checks">
+          <li><strong>Create users and roles</strong> with a generated password, read-only or read-write access, and role membership.</li>
+          <li><strong>Limit connections</strong> per user or per database, so one application cannot exhaust the server.</li>
+          <li><strong>Keep connection pools in check.</strong> See which user is at its limit and close idle connections by hand, or let a rule close them automatically.</li>
+          <li><strong>See who is connected</strong> by user, application and address, including sessions idle inside a transaction, and disconnect them.</li>
+          <li><strong>Passwords stay private.</strong> PostgreSQL receives a SCRAM verifier, never the password, and Dedie does not store it.</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="img/dbusers.png" alt="The Dedie database users page: server connections by application, connection pools per user with a button to close idle connections, the rule for closing them automatically, and users with their privileges and limits." width="1440" height="1589" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section class="alt">
+    <div class="wrap split flip">
+      <div>
+        <h2>Know the state of every server</h2>
+        <p class="sub" style="margin-bottom:0">Connections show whether their server is answering and how quickly, and you can create what you need without leaving the page.</p>
+        <ul class="checks">
+          <li><strong>Live status.</strong> Online or offline, with response time, checked every thirty seconds.</li>
+          <li><strong>Create databases, schemas and tables</strong> in any database on the server, and change who owns them.</li>
+          <li><strong>Restrict a connection</strong> to the people who should see it.</li>
+          <li><strong>Weak encryption is flagged.</strong> Connections that do not require TLS are marked.</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="img/connections.png" alt="The Dedie connections page: six connections labelled production, staging or development, five online with their response time and one offline." width="1440" height="813" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section id="safe">
+    <div class="wrap split">
+      <div>
+        <h2>Production is named, and has to be named again</h2>
+        <p class="sub" style="margin-bottom:0">Dedie means &ldquo;safe&rdquo;. The mistake it guards against hardest is the right statement on the wrong database.</p>
+        <ul class="checks">
+          <li><strong>Environments.</strong> Mark each connection production, staging or development. The label sits beside its name everywhere, and the query browser wears a red strip while it is pointed at production.</li>
+          <li><strong>Type the name to go on.</strong> Dropping, truncating, deleting or updating without a WHERE, editing rows, restoring over it, replacing objects in a migration, fencing it for cutover and ending its sessions all wait for the connection&rsquo;s name.</li>
+          <li><strong>Enforced by the server.</strong> The web interface, the command line and the API are held to the same rule, and every confirmed action is in the audit log.</li>
+          <li><strong>Out of the way otherwise.</strong> Reading, ordinary writes and backups ask nothing.</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="img/production-confirm.png" alt="Dedie asking for the name of a production connection before running DROP TABLE on it: a dialog with a field to type shop-prod, over the query browser with its red production strip." width="1440" height="900" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section id="security" class="alt">
+    <div class="wrap">
+      <h2>Security you can explain to an auditor</h2>
+      <p class="sub">Dedie holds the keys to your databases, so it is built to be trusted with them.</p>
+      <div class="grid">
+        <div class="card"><h3>Encrypted at rest</h3><p>Database passwords are sealed with AES-256-GCM under a per-secret key, wrapped by a master key you control. Backups are encrypted as authenticated chunks.</p></div>
+        <div class="card"><h3>Roles and permissions</h3><p>Owner, admin, operator, analyst and viewer, with connections that can be restricted to chosen people. The same rules apply to the web interface, the API, the command line and the desktop application.</p></div>
+        <div class="card"><h3>Two-factor sign-in</h3><p>Authenticator codes with recovery codes, which an organization can require of everyone, alongside a password policy and a list of your signed-in sessions.</p></div>
+        <div class="card"><h3>API tokens</h3><p>For scripts and CI. A token never has more than its creator's role, can expire, is stored only as a hash, and cannot create further credentials.</p></div>
+        <div class="card"><h3>Tamper-evident audit log</h3><p>Every sign-in, statement and change is recorded, and each entry is chained to the one before it. An edited or deleted entry is detected.</p></div>
+        <div class="card"><h3>Safe by default</h3><p>The server refuses to serve plain HTTP beyond the local machine, new connections require TLS, and sessions end when a password or role changes.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="start">
+    <div class="wrap">
+      <h2>Get started</h2>
+      <p class="sub">Download a release, or build from source. The server, the command line and the desktop application share one engine.</p>
+      <pre><span class="c"># build from source: Go 1.26+, Node 22+</span>
+git clone https://github.com/Eselase-Noble/Dedie.git
+cd Dedie
+make
+bin/dedie-server                 <span class="c"># http://127.0.0.1:8080</span>
+
+<span class="c"># from any machine: sign the command line in to your Dedie server</span>
+dedie login https://dedie.example.com
+dedie migrate create --name "shop 16 to 18" --source prod-16 --target prod-18 --fence
+dedie migrate preflight &lt;id&gt;
+dedie migrate run &lt;id&gt;
+dedie migrate cutover &lt;id&gt;
+
+<span class="c"># or a one-time copy that needs no replication set up on the source</span>
+dedie migrate create --name "erp to postgres" --source erp-oracle --target erp-pg --schemas HR,SALES --offline
+
+<span class="c"># nightly backups, keeping the last fourteen</span>
+dedie backup schedule add --name nightly --connection prod-18 --cron "0 2 * * *" --keep-last 14</pre>
+      <div class="grid" style="margin-top:22px">
+        <div class="card"><h3>dedie-server</h3><p>The web interface, the HTTP API and the workers that run migrations, scheduled backups and health checks. For teams.</p></div>
+        <div class="card"><h3>dedie</h3><p>The command line. Sign in to a Dedie server and run everything from your own machine or from CI, or use it on the server host to set an installation up.</p></div>
+        <div class="card"><h3>Dedie Desktop</h3><p>A JavaFX application around the same engine, for one person on their own machine, with native menus, downloads and shortcuts.</p></div>
+      </div>
+      <p class="note">Guides: <a href="https://github.com/Eselase-Noble/Dedie/blob/main/docs/setup.md">setting up Dedie</a> (installing, TLS, running as a service, the master key, upgrading) and <a href="https://github.com/Eselase-Noble/Dedie/blob/main/docs/databases.md">preparing your databases</a> (the settings and privileges each source needs, online and offline). Everything each feature does, and everything that is not migrated, is in the <a href="https://github.com/Eselase-Noble/Dedie#readme">README</a>.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div><strong>Dedie</strong> is Ewe for "safe": the data should arrive safely and stay that way.</div>
+    <div><a href="https://github.com/Eselase-Noble/Dedie">Source on GitHub</a> · <a href="https://github.com/Eselase-Noble/Dedie/releases">Releases</a></div>
+  </div>
+</footer>
+
+</body>
+</html>
