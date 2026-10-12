@@ -87,11 +87,11 @@ Dedie moves a production database to a newer server version, or to a different d
 |---|---|
 | PostgreSQL → PostgreSQL | Working |
 | MySQL → MySQL | Working |
-| MySQL → PostgreSQL | Working: tables, keys, indexes and foreign keys are translated; views, routines and triggers are not |
-| PostgreSQL → MySQL | Working: tables, keys, indexes and foreign keys are translated; views, functions and triggers are not |
+| MySQL → PostgreSQL | Working: tables, keys, indexes and foreign keys are translated; views, procedures, functions and triggers are [converted where that is safe](#views-and-stored-code-across-engines) |
+| PostgreSQL → MySQL | Working: tables, keys, indexes and foreign keys are translated; views, functions, procedures and triggers are [converted where that is safe](#views-and-stored-code-across-engines) |
 | Oracle → Oracle | Working: everything in the schema is taken from Oracle's own definitions, PL/SQL and triggers included |
-| Oracle → PostgreSQL | Working: tables, keys, sequences, identity columns, indexes, check constraints and foreign keys are translated; views and PL/SQL are not |
-| Oracle → MySQL | Working: tables, keys, identity columns, indexes, check constraints and foreign keys are translated; sequences, views and PL/SQL are not |
+| Oracle → PostgreSQL | Working: tables, keys, sequences, identity columns, indexes, check constraints and foreign keys are translated; views and PL/SQL are [converted where that is safe](#views-and-stored-code-across-engines) |
+| Oracle → MySQL | Working: tables, keys, identity columns, indexes, check constraints and foreign keys are translated; views and PL/SQL are [converted where that is safe](#views-and-stored-code-across-engines); sequences are not migrated |
 | MongoDB → PostgreSQL | Working: each collection becomes a table holding every document as `jsonb`, with chosen fields lifted into typed columns; indexes and validators are not translated |
 
 All eight pipelines are covered by end-to-end tests that migrate a database under write load, pause and resume mid-stream, cut over and compare the result, and by a second test that runs each one offline. The PostgreSQL test runs 16 → 18; the cross-engine tests run MySQL 8.0 → PostgreSQL 18, PostgreSQL 16 → MySQL 8.0 and MongoDB 8.0 → PostgreSQL 18; the Oracle tests run from Oracle 23ai to PostgreSQL 18, MySQL 8.0 and Oracle 23ai. MySQL and MongoDB versions other than 8.0, and Oracle releases other than 23ai (12c included), have not been exercised yet.
@@ -142,7 +142,7 @@ bin/dedie-server --addr 127.0.0.1:8080 --behind-tls-proxy
 | Overview | See connections, migrations and recent backups at a glance. |
 | Connections | Add, edit, test and delete connections, see which servers are online, and restrict a connection to chosen people. Passwords are write-only; weak SSL modes are flagged. |
 | Query browser | Browse schemas; open tables and edit their rows; write, format, explain and save SQL in tabs; sort, filter and export results; create databases, schemas and tables; change owners. |
-| Migrations | Create an online or offline migration or a continuous sync at database, schema or table level; see every supported path; run the preflight check and keep its report; preview the schema that will be created; decide what happens to objects the target already has; watch phase, progress, lag and time remaining; pause, resume, cut over, abort or duplicate. |
+| Migrations | Create an online or offline migration or a continuous sync at database, schema or table level; see every supported path; run the preflight check and keep its report; preview the schema that will be created; have views and stored code converted between engines and get the rest as a worklist; decide what happens to objects the target already has; watch phase, progress, lag and time remaining; pause, resume, cut over, abort or duplicate. |
 | Backups | Take a backup of any type, schedule backups with retention, verify, download, restore into an existing or a new database, and review restore history. |
 | Monitoring | Uptime and response time of every database, migrations in progress, alert channels and recent alerts. |
 | Server activity | Inspect sessions, sizes, replication slots and settings; cancel or terminate a session. |
@@ -202,6 +202,7 @@ dedie backup create prod-16 --note "before upgrade"
 dedie conn add --kind oracle --name erp --host ora.internal --db ORCLPDB1 --user migrator
 dedie migrate list
 dedie migrate preview <id>                # the statements a migration would run on the target
+dedie migrate leftovers <id>              # views and stored code that will not be created, with source and converted drafts
 dedie notifications --unread              # what has happened since you last looked
 dedie logout                              # revokes the saved sign-in
 ```
@@ -382,7 +383,7 @@ What changes in meaning, all of it listed by preflight for your schema before an
 - Zero dates (`0000-00-00`) do not exist in PostgreSQL and become `NULL`.
 - Generated columns become ordinary columns holding the same values.
 - `ON UPDATE CURRENT_TIMESTAMP`, expression defaults, full-text, spatial and functional indexes are not translated.
-- Views, stored routines, triggers and events are written in MySQL's dialect and are not migrated.
+- Views, stored routines and triggers are written in MySQL's dialect; see [Views and stored code across engines](#views-and-stored-code-across-engines) for what is converted. Scheduled events are not.
 
 Validation at cutover compares row counts and, for tables with an integer or UTF-8 text primary key, the set of key values. Whole rows cannot be checksummed across the two engines, because they print many types differently.
 
@@ -418,7 +419,7 @@ What changes or is left out, all of it listed by preflight for your schema:
 - Generated columns are not migrated; their values are not part of PostgreSQL's replication stream.
 - Partial, expression, GIN and GiST indexes, check constraints, and defaults that are expressions are not translated.
 - Values MySQL cannot store stop the migration rather than being altered: infinite dates, `NaN`, and text longer than 255 characters in a key column.
-- Views, functions, triggers and custom types are not migrated.
+- Views, functions, procedures and triggers are converted where that is safe; see [Views and stored code across engines](#views-and-stored-code-across-engines). Materialized views and custom types are not migrated.
 - `TRUNCATE` commits on its own in MySQL, so a source transaction that truncates one table and changes others is not applied atomically.
 
 Validation at cutover compares row counts and, for tables with an integer, text or UUID primary key, the set of key values.
@@ -572,7 +573,7 @@ Also carried over:
 
 What to know:
 
-- Not translated: views, materialized views, PL/SQL (procedures, functions, packages, triggers), synonyms, database links and partitioning. A partitioned table arrives as one ordinary table. Users, roles and grants are not copied.
+- Views, and PL/SQL functions, procedures and triggers, are converted where that is safe; see [Views and stored code across engines](#views-and-stored-code-across-engines). Not translated: packages, object types, materialized views, synonyms, database links and partitioning. A partitioned table arrives as one ordinary table. Users, roles and grants are not copied.
 - An empty string is `NULL` in Oracle and a value of its own in PostgreSQL. The data arrives as `NULL`; an application that writes `''` will now store it.
 - Text comparison follows the target database's collation, not the source's `NLS_SORT`.
 - Column types that cannot be migrated yet (spatial, object and collection types, `BFILE`) fail preflight, which names the columns; exclude their tables.
@@ -608,7 +609,7 @@ Also carried over: identity columns as `AUTO_INCREMENT`, with the counter moved 
 What to know:
 
 - **Sequences are not migrated**: MySQL has none. A default that calls `sequence.NEXTVAL` is dropped and listed by preflight; an identity column is the equivalent that does carry over.
-- Not translated: views, materialized views, PL/SQL, synonyms, database links and partitioning. Users, roles and grants are not copied.
+- Views, and PL/SQL functions, procedures and triggers, are converted where that is safe; see [Views and stored code across engines](#views-and-stored-code-across-engines). MySQL's procedure language is the most limited of the three, so less converts here than on any other path. Not translated: packages, object types, materialized views, synonyms, database links and partitioning. Users, roles and grants are not copied.
 - A table whose declared column lengths pass MySQL's 65,535-byte row limit has its longest `varchar` and `varbinary` columns stored as `text` and `blob` instead, and preflight says which.
 - An index over a `text`, `blob` or `json` column, or with a key longer than 3072 bytes, is listed and left out. A primary key that long fails preflight. Function-based and descending indexes are not translated.
 - Tables are created with a binary `utf8mb4` collation, so text compares by exact value, as it does in Oracle, and not without regard to case as MySQL's default would.
@@ -617,6 +618,52 @@ What to know:
 - A `CHAR` value comes back without its trailing blanks.
 - MySQL names foreign keys and check constraints per database, not per table, so one can clash with a constraint of an unrelated table already there; preflight lists such clashes with the other [objects that already exist](#when-the-target-already-has-some-of-the-objects).
 - Validation compares row counts and, where the primary key is a number, text or date, the set of keys.
+
+### Views and stored code across engines
+
+Between two servers of the same kind, views, procedures, functions and triggers are carried over as they are. Between different kinds they are written in different languages (PL/SQL, PL/pgSQL, MySQL's stored program language) and have to be rewritten. Dedie rewrites what it can do safely, says plainly what it could not, and hands you the rest in a form to work from. This applies to MySQL → PostgreSQL, PostgreSQL → MySQL, Oracle → PostgreSQL and Oracle → MySQL.
+
+Nothing here can fail a migration. All of it happens at the very end, after the tables have been validated, so a view never stands on the target unchecked and a trigger never fires for a row that was copied or replicated.
+
+**Views** are translated, created, and then compared with the source: the same columns, the same number of rows, and for each column the same count of values, the same sum where it is a number and the same total length where it is text. A view that the target refuses, or that answers differently, is dropped again and reported. A view using something with no safe translation (window functions, common table expressions, `CONNECT BY`, a function Dedie does not know) is not attempted, and the reason is given. The comparison can only see differences that the rows present at that moment expose.
+
+**Procedures, functions and triggers** are parsed and rewritten, and each ends up in one of three states:
+
+| State | Meaning | What happens |
+|---|---|---|
+| Converted | Everything in it was recognised and has a rewrite that keeps its behaviour | Created on the target |
+| Needs review | Converted, but something in it can behave differently on the target; the notes say what and on which line | Not created unless you ask for it. You get the converted draft and the notes |
+| Not converted | It uses something the target has no equivalent for, and the reason is given | Never created. You get the original source |
+
+Typical reasons for review: an Oracle empty string, which is `NULL` there; division that is not rounded; text comparison, which is case-insensitive under most MySQL collations and exact in PostgreSQL; an error handler that runs after the block changed data. Typical reasons for no conversion: Oracle packages, autonomous transactions, `MERGE`, `ROWNUM`, `CONNECT BY`, dynamic SQL and collections; MySQL session variables, prepared statements and procedures that return result sets; PostgreSQL set-returning functions, arrays and statement-level triggers. The full list per route is in the documentation of package `engine/migrate/codesql`.
+
+The converter is tested by running the code, not by reading it: each route has a set of routines that are created on the source, converted, created on the target and called with the same inputs on both, and their results and the rows they leave behind must be equal. That shows the rewrites are right for those routines. It does not show that yours do the same thing on the target as on the source: test converted code before you rely on it, as you would code a colleague had ported.
+
+How much stored code a migration creates is chosen per migration, as **Stored procedures, functions and triggers** in the form or `--code` on the command line:
+
+| Choice | Created on the target |
+|---|---|
+| `converted` (the default) | what converted cleanly |
+| `review` | that, and what needs review; those are listed as "created, needs review" |
+| `off` | nothing; views are still attempted |
+
+```sh
+dedie migrate create --name "ERP to PostgreSQL" --source erp --target erp-pg --code review
+dedie migrate preflight <id>       # "Views" and "Stored code": what will be created, what needs review, what cannot be converted
+dedie migrate preview <id>         # the converted statements themselves
+dedie migrate leftovers <id> > to-convert.sql
+```
+
+**Not migrated** on a migration's page, or `dedie migrate leftovers`, is the worklist for what remains: every view, routine and trigger that was not created, with its reason, its original source and, where there is one, the converted draft with its notes. Once the job has finished, the migration's page also shows the outcome under **Views and stored code**: how many were created, how many were created and need review, and how many are left for you.
+
+What to know:
+
+- A table-level migration converts the triggers of its tables and the views that read only its tables; other routines are left out, and preflight says so.
+- A trigger that is disabled on the source is not created.
+- On a MySQL target a PostgreSQL or Oracle trigger for several events becomes one trigger per event, named with `_ins`, `_upd` and `_del`.
+- A MySQL target that writes a binary log refuses functions that change data unless `log_bin_trust_function_creators` is on; such a function is reported with that explanation.
+- [Objects that already exist](#when-the-target-already-has-some-of-the-objects) on the target under the same names are handled by the choice made for the migration, like tables.
+- Comments inside routines are not carried over.
 
 ### For all pipelines
 
@@ -903,7 +950,7 @@ Everything the interface and the remote CLI do goes through a JSON API under `/a
 | Query | `GET /connections/{id}/catalog`, `POST /connections/{id}/query`, `POST /connections/{id}/rows`, `GET/POST /queries`, `PUT/DELETE /queries/{id}` |
 | Server console | `GET /connections/{id}/overview`, `POST /connections/{id}/backends/{pid}/cancel` |
 | Database users | `GET/POST /connections/{id}/accounts`, `DELETE /connections/{id}/accounts/{user}`, `POST /connections/{id}/connection-limit`, `POST /connections/{id}/sessions/terminate`, `GET/PUT /connections/{id}/idle-policy` |
-| Migrations | `POST /connections/{id}/suggest-columns`, `GET/POST /migrations`, `GET /migrations/{id}`, `POST /migrations/{id}/preflight`, `POST /migrations/{id}/actions/{start,pause,resume,cutover,abort,delete}` |
+| Migrations | `POST /connections/{id}/suggest-columns`, `GET/POST /migrations`, `GET /migrations/{id}`, `POST /migrations/{id}/preflight`, `GET /migrations/{id}/preview`, `GET /migrations/{id}/leftovers`, `POST /migrations/{id}/on-existing`, `POST /migrations/{id}/actions/{start,pause,resume,cutover,abort,delete}` |
 | Backups | `GET/POST /backups`, `DELETE /backups/{id}`, `POST /backups/{id}/verify`, `POST /backups/{id}/restore`, `GET /backups/{id}/download`, `GET /restores`, `GET/POST /schedules`, `PUT/DELETE /schedules/{id}`, `POST /schedules/{id}/run`, `GET/POST /backup-locations`, `DELETE /backup-locations/{id}`, `GET /wal-archives`, `PUT /connections/{id}/wal-archive` |
 | Monitoring | `GET /monitoring`, `GET /alerts/events`, `GET/POST /alerts/channels`, `PUT/DELETE /alerts/channels/{id}`, `POST /alerts/channels/{id}/test` |
 | Audit | `GET /audit`, `GET /audit/verify` |
