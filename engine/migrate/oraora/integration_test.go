@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -574,44 +573,13 @@ func TestMigrationOffline(t *testing.T) {
 	checkSchema(t, ctx, src, dst)
 }
 
-// redoLost is what the online test stops an attempt with when the job
-// ended because the source moved on to another redo log.
-type redoLost struct{ err error }
-
-// TestMigration follows a source in use. A source that does not archive
-// its redo logs, reached through a pluggable database, lets LogMiner
-// read only the log being written: when the server switches logs while
-// the job still has changes to read, they are out of reach and the job
-// says so and ends. That is the documented behaviour, not a fault in
-// the migration, and on a small test server shared with other tests it
-// happens every few minutes, so the test starts over when it does. The
-// fixture keeps its large values to a few rows for the same reason: the
-// less redo the tests write, the less often the logs switch.
-func TestMigration(t *testing.T) {
-	const attempts = 4
-	for attempt := 1; ; attempt++ {
-		lost := func() (lost *redoLost) {
-			defer func() {
-				if p := recover(); p != nil {
-					l, ok := p.(redoLost)
-					if !ok {
-						panic(p)
-					}
-					lost = &l
-				}
-			}()
-			onlineMigration(t)
-			return nil
-		}()
-		if lost == nil {
-			return
-		}
-		if attempt == attempts {
-			t.Fatalf("the source switched redo logs during each of %d attempts: %v", attempts, lost.err)
-		}
-		t.Logf("attempt %d: the source switched redo logs under the job (%v); starting over", attempt, lost.err)
-	}
-}
+// TestMigration follows a source in use. The test server does not
+// archive its redo logs and is reached through a pluggable database, so
+// LogMiner reads only the log being written: when the server switches
+// logs under the job, the job carries on from the source's undo data,
+// and the test passes either way. Following through row versions alone
+// is tested in package orasrc.
+func TestMigration(t *testing.T) { onlineMigration(t) }
 
 func onlineMigration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
@@ -639,9 +607,6 @@ func onlineMigration(t *testing.T) {
 	// ended is called when the job returned something other than expected.
 	ended := func(what string, r result) {
 		t.Helper()
-		if errors.As(r.err, &lostRedo{}) {
-			panic(redoLost{r.err})
-		}
 		t.Fatalf("%s: %v, %v", what, r.out, r.err)
 	}
 	start := func(st State) {
@@ -730,6 +695,14 @@ func onlineMigration(t *testing.T) {
 		`UPDATE dedie_it_parts SET id = id + 1000 WHERE id <= 10`,
 		`INSERT INTO dedie_it_events VALUES ('after', 'not followed: no primary key', SYSDATE)`,
 	)
+	// A table LogMiner cannot describe changes to is followed all the same.
+	if n, _ := one(ctx, src, `SELECT COUNT(*) FROM user_tables WHERE table_name = 'DEDIE_IT_MODERN'`); n == "1" {
+		mustExec(t, ctx, src,
+			`INSERT INTO dedie_it_modern VALUES (3, JSON('{"late": true}'), TRUE)`,
+			`UPDATE dedie_it_modern SET doc = JSON('{"late": [1, 2, 3]}'), ok = FALSE WHERE id = 3`,
+			`DELETE FROM dedie_it_modern WHERE id = 2`)
+		converged("a table with JSON and BOOLEAN columns", `SELECT LISTAGG(id || ':' || TO_CHAR(ok), ',') WITHIN GROUP (ORDER BY id) FROM dedie_it_modern`, "1:TRUE,3:FALSE")
+	}
 	// A rolled-back transaction leaves nothing behind.
 	tx, err := src.BeginTx(ctx, nil)
 	if err != nil {

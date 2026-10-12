@@ -41,7 +41,9 @@ func KeyLogged(ctx context.Context, src oracle.Queryer, cat *Catalog) (map[strin
 // is interrupted halfway. Those labels are what UnlogKeys takes.
 func LogKeys(ctx context.Context, src *sql.DB, cat *Catalog, switched func(table string)) error {
 	logged, everywhere := KeyLogged(ctx, src, cat)
-	if everywhere {
+	if everywhere || MiningBlocked(ctx, src) != "" {
+		// Where LogMiner cannot be used, changes are followed through
+		// row versions, which need no logging.
 		return nil
 	}
 	conn, err := src.Conn(ctx)
@@ -52,10 +54,14 @@ func LogKeys(ctx context.Context, src *sql.DB, cat *Catalog, switched func(table
 	// Wait briefly for transactions in flight instead of failing at once.
 	conn.ExecContext(ctx, `ALTER SESSION SET DDL_LOCK_TIMEOUT = 30`)
 	for _, t := range cat.Tables {
-		if len(t.PK) == 0 || logged[t.Label()] {
+		if len(t.PK) == 0 || logged[t.Label()] || unmined(t) {
 			continue
 		}
 		if _, err := conn.ExecContext(ctx, "ALTER TABLE "+t.Source()+" ADD SUPPLEMENTAL LOG DATA (PRIMARY KEY) COLUMNS"); err != nil {
+			if HasCode(err, "ORA-01031") {
+				// Not allowed to: the job follows row versions instead.
+				return nil
+			}
 			if strings.Contains(err.Error(), "ORA-00054") {
 				return fmt.Errorf("switch on primary key logging for %s: a transaction has held the table for more than 30 seconds, and the change needs it for an instant. "+
 					"Start the job again when that transaction has ended, or switch the logging on yourself beforehand with ALTER TABLE ... ADD SUPPLEMENTAL LOG DATA (PRIMARY KEY) COLUMNS", t.Label())

@@ -73,18 +73,23 @@ func CheckChanges(ctx context.Context, src *sql.DB, cat *Catalog, cfg migrate.Co
 	checkMining(ctx, src, cat, cfg, r)
 }
 
-// checkMining reports whether the source is set up for LogMiner and the
-// account may use it.
+// insteadOfRedo ends the checks that find LogMiner out of the question.
+const insteadOfRedo = "Changes are then followed by reading row versions from the source's undo data instead, which needs none of this and loses nothing, " +
+	"but reads the primary key index of every table on each pass and so follows a large or busy source less closely"
+
+// checkMining reports how changes will be followed: with LogMiner where
+// the source is set up for it and the account may use it, and through
+// row versions otherwise.
 func checkMining(ctx context.Context, src *sql.DB, cat *Catalog, cfg migrate.Config, r *migrate.Report) {
 	var minimal int
 	_ = src.QueryRowContext(ctx, `SELECT COUNT(*) FROM v$database WHERE supplemental_log_data_min IN ('YES', 'IMPLICIT')`).Scan(&minimal)
 	if minimal == 0 {
 		_ = src.QueryRowContext(ctx, `SELECT COUNT(*) FROM dba_supplemental_logging WHERE minimal = 'YES'`).Scan(&minimal)
 	}
+	redo := minimal > 0
 	if minimal == 0 {
-		r.Add("Supplemental logging", "fail", "following changes needs minimal supplemental logging on the source. A DBA switches it on, without a restart, with "+
-			"ALTER DATABASE ADD SUPPLEMENTAL LOG DATA (in a pluggable database: ALTER PLUGGABLE DATABASE ADD SUPPLEMENTAL LOG DATA). "+
-			"An offline migration needs none of this")
+		r.Add("Supplemental logging", "warn", "minimal supplemental logging is off, so the redo stream cannot be read with LogMiner. A DBA switches it on, without a restart, with "+
+			"ALTER DATABASE ADD SUPPLEMENTAL LOG DATA (in a pluggable database: ALTER PLUGGABLE DATABASE ADD SUPPLEMENTAL LOG DATA). "+insteadOfRedo)
 	} else {
 		r.Add("Supplemental logging", "ok", "minimal supplemental logging is on")
 	}
@@ -104,45 +109,53 @@ func checkMining(ctx context.Context, src *sql.DB, cat *Catalog, cfg migrate.Con
 	if err := src.QueryRowContext(ctx, `SELECT COUNT(*) FROM v$logmnr_contents WHERE 1 = 0`).Scan(&n); err != nil && strings.Contains(err.Error(), "ORA-00942") {
 		missing = append(missing, "SELECT on V_$LOGMNR_CONTENTS")
 	}
-	if err := src.QueryRowContext(ctx, `SELECT COUNT(*) FROM v$database`).Scan(&n); err != nil {
-		missing = append(missing, "SELECT on V_$DATABASE")
-	}
 	if err := src.QueryRowContext(ctx, `SELECT COUNT(*) FROM v$transaction`).Scan(&n); err != nil {
 		missing = append(missing, "SELECT on V_$TRANSACTION")
 	}
-	if len(missing) == 0 {
+	switch {
+	case len(missing) > 0:
+		redo = false
+		r.Add("LogMiner access", "warn", "to read the redo stream the source account needs "+strings.Join(missing, ", ")+
+			"; LOGMINING, SELECT ANY TRANSACTION, EXECUTE_CATALOG_ROLE and SELECT ANY DICTIONARY together cover it. "+insteadOfRedo)
+	case minimal == 0:
+		// Reported above; a trial would only say the same.
+	default:
 		// Nothing shows that LogMiner works here like using it: read
 		// the last few changes and stop.
 		if err := trialMine(ctx, src); err != nil {
-			r.Add("LogMiner access", "fail", err.Error())
-			missing = nil
+			redo = false
+			r.Add("LogMiner access", "warn", err.Error()+". "+insteadOfRedo)
+		} else {
+			r.Add("LogMiner access", "ok", "the account can read the redo stream with LogMiner")
 		}
-	}
-	if r.Checks[len(r.Checks)-1].Name == "LogMiner access" {
-		// Reported above.
-	} else if len(missing) > 0 {
-		r.Add("LogMiner access", "fail", "to follow changes the source account needs "+strings.Join(missing, ", ")+
-			". LOGMINING, SELECT ANY TRANSACTION, EXECUTE_CATALOG_ROLE and SELECT ANY DICTIONARY together cover it")
-	} else {
-		r.Add("LogMiner access", "ok", "the account can read the redo stream with LogMiner")
 	}
 
 	var mode sql.NullString
 	_ = src.QueryRowContext(ctx, `SELECT log_mode FROM v$database`).Scan(&mode)
-	if mode.String == "NOARCHIVELOG" {
+	if !redo {
+		// The redo logs play no part.
+	} else if mode.String == "NOARCHIVELOG" {
 		detail := "the source runs in NOARCHIVELOG mode, so only its online redo logs exist and they are reused once full. " +
-			"If the job is paused or falls behind for longer than the logs last it cannot continue and must start over. "
+			"When the job is paused or falls behind for longer than the logs last, LogMiner can no longer read what it needs. "
 		var container int
 		_ = src.QueryRowContext(ctx, `SELECT TO_NUMBER(SYS_CONTEXT('USERENV','CON_ID')) FROM dual`).Scan(&container)
 		if container > 1 {
 			// Measured, not assumed: from inside a pluggable database
 			// LogMiner refuses any range before the current log.
-			detail = "the source runs in NOARCHIVELOG mode, and from inside a pluggable database LogMiner can then read only the current online redo log. " +
-				"The job follows changes until a log switch happens while it still has earlier changes to read; on a busy database that is minutes, and the job then stops for good and must start over. "
+			detail = "the source runs in NOARCHIVELOG mode, and from inside a pluggable database LogMiner can then read only the current online redo log: " +
+				"a log switch while the job still has earlier changes to read puts them out of its reach, which on a busy database happens within minutes. "
 		}
-		r.Add("Redo retention", "warn", detail+"Run the source in ARCHIVELOG mode for any online migration that matters, or migrate offline")
+		r.Add("Redo retention", "warn", detail+"The job does not stop when that happens: it goes on by reading row versions from the source's undo data, which loses nothing "+
+			"but follows a large or busy source less closely. Run the source in ARCHIVELOG mode to stay on the redo stream")
 	} else if mode.Valid {
 		r.Add("Redo retention", "ok", "the source archives its redo logs; keep the archived logs until the migration has read them")
+	}
+
+	var retention sql.NullString
+	_ = src.QueryRowContext(ctx, `SELECT value FROM v$parameter WHERE name = 'undo_retention'`).Scan(&retention)
+	kept := ""
+	if retention.Valid {
+		kept = " UNDO_RETENTION is " + retention.String + " seconds: a job paused or behind for longer than the source keeps undo cannot find the changes it missed and has to start over."
 	}
 
 	logged, everywhere := KeyLogged(ctx, src, cat)
@@ -151,23 +164,27 @@ func checkMining(ctx context.Context, src *sql.DB, cat *Catalog, cfg migrate.Con
 		switch {
 		case len(t.PK) == 0:
 			keyless = append(keyless, t.Label())
-		case !everywhere && !logged[t.Label()]:
+		case !everywhere && !logged[t.Label()] && !unmined(t):
 			toLog = append(toLog, t.Label())
 		}
 	}
 	// LogMiner reports a change to a row of such a table as one it cannot
-	// describe, so the row cannot be found again.
-	var unmined []string
+	// describe, so those are followed through their row versions.
+	var versioned []string
 	for _, t := range cat.Tables {
-		for _, c := range t.Cols {
-			if c.Kind == KindJSON || c.Kind == KindBool {
-				unmined = append(unmined, t.Label())
-				break
-			}
+		if len(t.PK) > 0 && unmined(t) {
+			versioned = append(versioned, t.Label())
 		}
 	}
-	if len(unmined) > 0 {
-		r.Add("Tables LogMiner cannot follow", "warn", "these tables have a JSON or BOOLEAN column. They are copied, but LogMiner does not describe changes to such tables, so changes made to them after the copy are reported and not carried over; stop writes to them before the job starts, or migrate offline: "+strings.Join(unmined, ", "))
+	switch {
+	case !redo:
+		toLog = nil
+		r.Add("Following changes", "warn", "changes are followed by reading row versions from the source's undo data, not its redo logs; see above for what the redo stream would need."+kept)
+	case len(versioned) > 0:
+		r.Add("Following changes", "ok", "changes are read from the redo stream with LogMiner. These tables have a JSON or BOOLEAN column, which LogMiner does not describe, and are followed by reading their row versions from the undo data instead: "+
+			strings.Join(versioned, ", ")+"."+kept)
+	default:
+		r.Add("Following changes", "ok", "changes are read from the redo stream with LogMiner")
 	}
 	if len(keyless) > 0 {
 		r.Add("Tables without a primary key", "warn", "these tables are copied, but changes made to them after the copy cannot be followed: "+strings.Join(keyless, ", "))

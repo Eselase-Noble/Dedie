@@ -124,21 +124,15 @@ func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
 			}
+			if errors.Is(err, orasrc.ErrChangesLost) {
+				// Trying again cannot bring the changes back.
+				return "", err
+			}
 			if time.Since(started) > time.Minute {
 				retries = 0
 			}
 			retries++
 			if retries > maxStreamRetries {
-				// The same answer every time is the real one.
-				if redoUnreachable(err) {
-					from := r.st.AppliedLSN
-					if from == "" {
-						// Nothing was applied yet: the stream never got
-						// further than where the copy was taken.
-						from = r.st.ConsistentLSN
-					}
-					return "", lostRedo{from: from, cause: err}
-				}
 				return "", err
 			}
 			r.rep.Event("warn", fmt.Sprintf("stream interrupted (%s); reconnecting, attempt %d of %d", err, retries, maxStreamRetries))
@@ -165,33 +159,6 @@ func (r *runner) run(ctx context.Context) (migrate.Outcome, error) {
 			}
 		}
 	}
-}
-
-// lostRedo is the error a job ends with when the changes it has yet to
-// read are no longer within LogMiner's reach.
-type lostRedo struct {
-	from  string
-	cause error
-}
-
-func (e lostRedo) Error() string {
-	return "the source's redo from " + e.from + " onwards can no longer be read, so the changes after that point are lost to this job. " +
-		"A source that does not archive its redo logs keeps them only until it moves on to the next. This job has to start again with a new copy; " +
-		"run the source in ARCHIVELOG mode to follow changes dependably, or migrate offline. (" + e.cause.Error() + ")"
-}
-
-func (e lostRedo) Unwrap() error { return e.cause }
-
-// redoUnreachable recognises the stream failing because the redo it has
-// to read next is out of LogMiner's reach. Besides the plain form of that error there is the one a
-// pluggable database gives: there LogMiner reads only what it finds by
-// itself, and the attempt to hand it the log files is refused, which
-// orasrc reports as the release not allowing LogMiner at all. Preflight
-// has shown that it does, so in the middle of a stream it means the
-// changes still to be read are in a log the source has moved on from.
-func redoUnreachable(err error) bool {
-	msg := err.Error()
-	return strings.Contains(msg, "no longer has the redo log") || strings.Contains(msg, "cannot run LogMiner from inside a pluggable database")
 }
 
 // reconnect gives the stream fresh sessions: one on the target to apply
