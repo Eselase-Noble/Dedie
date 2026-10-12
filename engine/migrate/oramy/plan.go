@@ -12,6 +12,7 @@ import (
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/oradef"
 	"dedie/engine/migrate/orasrc"
+	"dedie/engine/migrate/storedcode"
 	"dedie/engine/migrate/viewsql"
 )
 
@@ -94,6 +95,10 @@ type Plan struct {
 	// created once the data is in and validated, in the order to create
 	// them, then those that are left out, each with the reason.
 	Views []*viewsql.View
+	// Code is the source's stored code in scope, with the converter's
+	// verdict on each object and whether the job will create it; and the
+	// packages, types and materialized views, to be listed.
+	Code []*storedcode.Object
 	// Notes list everything that was translated with a change in meaning
 	// or could not be carried over. Preflight shows them to the operator.
 	Notes []string
@@ -153,6 +158,10 @@ func BuildPlan(ctx context.Context, src oracle.Queryer, cfg migrate.Config, targ
 		return nil, err
 	}
 	p.planViews(views, cfg.Scope() == "table")
+	if p.Code, err = oradef.Code(ctx, src, cat, cfg.Scope() == "table"); err != nil {
+		return nil, err
+	}
+	p.planCode(cfg.CodeMode())
 	return p, nil
 }
 
@@ -407,8 +416,8 @@ func (p *Plan) longNames() []string {
 	return long
 }
 
-// leaveOut removes the constraints and views whose names the target
-// already has in use and which are to stay as they are. Each is named by
+// leaveOut removes the constraints, views and stored code whose names the
+// target already has in use and which are to stay as they are. Each is named by
 // its kind and its name on the target.
 func (p *Plan) leaveOut(constraints []string) {
 	if len(constraints) == 0 {
@@ -433,4 +442,5 @@ func (p *Plan) leaveOut(constraints []string) {
 			v.SQL, v.Reason = "", "the target already has a view or table of this name, which is kept as it is"
 		}
 	}
+	storedcode.Keep(p.Code, func(c storedcode.Created) bool { return skip[strings.ToLower(c.Kind+" "+c.Name)] })
 }

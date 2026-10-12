@@ -557,3 +557,50 @@ func TestMigrationCodeExisting(t *testing.T) {
 		}
 	})
 }
+
+// TestMigrationCodeBinlogRefusal: a function that changes data is one
+// MySQL will not create while it writes a binary log, unless it has been
+// told to trust the people who create functions. The job says so in those
+// words, creates everything else, and leaves nothing of the function.
+func TestMigrationCodeBinlogRefusal(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	srcCfg, dstCfg, src, dst := codeDatabases(t, ctx)
+	var logging, trusting bool
+	if err := dst.QueryRowContext(ctx, "SELECT @@log_bin, @@log_bin_trust_function_creators").Scan(&logging, &trusting); err != nil {
+		t.Fatal(err)
+	}
+	if !logging || trusting {
+		t.Skip("the target would create the function: it writes no binary log, or trusts function creators")
+	}
+	if _, err := src.Exec(ctx, `CREATE FUNCTION seen(acct int) RETURNS int LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO audit (account_id, action) VALUES (acct, 'seen');
+  RETURN acct;
+END $$`); err != nil {
+		t.Fatal(err)
+	}
+	// The converter knows of the risk and marks the function for review,
+	// so only a job told to create such functions runs into the refusal.
+	cfg := migrate.Config{Mode: migrate.ModeOffline, Code: migrate.CodeReview}
+	st, warnings := runCode(t, ctx, srcCfg, dstCfg, cfg, nil)
+	var seen string
+	for _, r := range st.Code {
+		if r.Name == "public.seen(acct integer)" {
+			seen = r.Status + ": " + r.Detail
+		}
+	}
+	if !strings.HasPrefix(seen, "not created: the target did not accept the converted function: the target writes a binary log and its setting log_bin_trust_function_creators is off") {
+		t.Errorf("the function that changes data: %s", seen)
+	}
+	warned := false
+	for _, w := range warnings {
+		warned = warned || (strings.Contains(w, "function public.seen(acct integer) was not created on the target") && strings.Contains(w, "Set log_bin_trust_function_creators = 1"))
+	}
+	if !warned {
+		t.Errorf("no warning that explains the refusal: %q", warnings)
+	}
+	if got := targetCode(t, ctx, dst); strings.Contains(got, "seen") || !strings.Contains(got, "fee") {
+		t.Errorf("code on the target: %s", got)
+	}
+}

@@ -212,14 +212,17 @@ func created(to, sql string) (Created, bool) {
 		upper := strings.ToUpper(kind)
 		switch {
 		case kind == "trigger":
-			at := strings.LastIndex(rest, " ON ")
-			if at < 0 {
-				return c, false
-			}
-			var after string
-			c.Table, _, after = name(rest[at+4:])
-			if c.Table == "" || strings.TrimSpace(after) != "" {
-				return c, false
+			// The table is what follows the ON that ends the line; an
+			// " ON " earlier on may be inside a quoted column name.
+			for at := 0; c.Table == ""; {
+				next := strings.Index(rest[at:], " ON ")
+				if next < 0 {
+					return c, false
+				}
+				at += next + 4
+				if table, shown, after := name(rest[at:]); shown != "" && after == "" {
+					c.Table = table
+				}
 			}
 			c.Drop = "DROP TRIGGER IF EXISTS " + c.Quoted
 			if to != "mysql" {

@@ -10,6 +10,7 @@ import (
 	"dedie/engine/migrate"
 	"dedie/engine/migrate/oradef"
 	"dedie/engine/migrate/pgpg"
+	"dedie/engine/migrate/storedcode"
 	"dedie/engine/migrate/viewsql"
 )
 
@@ -22,7 +23,8 @@ import (
 // phase does, and takes the statements from the same plan, so what is
 // shown is what a job started now would send. A job compares each view
 // with the source's afterwards and drops one that does not return the
-// same, so not every view shown is certain to stay.
+// same, so not every view shown is certain to stay. Last come the
+// converted functions, procedures and triggers the job will create.
 //
 // A sequence is shown starting where the source's stands now; a job
 // writes the position of the moment it starts, and sets it again at the
@@ -47,7 +49,7 @@ func Preview(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate.C
 	for _, v := range viewsql.Kept(r.plan.Views) {
 		out = append(out, migrate.Statement{Phase: migrate.PhaseCutover, Kind: "view", Name: v.Label, SQL: v.SQL})
 	}
-	return out, nil
+	return append(out, storedcode.Statements(r.plan.Code, "")...), nil
 }
 
 // planned connects to both databases and builds the plan a job with these
@@ -108,8 +110,10 @@ func (r *runner) settle(ctx context.Context) ([]pgpg.Existing, error) {
 
 // Leftovers lists what a job with these options does not migrate, with
 // the statement that defines each object on the source: the views that
-// could not be translated or did not survive verification, the
-// materialized views and the PL/SQL. It changes neither database.
+// could not be translated or did not survive verification, the PL/SQL the
+// job does not create or created with a caveat, with the converted draft
+// where there is one, and packages, types and materialized views. It
+// changes neither database.
 func Leftovers(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate.Config, st State) ([]migrate.Leftover, error) {
 	cfg.Defaults()
 	r, _, done, err := planned(ctx, srcCfg, dstCfg, cfg, &st)
@@ -117,7 +121,7 @@ func Leftovers(ctx context.Context, srcCfg, dstCfg connector.Config, cfg migrate
 		return nil, err
 	}
 	defer done()
-	return oradef.Leftovers(ctx, r.src, r.plan.Catalog, cfg.Scope() == "table", r.plan.Views, st.Views)
+	return oradef.Leftovers(postgres.Kind, r.plan.Views, st.Views, r.plan.Code, st.Code), nil
 }
 
 func appendStatements(out []migrate.Statement, phase string, list []Stmt) []migrate.Statement {

@@ -9,6 +9,7 @@ import (
 	"dedie/engine/connector/mysql"
 	"dedie/engine/connector/oracle"
 	"dedie/engine/migrate"
+	"dedie/engine/migrate/storedcode"
 	"dedie/engine/migrate/viewsql"
 )
 
@@ -22,6 +23,11 @@ const (
 	// to do with can still hold a name the migration needs.
 	kindForeignKey = "foreign key"
 	kindCheck      = "check constraint"
+	// Converted stored code. Functions and procedures have a namespace
+	// each, and triggers are named per database.
+	kindFunction  = "function"
+	kindProcedure = "procedure"
+	kindTrigger   = "trigger"
 )
 
 // found is something in the target database that has the name of an
@@ -139,6 +145,26 @@ func existing(ctx context.Context, dst *sql.DB, plan *Plan) ([]found, error) {
 		// The two kinds are named apart from each other.
 		if wanted[r[1]+" "+strings.ToLower(r[0])] && !taken[r[2]] {
 			out = append(out, found{Kind: r[1], Name: r[0], Holder: r[2]})
+		}
+	}
+
+	// The converted functions, procedures and triggers the job creates.
+	names := map[string][]string{}
+	for _, o := range storedcode.Planned(plan.Code) {
+		for _, c := range o.Creates {
+			names[c.Kind] = append(names[c.Kind], c.Name)
+		}
+	}
+	for _, q := range []struct{ kind, query string }{
+		{kindFunction, `SELECT routine_name, '', '' FROM information_schema.routines WHERE routine_schema = DATABASE() AND routine_type = 'FUNCTION' AND routine_name IN (%s) ORDER BY 1`},
+		{kindProcedure, `SELECT routine_name, '', '' FROM information_schema.routines WHERE routine_schema = DATABASE() AND routine_type = 'PROCEDURE' AND routine_name IN (%s) ORDER BY 1`},
+		{kindTrigger, `SELECT trigger_name, '', '' FROM information_schema.triggers WHERE trigger_schema = DATABASE() AND trigger_name IN (%s) ORDER BY 1`},
+	} {
+		if rows, err = lookup(ctx, dst, q.query, names[q.kind]); err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			out = append(out, found{Kind: q.kind, Name: r[0]})
 		}
 	}
 	return out, nil
@@ -285,6 +311,8 @@ func (f found) drop() string {
 		return "ALTER TABLE " + mysql.Quote(f.Holder) + " DROP FOREIGN KEY " + mysql.Quote(f.Name)
 	case kindCheck:
 		return "ALTER TABLE " + mysql.Quote(f.Holder) + " DROP CHECK " + mysql.Quote(f.Name)
+	case kindFunction, kindProcedure, kindTrigger:
+		return "DROP " + strings.ToUpper(f.Kind) + " " + mysql.Quote(f.Name)
 	}
 	return ""
 }

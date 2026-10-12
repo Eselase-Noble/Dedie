@@ -253,7 +253,7 @@ func TestMigrationViews(t *testing.T) {
 			t.Errorf("views check lacks %q", part)
 		}
 	}
-	if c := findCheck(t, report, "Not migrated"); strings.HasPrefix(c.Detail, "views") || !strings.Contains(c.Detail, "PL/SQL") || !strings.Contains(c.Detail, "one script") {
+	if c := findCheck(t, report, "Not migrated"); strings.HasPrefix(c.Detail, "views") || !strings.Contains(c.Detail, "packages") || !strings.Contains(c.Detail, "one script") {
 		t.Errorf("not migrated: %s", c.Detail)
 	}
 
@@ -298,10 +298,10 @@ func TestMigrationViews(t *testing.T) {
 	for _, want := range []struct{ kind, name, reason, source, end string }{
 		{"view", "DEDIE_IV_RANKED", "it calls RANK()", "RANK() OVER (ORDER BY price DESC)", ""},
 		{"view", "DEDIE_IV_RECENT", "it calls TO_CHAR()", "TO_CHAR(sold, 'YYYY-MM')", ""},
-		{"function", "DEDIE_IV_VAT", "PL/SQL is not translated", "RETURN amount * 1.2;", "/"},
-		{"procedure", "DEDIE_IV_RESTOCK", "PL/SQL is not translated", "SET stock = stock + 10 WHERE id = pid;", "/"},
-		{"package", "DEDIE_IV_PRICING", "PL/SQL is not translated", "FUNCTION net(amount NUMBER) RETURN NUMBER;", "/"},
-		{"package body", "DEDIE_IV_PRICING", "PL/SQL is not translated", "RETURN amount / 1.2;", "/"},
+		{"function", "DEDIE_IV_VAT", "it is written in PL/SQL; converting stored code is switched off", "RETURN amount * 1.2;", "/"},
+		{"procedure", "DEDIE_IV_RESTOCK", "it is written in PL/SQL", "SET stock = stock + 10 WHERE id = pid;", "/"},
+		{"package", "DEDIE_IV_PRICING", "packages have no counterpart", "FUNCTION net(amount NUMBER) RETURN NUMBER;", "/"},
+		{"package body", "DEDIE_IV_PRICING", "packages have no counterpart", "RETURN amount / 1.2;", "/"},
 		{"trigger", "DEDIE_IV_SALES_STOCK", "PL/SQL", "AFTER INSERT ON dedie_iv_sales FOR EACH ROW", "/"},
 	} {
 		l := findLeftover(t, left, want.kind, want.name)

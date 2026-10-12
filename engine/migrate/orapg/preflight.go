@@ -15,6 +15,7 @@ import (
 	"dedie/engine/migrate/oradef"
 	"dedie/engine/migrate/orasrc"
 	"dedie/engine/migrate/pgpg"
+	"dedie/engine/migrate/storedcode"
 	"dedie/engine/migrate/viewsql"
 )
 
@@ -103,7 +104,13 @@ func preflight(ctx context.Context, src *sql.DB, dst *pgx.Conn, plan *Plan, cfg 
 		status, detail := viewsql.Describe(plan.Views)
 		r.Add("Views", status, detail)
 	}
-	r.Add("Not migrated", "warn", "materialized views, PL/SQL (procedures, functions, packages, triggers), synonyms, database links and partitioning are not translated; "+
+	scope := ""
+	if cfg.Scope() == "table" {
+		scope = oradef.TableScopeNote
+	}
+	status, detail := storedcode.Describe(oracle.Kind, postgres.Kind, oradef.Convertible(plan.Code), cfg.CodeMode(), scope)
+	r.Add("Stored code", status, detail)
+	r.Add("Not migrated", "warn", "materialized views, packages, synonyms, database links and partitioning are not translated; "+
 		"a partitioned table arrives as one ordinary table. "+oradef.Describe+". Users, roles and grants are not copied")
 
 	var ssl bool
