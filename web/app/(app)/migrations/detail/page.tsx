@@ -312,6 +312,25 @@ function Detail({ id }: { id: string }) {
         </Banner>
       )}
 
+      {st.objects && leavesBehind(job.kind) && (
+        <div className="card">
+          <div className="card-head">
+            <h2>Views and stored code</h2>
+            <div className="actions">
+              {manage && (st.objects.review > 0 || st.objects.left > 0) && (
+                <button className="btn small" onClick={() => setLeftovers(true)}
+                  title="What was left behind or wants checking, with its definition, the converted draft and the notes">See what needs you</button>
+              )}
+            </div>
+          </div>
+          <div className="figures" style={{ borderTop: "none" }}>
+            <Figure label="Created">{formatNumber(st.objects.created)}</Figure>
+            <Figure label="Created, needs review">{formatNumber(st.objects.review)}</Figure>
+            <Figure label="Left for you">{formatNumber(st.objects.left)}</Figure>
+          </div>
+        </div>
+      )}
+
       <div className="card">
         <Stepper job={job} />
         {job.phase === "snapshot" && job.tables.length > 0 && status !== "aborted" && <CopyProgress job={job} />}
@@ -443,6 +462,11 @@ function Detail({ id }: { id: string }) {
           <Figure label="Validation">{job.config.validation || "checksum"}</Figure>
           {!offline && !sync && <Figure label="Fence source at cutover">{fenced ? "yes" : "no"}</Figure>}
           <Figure label="Objects already on the target">{onExisting === "skip" ? "keep and skip" : onExisting === "replace" ? "replace" : "refuse"}</Figure>
+          {leavesBehind(job.kind) && (
+            <Figure label="Stored code">
+              {job.config.code === "off" ? "not converted" : job.config.code === "review" ? "created, also what needs review" : "created where it converts cleanly"}
+            </Figure>
+          )}
           {job.kind === "postgres-postgres" && !offline && <Figure label="Keep replication slot">{job.config.keep_slot ? "yes" : "no"}</Figure>}
           {!offline && <Figure label="Cutover timeout">{job.config.cutover_timeout_seconds || 300}s</Figure>}
         </div>

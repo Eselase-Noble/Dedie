@@ -215,6 +215,8 @@ export interface MigrationConfig {
   validation: Validation | "";
   keep_slot: boolean;
   on_existing?: OnExisting | "";
+  /** Between two kinds of database: what is done with stored procedures, functions and triggers. */
+  code?: CodeMode | "";
   cutover_timeout_seconds: number;
 }
 
@@ -239,6 +241,18 @@ export interface MigrationState {
   last_commit_time?: string;
   source_version?: string;
   target_version?: string;
+  /** Once a job between two kinds of database has finished: what it did with views and stored code. */
+  objects?: ObjectSummary;
+}
+
+/** Counts of the views and stored code of a finished migration. */
+export interface ObjectSummary {
+  /** On the target, and nothing to do. */
+  created: number;
+  /** On the target, but to be checked by a person. */
+  review: number;
+  /** Not on the target: left for the administrator. */
+  left: number;
 }
 
 export type JobStatus = "draft" | "queued" | "running" | "paused" | "failed" | "completed" | "aborted";
@@ -269,6 +283,15 @@ export interface Leftover {
   source: string;
   /** What closes the statement in a script when a semicolon does not. */
   end?: string;
+  /**
+   * For stored code a conversion was tried on: "review", "unconverted",
+   * "not created" or "created, needs review".
+   */
+  status?: string;
+  /** What to check, or why the routine could not be converted, by line of the source. */
+  notes?: string[];
+  /** The converted routine as a script in the target's dialect, where there is one. */
+  draft?: string;
 }
 
 /** Something on the target with the name of an object being migrated. */
@@ -279,6 +302,9 @@ export interface ExistingObject {
 
 /** What a migration does about objects the target already has. */
 export type OnExisting = "fail" | "skip" | "replace";
+
+/** What a migration between two kinds of database does with stored code. */
+export type CodeMode = "converted" | "review" | "off";
 
 export interface PreflightReport {
   ok: boolean;

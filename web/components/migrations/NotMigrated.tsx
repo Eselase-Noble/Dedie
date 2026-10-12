@@ -15,30 +15,89 @@ export function leavesBehind(kind: string): boolean {
   return TRANSLATING.includes(kind);
 }
 
-/** One definition as it goes into a script: closed the way its dialect closes it. */
-function statement(l: Leftover): string {
+/** How each status of a converted routine is shown. */
+const STATUS: Record<string, { label: string; tone: string }> = {
+  "review": { label: "needs review", tone: "warn" },
+  "unconverted": { label: "no conversion", tone: "danger" },
+  "not created": { label: "not created on the target", tone: "danger" },
+  "created, needs review": { label: "created, needs review", tone: "warn" },
+};
+
+/** The definition on the source as it goes into a script: closed the way its dialect closes it. */
+function original(l: Leftover): string {
   const source = l.source.trim();
   if (!source) return "-- (the source did not show its definition)";
   return l.end ? `${source}\n${l.end}` : `${source.replace(/;$/, "")};`;
 }
 
-/** Renders the definitions as one script, each under the reason it is not migrated. */
+/**
+ * One object as it goes into the script. Where there is a converted draft
+ * it comes first, under the notes on what to check, and the original
+ * follows as a comment to compare against; otherwise the original stands
+ * as it is.
+ */
+function section(l: Leftover): string {
+  const out = [`-- ${l.kind} ${l.name}${l.status ? `  [${l.status}]` : ""}`, `-- ${l.reason.replace(/\n/g, " ")}`];
+  for (const note of l.notes ?? []) out.push(`--   ${note}`);
+  const draft = (l.draft ?? "").trim();
+  if (!draft) return [...out, original(l), ""].join("\n");
+  out.push("-- Converted draft:", draft, "-- The original on the source:");
+  for (const line of original(l).split("\n")) out.push(`--   ${line}`);
+  return [...out, ""].join("\n");
+}
+
+/** Renders everything as one script. */
 function script(name: string, list: Leftover[]): string {
-  const out = [
-    `-- What the migration "${name}" does not carry over, as the source defines it.`,
-    "-- This is the source's dialect: convert it before running it on the target.",
+  return [
+    `-- What the migration "${name}" does not carry over, or carried over with a caveat.`,
+    "-- A converted draft is in the target's dialect; everything else is as the",
+    "-- source defines it, and has to be converted before it runs on the target.",
     "",
-  ];
-  for (const l of list) {
-    out.push(`-- ${l.kind} ${l.name}`, `-- Not migrated: ${l.reason.replace(/\n/g, " ")}`, statement(l), "");
-  }
-  return out.join("\n");
+    ...list.map(section),
+  ].join("\n");
+}
+
+/** One object: its reason and notes, and its definition, with the converted draft beside it where there is one. */
+function Item({ l, open }: { l: Leftover; open: boolean }) {
+  const draft = (l.draft ?? "").trim();
+  const [showing, setShowing] = useState<"draft" | "original">(draft ? "draft" : "original");
+  const status = l.status ? STATUS[l.status] : undefined;
+  const text = showing === "draft" ? draft : l.source.trim();
+  return (
+    <details open={open}>
+      <summary>
+        <span className="badge">{l.kind}</span> {l.name}{" "}
+        {status && <span className={`badge ${status.tone}`}>{status.label}</span>}
+      </summary>
+      <div style={{ padding: "8px 12px", borderTop: "1px solid var(--border)" }}>
+        <p className="hint" style={{ margin: 0 }}>{l.reason}</p>
+        {l.notes && l.notes.length > 0 && (
+          <ul className="hint" style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+            {l.notes.map((note) => <li key={note}>{note}</li>)}
+          </ul>
+        )}
+      </div>
+      <pre className="mono">{text || "The source did not show this definition."}</pre>
+      <div className="actions" style={{ padding: "6px 10px", borderTop: "1px solid var(--border)" }}>
+        {draft && (
+          <div className="segmented small" role="group" aria-label="Which definition to show">
+            <button type="button" className={showing === "draft" ? "active" : ""} onClick={() => setShowing("draft")}>Converted draft</button>
+            <button type="button" className={showing === "original" ? "active" : ""} onClick={() => setShowing("original")}>Original</button>
+          </div>
+        )}
+        <button className="btn small" type="button" onClick={() => copyText(showing === "draft" ? draft : original(l))} disabled={!text}>Copy</button>
+      </div>
+    </details>
+  );
 }
 
 /**
- * Lists what a migration leaves behind on the source (stored code, and the
- * views it could not translate or had to drop again) with the definition of
- * each, so that converting them by hand can start from one script.
+ * Lists what a migration leaves behind on the source, or carried over
+ * with a caveat: the views it could not translate or had to drop again,
+ * and the stored code it could not convert, did not create because a
+ * person has to check it, or created with something still to check. Each
+ * comes with its definition on the source and, where the converter got
+ * that far, the converted draft and the notes on it.
  */
 export default function NotMigrated({ jobId, name, onClose }: { jobId: string; name: string; onClose: () => void }) {
   const [list, setList] = useState<Leftover[] | null>(null);
@@ -75,10 +134,11 @@ export default function NotMigrated({ jobId, name, onClose }: { jobId: string; n
       {list && (
         <>
           <p className="hint">
-            Stored procedures, functions and triggers are written in the source database&apos;s own language, and no tool
-            converts them reliably, so this migration does not try. A view is carried over only when it can be translated
-            and then returns the same on the target. What stays behind is listed here as the source defines it: the place
-            to start converting it by hand. Reading this changes neither database.
+            A view is carried over only when it can be translated and then returns the same on the target. A stored
+            procedure, function or trigger is created only when its conversion keeps its behaviour; one that may behave
+            differently is converted but left for you to check, with notes on where to look, unless the migration was
+            told to create those as well. What has no conversion is listed as the source defines it. Reading this
+            changes neither database.
           </p>
           <div className="preflight-bar" style={{ padding: "8px 0" }}>
             <span>
@@ -91,17 +151,9 @@ export default function NotMigrated({ jobId, name, onClose }: { jobId: string; n
               {kinds.map((k) => <option key={k} value={k}>{k} ({list.filter((l) => l.kind === k).length})</option>)}
             </select>
           </div>
-          {list.length === 0 && <div className="empty">Nothing is left behind: the source has no stored code in scope, and every view was carried over.</div>}
+          {list.length === 0 && <div className="empty">Nothing is left behind: every view and all the stored code in scope was carried over.</div>}
           <section className="preview-phase">
-            {shown.map((l) => (
-              <details key={`${l.kind} ${l.name}`} open={shown.length <= 12}>
-                <summary><span className="badge">{l.kind}</span> {l.name} <span className="hint">{l.reason}</span></summary>
-                <pre className="mono">{l.source.trim() || "The source did not show this definition."}</pre>
-                <div style={{ padding: "6px 10px", borderTop: "1px solid var(--border)" }}>
-                  <button className="btn small" type="button" onClick={() => copyText(statement(l))} disabled={!l.source.trim()}>Copy</button>
-                </div>
-              </details>
-            ))}
+            {shown.map((l) => <Item key={`${l.kind} ${l.name}`} l={l} open={shown.length <= 12} />)}
           </section>
         </>
       )}
