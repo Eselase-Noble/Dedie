@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -92,7 +93,7 @@ func TestMigrationLeftovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := migrate.Leftover{Kind: "procedure", Name: "shop.restock", Reason: "not translated", Source: "CREATE PROCEDURE restock() BEGIN END", End: "/"}
-	if len(list) != 1 || list[0] != want {
+	if len(list) != 1 || !reflect.DeepEqual(list[0], want) {
 		t.Errorf("leftovers = %+v, want %+v", list, want)
 	}
 
@@ -118,5 +119,25 @@ func TestMigrationLeftovers(t *testing.T) {
 	}
 	if _, err := f.app.MigrationLeftovers(f.ctx, f.owner, same.ID); err == nil || !strings.Contains(err.Error(), "copy views and stored code as they are") {
 		t.Errorf("postgres to postgres: %v", err)
+	}
+}
+
+func TestMigrationCodeSettingIsChecked(t *testing.T) {
+	f := newNotifyFixture(t)
+	src, dst := f.connection("old", "mysql"), f.connection("new", "postgres")
+	for setting, ok := range map[string]bool{"": true, "converted": true, "review": true, "off": true, "everything": false} {
+		in := MigrationInput{Name: "move " + setting, SourceID: src.ID, TargetID: dst.ID}
+		in.Config.Code = setting
+		j, err := f.app.CreateMigration(f.ctx, f.owner, in)
+		if ok != (err == nil) {
+			t.Errorf("code %q: %v", setting, err)
+		}
+		if err == nil {
+			var cfg migrate.Config
+			_ = json.Unmarshal(j.Config, &cfg)
+			if cfg.Code != setting {
+				t.Errorf("code %q was stored as %q", setting, cfg.Code)
+			}
+		}
 	}
 }

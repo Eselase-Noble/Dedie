@@ -92,6 +92,11 @@ func (a *App) CreateMigration(ctx context.Context, actor Actor, in MigrationInpu
 	default:
 		return store.Job{}, invalid("on_existing must be fail, skip or replace")
 	}
+	switch in.Config.Code {
+	case "", migrate.CodeConverted, migrate.CodeReview, migrate.CodeOff:
+	default:
+		return store.Job{}, invalid("code must be converted, review or off")
+	}
 	_, _, kind, err := a.endpoints(ctx, actor.User.OrgID, in.SourceID, in.TargetID)
 	if err != nil {
 		return store.Job{}, err

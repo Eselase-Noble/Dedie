@@ -51,8 +51,10 @@ Migrations
   migrate preview <id>         print the statements the migration would run
                                on the target, as a script, without running them
   migrate leftovers <id>       print what the migration does not carry over
-                               (stored code, views it could not translate), as
-                               a script of the source's own definitions
+                               (views it could not translate, stored code it
+                               could not convert or that needs review), as a
+                               script with the converted drafts and the source's
+                               own definitions
   migrate existing <id> fail|skip|replace
                                answer that question without a prompt
   migrate run <id>             run in the foreground until paused or complete
