@@ -251,6 +251,7 @@ export const api = {
   },
   readNotification: (notificationId: number) => post<{ unread: number }>(`/notifications/${notificationId}/read`),
   readAllNotifications: () => post<{ unread: number }>("/notifications/read-all"),
+  testNotification: () => post<{ unread: number }>("/notifications/test"),
 
   // Audit
   audit: (before: number, limit: number) => get<AuditEntry[]>(`/audit?before=${before}&limit=${limit}`),
