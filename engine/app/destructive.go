@@ -37,7 +37,9 @@ func destructive(kind, text string) string {
 		}
 		switch words[0] {
 		case "DROP", "TRUNCATE":
-			if len(words) > 1 {
+			// "DROP TABLE" says more than "DROP"; a name that follows
+			// directly, as in "TRUNCATE orders", is not part of it.
+			if len(words) > 1 && objectKinds[words[1]] {
 				return words[0] + " " + words[1]
 			}
 			return words[0]
@@ -62,6 +64,11 @@ func destructive(kind, text string) string {
 	}
 	return ""
 }
+
+// objectKinds are the words that name what a DROP or TRUNCATE acts on.
+var objectKinds = map[string]bool{"TABLE": true, "SCHEMA": true, "DATABASE": true, "INDEX": true, "VIEW": true, "SEQUENCE": true,
+	"FUNCTION": true, "PROCEDURE": true, "TRIGGER": true, "TYPE": true, "USER": true, "ROLE": true, "MATERIALIZED": true,
+	"TABLESPACE": true, "PACKAGE": true, "EXTENSION": true, "EVENT": true}
 
 // stripSQL returns sql with its comments, quoted strings, quoted
 // identifiers and dollar-quoted bodies replaced by spaces, leaving the
