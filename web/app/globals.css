@@ -360,6 +360,7 @@ td.wrap .badge { margin: 1px 0; }
 /* ---------- modal ---------- */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(16, 24, 40, 0.45); display: flex; align-items: flex-start; justify-content: center; padding: 7vh 16px 16px; z-index: 50; overflow-y: auto; animation: fade-in 120ms ease-out; }
 .modal { background: var(--bg); border-radius: 14px; box-shadow: var(--shadow-lg); width: 100%; max-width: 560px; animation: modal-in 160ms cubic-bezier(0.2, 0, 0, 1); }
+.modal:focus { outline: none; }
 .modal.wide { max-width: 780px; }
 .modal-head { padding: 14px 14px 14px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: var(--sp-3); }
 .modal-head h2 { font-size: 16px; min-width: 0; overflow-wrap: anywhere; }
@@ -796,9 +797,10 @@ ul.plain li { margin-bottom: 6px; }
   .checks .check-detail { grid-column: 1 / -1; }
   .health li { grid-template-columns: minmax(0, 1fr) auto; }
   .health .fresh { grid-column: 1 / -1; text-align: left; }
-  .attention li { flex-wrap: wrap; }
+  /* The button moves under the words it belongs to. */
+  .attention li, .checklist li { flex-wrap: wrap; }
+  .attention .note-text, .checklist .note-text { flex: 1 1 200px; }
   .attention .btn { margin-left: 38px; }
-  .checklist li { flex-wrap: wrap; }
   .checklist .btn { margin-left: 42px; }
 
   /* A table marked "stack" turns each row into a block of labelled lines,

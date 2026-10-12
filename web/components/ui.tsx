@@ -131,13 +131,17 @@ export function useDialog(onClose: () => void) {
   const ref = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
   close.current = onClose;
+  // Noted while rendering: by the time the effect runs, a field marked
+  // autoFocus inside the dialog has already taken the focus.
+  const opener = useRef<HTMLElement | null | undefined>(undefined);
+  if (opener.current === undefined && typeof document !== "undefined") opener.current = document.activeElement as HTMLElement | null;
   useEffect(() => {
     const me = Symbol("dialog");
     openDialogs.push(me);
-    const before = document.activeElement as HTMLElement | null;
+    const before = opener.current;
     const box = ref.current;
     // A field marked autoFocus has taken the focus already.
-    if (box && !box.contains(document.activeElement)) box.focus();
+    if (box && !box.contains(document.activeElement)) box.focus({ preventScroll: true });
     const onKey = (e: KeyboardEvent) => {
       if (openDialogs[openDialogs.length - 1] !== me || !box) return;
       if (e.key === "Escape") {
