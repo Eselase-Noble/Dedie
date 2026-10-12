@@ -18,6 +18,9 @@ func (g *gen) value(e expr) (string, typ) {
 			}
 			return "0", tInt
 		}
+		if _, ok := e.(*parenExpr); ok {
+			return s + "::int", tInt
+		}
 		return "(" + s + ")::int", tInt
 	}
 	return s, t
@@ -663,6 +666,9 @@ func (g *gen) asText(e expr, s string, t typ, use string) string {
 		}
 		return cast()
 	case t.class == cDate && g.from != Oracle:
+		return cast()
+	case t.class == cTime && t.scale == 0 && g.from == MySQL:
+		// Without a fraction of a second both write the same text.
 		return cast()
 	case t.temporal():
 		if g.from == Oracle {

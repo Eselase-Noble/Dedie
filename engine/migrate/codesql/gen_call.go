@@ -77,12 +77,17 @@ var oraclePackages = []string{"DBMS_", "UTL_", "APEX_", "OWA_", "HTP", "HTF", "C
 // 38; MySQL adds only 4 places to those of the dividend.
 func (g *gen) roundingLimit() int {
 	if g.from == MySQL || g.to == MySQL {
-		return 2
+		return 4
 	}
 	return 10
 }
 
 var roundingFns = map[string]bool{"ROUND": true, "TRUNC": true, "TRUNCATE": true}
+
+// lazyArgs are the functions whose arguments are not all values, so
+// their rules write the arguments themselves: an INTERVAL, the name of
+// a unit, a condition.
+var lazyArgs = map[string]bool{"DATE_ADD": true, "DATE_SUB": true, "ADDDATE": true, "SUBDATE": true, "TIMESTAMPDIFF": true, "IF": true}
 
 // call writes a function call.
 func (g *gen) call(c *callExpr) (string, typ) {
@@ -103,6 +108,10 @@ func (g *gen) call(c *callExpr) (string, typ) {
 			for i, arg := range c.args {
 				if c.argNames[i] != "" {
 					g.refuse(c.line, "the built-in function %s is called with a named argument", name)
+				}
+				a[i].e = arg
+				if lazyArgs[name] {
+					continue
 				}
 				if i == 0 && rounds {
 					g.rounded++

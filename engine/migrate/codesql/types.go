@@ -247,8 +247,9 @@ func typeOraMy(d *dataType) (mapped, bool) {
 		}
 		switch {
 		case !has0 && !d.star:
-			return mapped{text: "decimal(65,30)", typ: typ{cNum, 30},
-				note: "NUMBER without a precision becomes DECIMAL(65,30), which rounds decimal places beyond 30"}, true
+			// MySQL has no number of any size; the assumptions of the
+			// route say what DECIMAL(65,30) cannot hold.
+			return mapped{text: "decimal(65,30)", typ: typ{cNum, 30}}, true
 		case d.star:
 			n0 = 38
 		}
@@ -375,7 +376,10 @@ func typeMyPG(d *dataType) (mapped, bool) {
 	case "DATE":
 		return mapped{text: "date", typ: tDate}, true
 	case "DATETIME":
-		return mapped{text: sized("timestamp", d), typ: tTime}, true
+		// The scale of a time is the number of digits of its fraction
+		// of a second, which decides how it reads as text.
+		n0, _ := d.arg(0)
+		return mapped{text: sized("timestamp", d), typ: typ{cTime, n0}}, true
 	case "TIMESTAMP":
 		// A MySQL TIMESTAMP is a point in time, stored in UTC.
 		return mapped{text: sized("timestamptz", d), typ: tTimeTZ}, true
@@ -401,8 +405,7 @@ func typePGMy(d *dataType) (mapped, bool) {
 	case "NUMERIC", "DECIMAL":
 		// MySQL's DECIMAL stops at 65 digits, 30 of them after the point.
 		if !has0 {
-			return mapped{text: "DECIMAL(65,20)", typ: typ{cNum, 20},
-				note: "numeric without a precision becomes DECIMAL(65,20), which rounds decimal places beyond 20"}, true
+			return mapped{text: "DECIMAL(65,20)", typ: typ{cNum, 20}}, true
 		}
 		if !has1 {
 			return mapped{text: fmt.Sprintf("DECIMAL(%d)", n0), typ: tWhole}, true

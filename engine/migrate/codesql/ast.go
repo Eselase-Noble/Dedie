@@ -48,7 +48,9 @@ type triggerHead struct {
 	// newName and oldName are what the body calls the two rows, in upper
 	// case: NEW and OLD unless a REFERENCING clause renames them.
 	newName, oldName string
-	line             int
+	// order is MySQL's FOLLOWS or PRECEDES with the other trigger's name.
+	order string
+	line  int
 }
 
 // block is BEGIN ... END with what belongs to it.
@@ -57,7 +59,10 @@ type block struct {
 	decls    []decl
 	body     []stmt
 	handlers []*handler
-	line     int
+	// plain marks statements that only the parser grouped, such as the
+	// assignments of one SET: they need no BEGIN and END of their own.
+	plain bool
+	line  int
 }
 
 // handler is one way a block deals with an error. PL/SQL and PL/pgSQL
@@ -514,16 +519,16 @@ type tableRef struct {
 
 // sqlPart is one piece of an SQL statement; exactly one field is set.
 type sqlPart struct {
-	kw     string    // keywords and punctuation, written as they are
-	e      expr      // an expression
-	table  *tableRef // a table in FROM, or the target of a change
-	col    *ident    // a column named where no expression can stand: INSERT's list, SET's left side
-	alias  *ident    // an alias of a select item
-	into   bool      // where INTO and its variables were written
-	sub    *sqlStmt  // a nested statement: the SELECT of an INSERT, the next arm of a UNION
-	order  *orderKey // one key of an ORDER BY
-	limit  *limitPart
-	concat bool // glue: no space before the next part
+	kw    string    // keywords and punctuation, written as they are
+	e     expr      // an expression
+	cond  bool      // the expression is a condition: what follows WHERE, HAVING or ON
+	table *tableRef // a table in FROM, or the target of a change
+	col   *ident    // a column named where no expression can stand: INSERT's list, SET's left side
+	alias *ident    // an alias of a select item
+	into  bool      // where INTO and its variables were written
+	sub   *sqlStmt  // a nested statement: the SELECT of an INSERT, the next arm of a UNION
+	order *orderKey // one key of an ORDER BY
+	limit *limitPart
 }
 
 // orderKey is one expression of an ORDER BY with what was said about it.

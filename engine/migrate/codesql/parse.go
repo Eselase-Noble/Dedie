@@ -374,7 +374,7 @@ func (p *parser) andExpr() expr {
 
 func (p *parser) notExpr() expr {
 	t := p.peek()
-	if t.is("NOT") || (p.d == MySQL && t.op("!") && !p.peekAt(1).op("=")) {
+	if t.is("NOT") {
 		p.pos++
 		return &unExpr{op: "NOT", x: p.notExpr(), line: t.line}
 	}
@@ -539,6 +539,14 @@ func (p *parser) unary() expr {
 	if t.op("-") || t.op("+") {
 		p.pos++
 		return &unExpr{op: t.text, x: p.unary(), line: t.line}
+	}
+	if p.d == MySQL && t.op("!") {
+		// MySQL's "!" binds like a sign, tighter than NOT.
+		p.pos++
+		return &unExpr{op: "NOT", x: p.unary(), line: t.line}
+	}
+	if p.d == MySQL && t.is("BINARY") && p.peekAt(1).kind != tOp {
+		p.refuse(t.line, "the BINARY operator")
 	}
 	if p.d == Oracle && t.is("PRIOR") {
 		p.refuse(t.line, "a hierarchical query (CONNECT BY)")
@@ -1021,7 +1029,7 @@ func (p *parser) query() *sqlStmt {
 		if p.isWord("CURRENT") && p.peekAt(1).is("OF") {
 			p.refuse(p.peek().line, "WHERE CURRENT OF in a query")
 		}
-		s.parts = append(s.parts, kw("WHERE"), sqlPart{e: p.expr()})
+		s.parts = append(s.parts, kw("WHERE"), sqlPart{e: p.expr(), cond: true})
 	}
 	if p.d == Oracle && (p.isWord("CONNECT") || (p.isWord("START") && p.peekAt(1).is("WITH"))) {
 		p.refuse(p.peek().line, "a hierarchical query (CONNECT BY)")
@@ -1039,7 +1047,7 @@ func (p *parser) query() *sqlStmt {
 	}
 	if p.acceptWord("HAVING") {
 		s.simple = false
-		s.parts = append(s.parts, kw("HAVING"), sqlPart{e: p.expr()})
+		s.parts = append(s.parts, kw("HAVING"), sqlPart{e: p.expr(), cond: true})
 	}
 	if p.isWord("WINDOW") {
 		p.refuse(p.peek().line, "a WINDOW clause")
@@ -1229,7 +1237,7 @@ func (p *parser) fromList(s *sqlStmt) {
 			p.tableRef(s)
 			switch {
 			case p.acceptWord("ON"):
-				s.parts = append(s.parts, kw("ON"), sqlPart{e: p.expr()})
+				s.parts = append(s.parts, kw("ON"), sqlPart{e: p.expr(), cond: true})
 			case p.acceptWord("USING"):
 				p.expectOp("(")
 				s.parts = append(s.parts, kw("USING ("))
@@ -1316,7 +1324,7 @@ func (p *parser) whereClause(s *sqlStmt) {
 		s.parts = append(s.parts, kw("WHERE CURRENT OF"), sqlPart{col: &c})
 		return
 	}
-	s.parts = append(s.parts, kw("WHERE"), sqlPart{e: p.expr()})
+	s.parts = append(s.parts, kw("WHERE"), sqlPart{e: p.expr(), cond: true})
 }
 
 func (p *parser) insert() *sqlStmt {

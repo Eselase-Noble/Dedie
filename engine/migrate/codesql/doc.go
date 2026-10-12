@@ -1,6 +1,7 @@
 // Package codesql converts stored functions, procedures and triggers
 // from one database's procedural language to another's: Oracle's PL/SQL
-// to PostgreSQL's PL/pgSQL. It is a library without side effects: it is
+// and MySQL's stored programs to PostgreSQL's PL/pgSQL. It is a library
+// without side effects: it is
 // given the definition of a routine as the source database prints it and
 // returns the statements that create the same routine on the target.
 //
@@ -150,4 +151,71 @@
 //     built-in functions without a rewrite (MONTHS_BETWEEN, NEXT_DAY,
 //     the REGEXP_ family, SYS_GUID, TO_DATE without a format, SQLCODE
 //     and others).
+//
+// # MySQL to PostgreSQL
+//
+// Converted:
+//
+//   - Functions, procedures with IN, OUT and INOUT parameters, and
+//     triggers (MySQL has row triggers on one event only). An argument
+//     and a result are rounded to the scale their DECIMAL declares, as
+//     MySQL does.
+//   - DECLARE of variables, cursors, conditions and handlers; SET; IF,
+//     CASE, LOOP, WHILE, REPEAT, LEAVE and ITERATE, also of a labelled
+//     block; RETURN; OPEN, FETCH, CLOSE; CALL.
+//   - Truth values. MySQL has none: a comparison is 1 or 0. A comparison
+//     stored in a variable is cast to a number, and a number used as a
+//     condition is compared with 0.
+//   - Handlers. NOT FOUND handlers are written out after each FETCH and
+//     around each SELECT ... INTO that can find nothing, which also
+//     keeps the variables as they were, as MySQL does. EXIT handlers
+//     for SQLEXCEPTION, for an SQLSTATE and for the common error numbers
+//     (1062, 1048, 1172, 1451, 1452) become EXCEPTION clauses. SIGNAL
+//     and RESIGNAL become RAISE with the same SQLSTATE.
+//   - SELECT ... INTO, INSERT, UPDATE and DELETE of one table, joins,
+//     subqueries, LIMIT with an offset; ORDER BY keeps MySQL's place for
+//     NULLs; backticks and double-quoted strings.
+//   - Division: the dividend is cast so that integers are not divided as
+//     integers, and a divisor of 0 gives NULL as it does in MySQL. DIV
+//     and MOD.
+//   - IFNULL, IF, COALESCE, NULLIF, CONCAT, CONCAT_WS, UPPER, LOWER,
+//     LENGTH (bytes), CHAR_LENGTH, SUBSTRING, LEFT and RIGHT with fixed
+//     positions, TRIM, REPLACE, LPAD, RPAD, REPEAT, REVERSE, INSTR,
+//     LOCATE, ROUND, TRUNCATE, FLOOR, CEILING, ABS, SIGN, POW, NOW,
+//     CURDATE, DATE_ADD, DATE_SUB and INTERVAL arithmetic, DATEDIFF,
+//     TIMESTAMPDIFF in seconds to weeks, DATE_FORMAT, YEAR and its
+//     relatives, LAST_DAY, DATE, EXTRACT, CAST, COUNT, SUM, MIN, MAX.
+//
+// Review:
+//
+//   - Any comparison, LIKE, IN, BETWEEN, search or ordering of text,
+//     unless Options.ExactText says the source compares text exactly:
+//     MySQL's default collations ignore case and trailing spaces.
+//   - A division or AVG whose result is not rounded to four decimal
+//     places or fewer.
+//   - A block that changes data and has an error handler: PostgreSQL
+//     undoes the block.
+//   - SUBSTRING, LEFT and RIGHT with computed positions; GREATEST and
+//     LEAST; text cast to a number or used in arithmetic; floating point
+//     numbers and times with fractional seconds written as text;
+//     TIMESTAMPDIFF in months and years; ROUND of a floating point
+//     number; LAST_INSERT_ID.
+//   - START TRANSACTION, COMMIT and ROLLBACK in a procedure; FOLLOWS and
+//     PRECEDES on a trigger; a FETCH whose variables are read after the
+//     cursor is exhausted; a call to a routine the pipeline did not
+//     name; values of unknown type where the type decides the result.
+//
+// Unconverted:
+//
+//   - A SELECT whose rows go to the caller; session variables (@name);
+//     PREPARE and EXECUTE; GET DIAGNOSTICS and ROW_COUNT(); savepoints.
+//   - CONTINUE handlers for errors, handlers for SQLWARNING, RESIGNAL
+//     that changes the error, COMMIT or ROLLBACK inside a block with a
+//     handler or in a function.
+//   - INSERT ... ON DUPLICATE KEY UPDATE, INSERT IGNORE, REPLACE,
+//     UPDATE and DELETE of several tables or with ORDER BY and LIMIT.
+//   - GROUP_CONCAT, regular expressions, bit operators, the BINARY
+//     operator, arithmetic on a date as if it were a number, date
+//     formats without a PostgreSQL counterpart, spatial types, DDL
+//     inside a routine, version-specific comments that hold code.
 package codesql

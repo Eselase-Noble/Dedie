@@ -97,6 +97,11 @@ func (g *gen) pgParams() string {
 		m := g.mapped(p.typ, "the parameter "+p.name)
 		v := g.declare(&variable{name: p.name, kind: "param", typ: m.typ, dt: p.typ})
 		s := v.out + " " + paramType(m.text)
+		if g.from == MySQL && p.mode != "OUT" && m.typ.class == cNum && strings.Contains(m.text, "(") {
+			// MySQL rounds an argument to the scale the parameter
+			// declares; PostgreSQL ignores the scale of a parameter.
+			g.prologue = append(g.prologue, v.out+" := "+v.out+"::"+m.text+";")
+		}
 		switch p.mode {
 		case "OUT", "INOUT":
 			if r.kind == "function" {
@@ -203,6 +208,11 @@ func (g *gen) pgBlock(w *writer, b *block, top bool, epilogue []string) {
 	catches := catchesNoData(errors)
 	if catches {
 		g.noDataCaught++
+	}
+	if top {
+		for _, line := range g.prologue {
+			body.text(line)
+		}
 	}
 	g.pgStmts(body, b.body)
 	if catches {
@@ -617,12 +627,22 @@ func (g *gen) pgStmt(w *writer, s stmt, next stmt) {
 			w.line("RETURN;")
 		default:
 			ret := tUnknown
+			scaled := ""
 			if g.r.returns != nil {
 				if m, ok := mapType(g.from, g.to, g.r.returns); ok {
 					ret = m.typ
+					if g.from == MySQL && ret.class == cNum && strings.Contains(m.text, "(") {
+						// MySQL rounds the result to the scale the
+						// function declares; PostgreSQL ignores it.
+						scaled = m.text
+					}
 				}
 			}
-			w.line("RETURN %s;", g.assigned(s.value, ret))
+			if scaled != "" {
+				w.line("RETURN CAST(%s AS %s);", g.assigned(s.value, ret), scaled)
+			} else {
+				w.line("RETURN %s;", g.assigned(s.value, ret))
+			}
 		}
 	case *nullStmt:
 		w.line("NULL;")
@@ -856,7 +876,9 @@ func hasAlias(q *sqlStmt, e expr) bool {
 // them; PL/pgSQL sets them to NULL.
 func (g *gen) fetchKeeps(s *fetchStmt, next stmt) {
 	safe := g.inLoop != nil
-	if safe {
+	// A MySQL EXIT handler leaves at once; nothing reads the variables.
+	leaves := g.from == MySQL && len(g.notFound) > 0 && g.notFound[len(g.notFound)-1].h.action == "EXIT"
+	if safe && !leaves {
 		switch next.(type) {
 		case *exitStmt, *ifStmt, nil:
 		default:
@@ -1099,6 +1121,9 @@ func (g *gen) pgTrigger() []string {
 	if h.timing == "INSTEAD OF" {
 		g.refuse(h.line, "an INSTEAD OF trigger: it belongs to a view, and views are migrated separately")
 		return nil
+	}
+	if h.order != "" {
+		g.note(h.line, "the trigger is declared to fire %s; PostgreSQL fires the triggers of a table in the order of their names", h.order)
 	}
 	name := g.fold(h.name[len(h.name)-1])
 	fn := name

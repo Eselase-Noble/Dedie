@@ -130,7 +130,7 @@ func dialect(kind string) Dialect {
 // cannot translate comes back Unconverted with the reason.
 func Convert(from, to string, obj Object, opt Options) Result {
 	f, t := dialect(from), dialect(to)
-	supported := f == Oracle && t == Postgres
+	supported := (f == Oracle || f == MySQL) && t == Postgres
 	if !supported {
 		return Result{Status: Unconverted, Notes: []string{fmt.Sprintf("routines are not converted from %s to %s", from, to)}}
 	}

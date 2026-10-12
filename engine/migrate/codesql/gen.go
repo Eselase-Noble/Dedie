@@ -49,6 +49,7 @@ type gen struct {
 	// written, when that was a FETCH.
 	lastFetch string
 	extra     []string // declarations the emitter adds to the outermost block
+	prologue  []string // statements the emitter puts before the routine's own
 	// inWhen is set while the WHEN clause of a trigger is written, where
 	// Oracle names the rows without a colon.
 	inWhen bool

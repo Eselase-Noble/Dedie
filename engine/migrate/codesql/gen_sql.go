@@ -62,6 +62,8 @@ func (g *gen) statement(s *sqlStmt, into string) (string, []typ) {
 			i++
 		case p.kw != "":
 			out = append(out, p.kw)
+		case p.e != nil && p.cond:
+			out = append(out, g.cond(p.e))
 		case p.e != nil:
 			text, t := g.value(p.e)
 			for k := range s.columns {

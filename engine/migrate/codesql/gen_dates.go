@@ -45,7 +45,7 @@ func (g *gen) special(n *nameExpr, first string) (string, typ, bool) {
 	case MySQL:
 		switch first {
 		case "CURRENT_TIMESTAMP", "LOCALTIMESTAMP", "LOCALTIME":
-			return pgStatementSeconds, tTime, true
+			return pgStatementSeconds, typ{cTime, 0}, true
 		case "CURRENT_DATE":
 			return "statement_timestamp()::date", tDate, true
 		case "CURRENT_USER":
