@@ -11,6 +11,7 @@ import ApplyRate from "@/components/migrations/ApplyRate";
 import CopyProgress from "@/components/migrations/CopyProgress";
 import ExistingObjectsDialog from "@/components/migrations/ExistingObjects";
 import MigrationForm from "@/components/MigrationForm";
+import NotMigrated, { leavesBehind } from "@/components/migrations/NotMigrated";
 import SchemaPreview from "@/components/migrations/SchemaPreview";
 import { download } from "@/lib/csv";
 import { copyText } from "@/lib/desktop";
@@ -123,6 +124,7 @@ function Detail({ id }: { id: string }) {
   const [preflighting, setPreflighting] = useState(false);
   const [asking, setAsking] = useState(false);
   const [previewing, setPreviewing] = useState(false);
+  const [leftovers, setLeftovers] = useState(false);
   // Duplicating opens the new-migration form filled in from this job;
   // "replace" is the same with existing objects on the target replaced.
   const [duplicating, setDuplicating] = useState<"" | "copy" | "replace">("");
@@ -347,6 +349,10 @@ function Detail({ id }: { id: string }) {
               <button className="btn small" onClick={() => setPreviewing(true)}
                 title="Read the statements this migration would run on the target, without running them">Preview schema</button>
             )}
+            {manage && leavesBehind(job.kind) && (
+              <button className="btn small" onClick={() => setLeftovers(true)}
+                title="Stored code and views this migration does not carry over, with their definitions on the source">Not migrated</button>
+            )}
             {manage && (
               <button className="btn small" onClick={() => runPreflight()} disabled={preflighting}>
                 {preflighting ? "Checking…" : report ? "Run again" : "Run preflight"}
@@ -470,6 +476,7 @@ function Detail({ id }: { id: string }) {
         />
       )}
       {previewing && <SchemaPreview jobId={job.id} name={job.name} onClose={() => setPreviewing(false)} />}
+      {leftovers && <NotMigrated jobId={job.id} name={job.name} onClose={() => setLeftovers(false)} />}
       {asking && (
         <ExistingObjectsDialog jobId={job.id} objects={existing} current={onExisting}
           onClose={() => setAsking(false)} onChosen={() => runPreflight(false)} />

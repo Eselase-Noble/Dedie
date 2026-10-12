@@ -259,6 +259,18 @@ export interface PreviewStatement {
   end?: string;
 }
 
+/** An object of the source that a migration does not carry over. */
+export interface Leftover {
+  kind: string;
+  name: string;
+  /** Why it is not migrated. */
+  reason: string;
+  /** The statement that defines it on the source; empty if the source would not show it. */
+  source: string;
+  /** What closes the statement in a script when a semicolon does not. */
+  end?: string;
+}
+
 /** Something on the target with the name of an object being migrated. */
 export interface ExistingObject {
   kind: string;
